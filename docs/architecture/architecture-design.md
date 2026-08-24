@@ -2,6 +2,8 @@
 
 > 本文是生产平台的总体方案正文，给出系统边界、职责分工和实施基线。术语以 [`CONTEXT.md`](../../CONTEXT.md) 为准；关键选择以 [Accepted ADR](../adr/README.md) 为准。详细图表、Schema、接口和运行手册由后续交付物展开，不在本文重复固化。
 
+系统边界、部署关系和企业微信端到端执行链路见[系统架构图与企业微信核心时序图](system-diagrams.md)。
+
 ## 1. 目标与设计思路
 
 平台把基于 tRPC-Agent-Python 的单点 Agent 提升为可部署、可治理、可审计和可灾备的**生产平台**。首版采用一企业一实例的**私有化部署**；企业内的部门、业务线或子公司是扁平的**租户**，**Tenant Group**只汇总成本、容量和 SLO，不继承成员租户的数据访问权（[ADR-0002](../adr/0002-private-enterprise-deployment.md)、[ADR-0039](../adr/0039-flat-tenants-with-non-inheriting-groups.md)）。平台不把“增加 `tenant_id`”当作隔离完成，而是在身份、关系约束、缓存键、消息、对象路径、向量过滤、密钥、预算和审计上持续携带并校验租户上下文。
