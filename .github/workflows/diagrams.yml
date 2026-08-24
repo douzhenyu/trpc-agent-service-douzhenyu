@@ -1,0 +1,52 @@
+name: Render architecture diagrams
+
+"on":
+  pull_request:
+    paths:
+      - "docs/architecture/diagrams/**"
+      - "docs/architecture/system-diagrams.md"
+      - ".github/workflows/diagrams.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "docs/architecture/diagrams/**"
+      - "docs/architecture/system-diagrams.md"
+      - ".github/workflows/diagrams.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  render-mermaid:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Install pinned Mermaid CLI
+        run: npm install --global @mermaid-js/mermaid-cli@11.16.0
+
+      - name: Render Mermaid sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p rendered-diagrams
+          for source in docs/architecture/diagrams/*.mmd; do
+            output="rendered-diagrams/$(basename "${source%.mmd}").svg"
+            mmdc -i "$source" -o "$output" --backgroundColor white
+          done
+
+      - name: Upload rendered diagrams
+        uses: actions/upload-artifact@v4
+        with:
+          name: architecture-diagrams
+          path: rendered-diagrams/*.svg
+          if-no-files-found: error
