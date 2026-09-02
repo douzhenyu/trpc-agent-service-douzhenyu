@@ -1,18 +1,20 @@
-export type HealthResponse = {
-  status: "ok";
-  service: "admin-api";
-  version: string;
-  trpc_agent_version: string;
-};
+import createClient from "openapi-fetch";
+
+import type { components, paths } from "./generated/admin-api";
+
+export type HealthResponse = components["schemas"]["HealthResponse"];
+
+const client = createClient<paths>({
+  baseUrl: globalThis.location.origin,
+  fetch: (request) => globalThis.fetch(request),
+});
 
 export async function getHealth(): Promise<HealthResponse> {
-  const response = await fetch("/api/v1/health", {
-    headers: { Accept: "application/json" },
-  });
+  const { data, error, response } = await client.GET("/api/v1/health");
 
-  if (!response.ok) {
+  if (!response.ok || error || !data) {
     throw new Error(`Admin API health request failed with ${response.status}`);
   }
 
-  return (await response.json()) as HealthResponse;
+  return data;
 }

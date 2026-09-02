@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 
 import { getHealth, type HealthResponse } from "./api";
+import { t } from "./i18n";
 import "./styles.css";
 
 type ViewState =
@@ -30,34 +31,34 @@ export default function App() {
   return (
     <main className="shell">
       <section className="health-panel" aria-live="polite">
-        <p className="eyebrow">tRPC-Agent 多租户平台</p>
-        <h1>平台健康状态</h1>
+        <p className="eyebrow">{t("productName")}</p>
+        <h1>{t("healthTitle")}</h1>
 
         {state.kind === "loading" && (
-          <p className="status status--loading">正在检查…</p>
+          <p className="status status--loading">{t("checking")}</p>
         )}
 
         {state.kind === "error" && (
-          <p className="status status--error">Admin API 暂时不可用</p>
+          <p className="status status--error">{t("unavailable")}</p>
         )}
 
         {state.kind === "ready" && (
           <div className="health-card">
             <div>
               <span className="status-dot" aria-hidden="true" />
-              <strong>运行正常</strong>
+              <strong>{t("healthy")}</strong>
             </div>
             <dl>
               <div>
-                <dt>服务</dt>
-                <dd>Admin API</dd>
+                <dt>{t("service")}</dt>
+                <dd>{t("adminApi")}</dd>
               </div>
               <div>
-                <dt>平台版本</dt>
+                <dt>{t("platformVersion")}</dt>
                 <dd>{state.health.version}</dd>
               </div>
               <div>
-                <dt>SDK</dt>
+                <dt>{t("sdk")}</dt>
                 <dd>tRPC-Agent {state.health.trpc_agent_version}</dd>
               </div>
             </dl>

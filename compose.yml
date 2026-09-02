@@ -81,7 +81,8 @@ services:
 
   fake-external:
     build:
-      context: ./dev/fake-external
+      context: .
+      dockerfile: dev/fake_external/Dockerfile
     ports:
       - "8090:8090"
     healthcheck:

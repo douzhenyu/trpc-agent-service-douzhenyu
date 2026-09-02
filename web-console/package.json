@@ -8,12 +8,14 @@
     "dev": "vite --host 0.0.0.0",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
+    "generate:api": "openapi-typescript ../docs/contracts/admin-api.openapi.json -o src/generated/admin-api.ts",
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "test:smoke": "playwright test",
     "typecheck": "tsc -b --pretty false"
   },
   "dependencies": {
+    "openapi-fetch": "0.17.0",
     "react": "19.2.8",
     "react-dom": "19.2.8"
   },
@@ -27,8 +29,9 @@
     "@vitejs/plugin-react": "6.1.1",
     "@vitest/coverage-v8": "4.1.11",
     "jsdom": "30.0.1",
+    "openapi-typescript": "7.13.0",
     "prettier": "3.9.6",
-    "typescript": "7.0.2",
+    "typescript": "5.9.3",
     "vite": "8.2.2",
     "vitest": "4.1.11"
   }

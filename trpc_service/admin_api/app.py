@@ -1,11 +1,9 @@
 """FastAPI application for the Admin API deployment unit."""
 
-from importlib.metadata import version
-
 from fastapi import FastAPI
 
 from trpc_service.admin_api.schemas import HealthResponse
-from trpc_service.version import __version__
+from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
 def create_app() -> FastAPI:
@@ -25,7 +23,7 @@ def create_app() -> FastAPI:
     async def health() -> HealthResponse:
         return HealthResponse(
             version=__version__,
-            trpc_agent_version=version("trpc-agent-py"),
+            trpc_agent_version=TRPC_AGENT_VERSION,
         )
 
     return application
