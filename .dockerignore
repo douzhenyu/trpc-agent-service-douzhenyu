@@ -1,0 +1,12 @@
+.codegraph
+.git
+.github
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.venv
+**/__pycache__
+web-console/coverage
+web-console/dist
+web-console/node_modules
+web-console/test-results
