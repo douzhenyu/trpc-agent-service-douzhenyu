@@ -83,8 +83,24 @@ class PlatformUserResponse(BaseModel):
     roles: list[str]
 
 
+ErrorCode = Literal[
+    "INVALID_REQUEST",
+    "INVALID_CREDENTIALS",
+    "IDENTITY_PROVIDER_UNAVAILABLE",
+    "UNAUTHENTICATED",
+    "FORBIDDEN",
+    "NOT_FOUND",
+    "CONFLICT",
+    "IDEMPOTENCY_CONFLICT",
+    "VERSION_MISMATCH",
+    "VALIDATION_ERROR",
+    "INTERNAL_ERROR",
+    "REQUEST_FAILED",
+]
+
+
 class ErrorDetail(BaseModel):
-    code: str
+    code: ErrorCode
     message: str
 
 

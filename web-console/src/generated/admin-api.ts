@@ -4,963 +4,1243 @@
  */
 
 export interface paths {
-    "/api/v1/audit-events": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Audit */
-        get: operations["list_audit_api_v1_audit_events_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+  "/api/v1/audit-events": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/auth/emergency/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Emergency Login */
-        post: operations["emergency_login_api_v1_auth_emergency_session_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** List Audit */
+    get: operations["list_audit_api_v1_audit_events_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/emergency/session": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/auth/oidc/callback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Oidc Callback */
-        get: operations["oidc_callback_api_v1_auth_oidc_callback_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    put?: never;
+    /** Emergency Login */
+    post: operations["emergency_login_api_v1_auth_emergency_session_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/oidc/callback": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/auth/oidc/login": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Oidc Login */
-        get: operations["oidc_login_api_v1_auth_oidc_login_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Oidc Callback */
+    get: operations["oidc_callback_api_v1_auth_oidc_callback_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/oidc/login": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/auth/session": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Session */
-        get: operations["session_api_v1_auth_session_get"];
-        put?: never;
-        post?: never;
-        /** Logout */
-        delete: operations["logout_api_v1_auth_session_delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Oidc Login */
+    get: operations["oidc_login_api_v1_auth_oidc_login_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/auth/session": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Health */
-        get: operations["health_api_v1_health_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Session */
+    get: operations["session_api_v1_auth_session_get"];
+    put?: never;
+    post?: never;
+    /** Logout */
+    delete: operations["logout_api_v1_auth_session_delete"];
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/health": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/platform-users": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Users */
-        get: operations["list_users_api_v1_platform_users_get"];
-        put?: never;
-        /** Create User */
-        post: operations["create_user_api_v1_platform_users_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** Health */
+    get: operations["health_api_v1_health_get"];
+    put?: never;
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/platform-users": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/platform-users/{user_id}/roles/{role}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        /** Assign Role */
-        put: operations["assign_role_api_v1_platform_users__user_id__roles__role__put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** List Users */
+    get: operations["list_users_api_v1_platform_users_get"];
+    put?: never;
+    /** Create User */
+    post: operations["create_user_api_v1_platform_users_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/platform-users/{user_id}/roles/{role}": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/tenant-groups": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Groups */
-        get: operations["list_groups_api_v1_tenant_groups_get"];
-        put?: never;
-        /** Create Group */
-        post: operations["create_group_api_v1_tenant_groups_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    get?: never;
+    /** Assign Role */
+    put: operations["assign_role_api_v1_platform_users__user_id__roles__role__put"];
+    post?: never;
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/tenant-groups": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    "/api/v1/tenants": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Tenants */
-        get: operations["list_tenants_api_v1_tenants_get"];
-        put?: never;
-        /** Create Tenant */
-        post: operations["create_tenant_api_v1_tenants_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
+    /** List Groups */
+    get: operations["list_groups_api_v1_tenant_groups_get"];
+    put?: never;
+    /** Create Group */
+    post: operations["create_group_api_v1_tenant_groups_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
+  "/api/v1/tenants": {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    /** List Tenants */
+    get: operations["list_tenants_api_v1_tenants_get"];
+    put?: never;
+    /** Create Tenant */
+    post: operations["create_tenant_api_v1_tenants_post"];
+    delete?: never;
+    options?: never;
+    head?: never;
+    patch?: never;
+    trace?: never;
+  };
 }
 export type webhooks = Record<string, never>;
 export interface components {
-    schemas: {
-        /** AuditEventList */
-        AuditEventList: {
-            /** Items */
-            items: components["schemas"]["AuditEventResponse"][];
-            /** Next Cursor */
-            next_cursor?: string | null;
-        };
-        /** AuditEventResponse */
-        AuditEventResponse: {
-            /** Action */
-            action: string;
-            /** Actor */
-            actor: string;
-            /** Auth Method */
-            auth_method: string;
-            /** Decision */
-            decision: string;
-            /** Details */
-            details: {
-                [key: string]: unknown;
-            };
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Occurred At
-             * Format: date-time
-             */
-            occurred_at: string;
-            /** Target Id */
-            target_id: string | null;
-            /** Target Type */
-            target_type: string | null;
-            /** Tenant Id */
-            tenant_id: string | null;
-        };
-        /** EmergencyLoginRequest */
-        EmergencyLoginRequest: {
-            /** Password */
-            password: string;
-            /** Username */
-            username: string;
-        };
-        /** ErrorDetail */
-        ErrorDetail: {
-            /** Code */
-            code: string;
-            /** Message */
-            message: string;
-        };
-        /** ErrorResponse */
-        ErrorResponse: {
-            error: components["schemas"]["ErrorDetail"];
-        };
-        /**
-         * HealthResponse
-         * @description Stable public health contract consumed by the Web Console.
-         */
-        HealthResponse: {
-            /**
-             * Service
-             * @default admin-api
-             * @constant
-             */
-            service: "admin-api";
-            /**
-             * Status
-             * @default ok
-             * @constant
-             */
-            status: "ok";
-            /** Trpc Agent Version */
-            trpc_agent_version: string;
-            /** Version */
-            version: string;
-        };
-        /** PlatformUserCreate */
-        PlatformUserCreate: {
-            /** Display Name */
-            display_name: string;
-            /** Email */
-            email?: string | null;
-            /** Issuer */
-            issuer: string;
-            /** Subject */
-            subject: string;
-        };
-        /** PlatformUserList */
-        PlatformUserList: {
-            /** Items */
-            items: components["schemas"]["PlatformUserResponse"][];
-            /** Next Cursor */
-            next_cursor?: string | null;
-        };
-        /** PlatformUserResponse */
-        PlatformUserResponse: {
-            /** Display Name */
-            display_name: string;
-            /** Email */
-            email: string | null;
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Issuer */
-            issuer: string;
-            /** Roles */
-            roles: string[];
-            /** Subject */
-            subject: string;
-            /** Version */
-            version: number;
-        };
-        /** SessionResponse */
-        SessionResponse: {
-            /**
-             * Auth Method
-             * @enum {string}
-             */
-            auth_method: "oidc" | "emergency";
-            /** Roles */
-            roles: string[];
-            /** Subject */
-            subject: string;
-        };
-        /** TenantCreate */
-        TenantCreate: {
-            /** Name */
-            name: string;
-            /** Slug */
-            slug: string;
-        };
-        /** TenantGroupCreate */
-        TenantGroupCreate: {
-            /** Name */
-            name: string;
-            /** Tenant Ids */
-            tenant_ids?: string[];
-        };
-        /** TenantGroupList */
-        TenantGroupList: {
-            /** Items */
-            items: components["schemas"]["TenantGroupResponse"][];
-            /** Next Cursor */
-            next_cursor?: string | null;
-        };
-        /** TenantGroupResponse */
-        TenantGroupResponse: {
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Name */
-            name: string;
-            /** Tenant Ids */
-            tenant_ids: string[];
-            /** Version */
-            version: number;
-        };
-        /** TenantList */
-        TenantList: {
-            /** Items */
-            items: components["schemas"]["TenantResponse"][];
-            /** Next Cursor */
-            next_cursor?: string | null;
-        };
-        /** TenantResponse */
-        TenantResponse: {
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at: string;
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /** Name */
-            name: string;
-            /** Slug */
-            slug: string;
-            /** Status */
-            status: string;
-            /**
-             * Updated At
-             * Format: date-time
-             */
-            updated_at: string;
-            /** Version */
-            version: number;
-        };
+  schemas: {
+    /** AuditEventList */
+    AuditEventList: {
+      /** Items */
+      items: components["schemas"]["AuditEventResponse"][];
+      /** Next Cursor */
+      next_cursor?: string | null;
     };
-    responses: never;
-    parameters: never;
-    requestBodies: never;
-    headers: never;
-    pathItems: never;
+    /** AuditEventResponse */
+    AuditEventResponse: {
+      /** Action */
+      action: string;
+      /** Actor */
+      actor: string;
+      /** Auth Method */
+      auth_method: string;
+      /** Decision */
+      decision: string;
+      /** Details */
+      details: {
+        [key: string]: unknown;
+      };
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /**
+       * Occurred At
+       * Format: date-time
+       */
+      occurred_at: string;
+      /** Target Id */
+      target_id: string | null;
+      /** Target Type */
+      target_type: string | null;
+      /** Tenant Id */
+      tenant_id: string | null;
+    };
+    /** EmergencyLoginRequest */
+    EmergencyLoginRequest: {
+      /** Password */
+      password: string;
+      /** Username */
+      username: string;
+    };
+    /** ErrorDetail */
+    ErrorDetail: {
+      /**
+       * Code
+       * @enum {string}
+       */
+      code:
+        | "INVALID_REQUEST"
+        | "INVALID_CREDENTIALS"
+        | "IDENTITY_PROVIDER_UNAVAILABLE"
+        | "UNAUTHENTICATED"
+        | "FORBIDDEN"
+        | "NOT_FOUND"
+        | "CONFLICT"
+        | "IDEMPOTENCY_CONFLICT"
+        | "VERSION_MISMATCH"
+        | "VALIDATION_ERROR"
+        | "INTERNAL_ERROR"
+        | "REQUEST_FAILED";
+      /** Message */
+      message: string;
+    };
+    /** ErrorResponse */
+    ErrorResponse: {
+      error: components["schemas"]["ErrorDetail"];
+    };
+    /**
+     * HealthResponse
+     * @description Stable public health contract consumed by the Web Console.
+     */
+    HealthResponse: {
+      /**
+       * Service
+       * @default admin-api
+       * @constant
+       */
+      service: "admin-api";
+      /**
+       * Status
+       * @default ok
+       * @constant
+       */
+      status: "ok";
+      /** Trpc Agent Version */
+      trpc_agent_version: string;
+      /** Version */
+      version: string;
+    };
+    /** PlatformUserCreate */
+    PlatformUserCreate: {
+      /** Display Name */
+      display_name: string;
+      /** Email */
+      email?: string | null;
+      /** Issuer */
+      issuer: string;
+      /** Subject */
+      subject: string;
+    };
+    /** PlatformUserList */
+    PlatformUserList: {
+      /** Items */
+      items: components["schemas"]["PlatformUserResponse"][];
+      /** Next Cursor */
+      next_cursor?: string | null;
+    };
+    /** PlatformUserResponse */
+    PlatformUserResponse: {
+      /** Display Name */
+      display_name: string;
+      /** Email */
+      email: string | null;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Issuer */
+      issuer: string;
+      /** Roles */
+      roles: string[];
+      /** Subject */
+      subject: string;
+      /** Version */
+      version: number;
+    };
+    /** SessionResponse */
+    SessionResponse: {
+      /**
+       * Auth Method
+       * @enum {string}
+       */
+      auth_method: "oidc" | "emergency";
+      /** Roles */
+      roles: string[];
+      /** Subject */
+      subject: string;
+    };
+    /** TenantCreate */
+    TenantCreate: {
+      /** Name */
+      name: string;
+      /** Slug */
+      slug: string;
+    };
+    /** TenantGroupCreate */
+    TenantGroupCreate: {
+      /** Name */
+      name: string;
+      /** Tenant Ids */
+      tenant_ids?: string[];
+    };
+    /** TenantGroupList */
+    TenantGroupList: {
+      /** Items */
+      items: components["schemas"]["TenantGroupResponse"][];
+      /** Next Cursor */
+      next_cursor?: string | null;
+    };
+    /** TenantGroupResponse */
+    TenantGroupResponse: {
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      /** Tenant Ids */
+      tenant_ids: string[];
+      /** Version */
+      version: number;
+    };
+    /** TenantList */
+    TenantList: {
+      /** Items */
+      items: components["schemas"]["TenantResponse"][];
+      /** Next Cursor */
+      next_cursor?: string | null;
+    };
+    /** TenantResponse */
+    TenantResponse: {
+      /**
+       * Created At
+       * Format: date-time
+       */
+      created_at: string;
+      /**
+       * Id
+       * Format: uuid
+       */
+      id: string;
+      /** Name */
+      name: string;
+      /** Slug */
+      slug: string;
+      /** Status */
+      status: string;
+      /**
+       * Updated At
+       * Format: date-time
+       */
+      updated_at: string;
+      /** Version */
+      version: number;
+    };
+  };
+  responses: never;
+  parameters: never;
+  requestBodies: never;
+  headers: never;
+  pathItems: never;
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    list_audit_api_v1_audit_events_get: {
-        parameters: {
-            query?: {
-                tenant_id?: string | null;
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AuditEventList"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  list_audit_api_v1_audit_events_get: {
+    parameters: {
+      query?: {
+        tenant_id?: string | null;
+        limit?: number;
+        cursor?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    emergency_login_api_v1_auth_emergency_session_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EmergencyLoginRequest"];
-            };
+        content: {
+          "application/json": components["schemas"]["AuditEventList"];
         };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionResponse"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    oidc_callback_api_v1_auth_oidc_callback_get: {
-        parameters: {
-            query: {
-                code: string;
-                state: string;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  emergency_login_api_v1_auth_emergency_session_post: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    oidc_login_api_v1_auth_oidc_login_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": unknown;
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["EmergencyLoginRequest"];
+      };
     };
-    session_api_v1_auth_session_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["SessionResponse"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["SessionResponse"];
         };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    logout_api_v1_auth_session_delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": null;
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  oidc_callback_api_v1_auth_oidc_callback_get: {
+    parameters: {
+      query: {
+        code: string;
+        state: string;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    health_api_v1_health_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HealthResponse"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": unknown;
         };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Identity provider unavailable */
+      502: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    list_users_api_v1_platform_users_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PlatformUserList"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  oidc_login_api_v1_auth_oidc_login_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    create_user_api_v1_platform_users_post: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PlatformUserCreate"];
-            };
+        content: {
+          "application/json": unknown;
         };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["PlatformUserResponse"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+      };
+      /** @description Resource not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
         };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    assign_role_api_v1_platform_users__user_id__roles__role__put: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-                "If-Match": string;
-            };
-            path: {
-                user_id: string;
-                role: "PLATFORM_ADMIN" | "PLATFORM_AUDITOR";
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": null;
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  session_api_v1_auth_session_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    list_groups_api_v1_tenant_groups_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TenantGroupList"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": components["schemas"]["SessionResponse"];
         };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    create_group_api_v1_tenant_groups_post: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TenantGroupCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TenantGroupResponse"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  logout_api_v1_auth_session_delete: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
-    list_tenants_api_v1_tenants_get: {
-        parameters: {
-            query?: {
-                limit?: number;
-                cursor?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
         };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TenantList"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
+        content: {
+          "application/json": null;
         };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
     };
-    create_tenant_api_v1_tenants_post: {
-        parameters: {
-            query?: never;
-            header: {
-                "Idempotency-Key": string;
-            };
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["TenantCreate"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["TenantResponse"];
-                };
-            };
-            /** @description Stable request validation error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-            /** @description Stable internal error */
-            500: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ErrorResponse"];
-                };
-            };
-        };
+  };
+  health_api_v1_health_get: {
+    parameters: {
+      query?: never;
+      header?: never;
+      path?: never;
+      cookie?: never;
     };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["HealthResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  list_users_api_v1_platform_users_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlatformUserList"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  create_user_api_v1_platform_users_post: {
+    parameters: {
+      query?: never;
+      header: {
+        "Idempotency-Key": string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["PlatformUserCreate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["PlatformUserResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Command conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  assign_role_api_v1_platform_users__user_id__roles__role__put: {
+    parameters: {
+      query?: never;
+      header: {
+        "Idempotency-Key": string;
+        "If-Match": string;
+      };
+      path: {
+        user_id: string;
+        role: "PLATFORM_ADMIN" | "PLATFORM_AUDITOR";
+      };
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          /** @description Quoted current resource version */
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": null;
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Resource not found */
+      404: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Command conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Version precondition failed */
+      412: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  list_groups_api_v1_tenant_groups_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TenantGroupList"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  create_group_api_v1_tenant_groups_post: {
+    parameters: {
+      query?: never;
+      header: {
+        "Idempotency-Key": string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TenantGroupCreate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TenantGroupResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Command conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  list_tenants_api_v1_tenants_get: {
+    parameters: {
+      query?: {
+        limit?: number;
+        cursor?: string | null;
+      };
+      header?: never;
+      path?: never;
+      cookie?: never;
+    };
+    requestBody?: never;
+    responses: {
+      /** @description Successful Response */
+      200: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TenantList"];
+        };
+      };
+      /** @description Invalid request */
+      400: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
+  create_tenant_api_v1_tenants_post: {
+    parameters: {
+      query?: never;
+      header: {
+        "Idempotency-Key": string;
+      };
+      path?: never;
+      cookie?: never;
+    };
+    requestBody: {
+      content: {
+        "application/json": components["schemas"]["TenantCreate"];
+      };
+    };
+    responses: {
+      /** @description Successful Response */
+      201: {
+        headers: {
+          /** @description Quoted current resource version */
+          ETag?: string;
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["TenantResponse"];
+        };
+      };
+      /** @description Authentication failed */
+      401: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Authorization failed */
+      403: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Command conflict */
+      409: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Request validation failed */
+      422: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+      /** @description Internal error */
+      500: {
+        headers: {
+          [name: string]: unknown;
+        };
+        content: {
+          "application/json": components["schemas"]["ErrorResponse"];
+        };
+      };
+    };
+  };
 }

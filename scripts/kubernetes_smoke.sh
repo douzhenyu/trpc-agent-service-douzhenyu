@@ -34,6 +34,22 @@ kube() {
   kubectl --context "${cluster_context}" "$@"
 }
 
+kube_apply_remote() {
+  local url="$1"
+  shift
+  for attempt in $(seq 1 5); do
+    if kube apply "$@" -f "${url}"; then
+      return 0
+    fi
+    if [[ "${attempt}" -lt 5 ]]; then
+      echo "Retrying remote manifest ${url} (${attempt}/5)" >&2
+      sleep $((attempt * 2))
+    fi
+  done
+  echo "Failed to apply remote manifest after 5 attempts: ${url}" >&2
+  return 1
+}
+
 wait_for_application() {
   local application="$1"
   local sync=""
@@ -138,8 +154,9 @@ kind create cluster --name "${cluster_name}" \
   --wait 120s
 cluster_created=true
 
-kube apply --server-side -f \
-  https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/experimental-install.yaml
+kube_apply_remote \
+  https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/experimental-install.yaml \
+  --server-side
 istioctl install --context "${cluster_context}" --set profile=ambient \
   --set values.pilot.env.ENABLE_INGRESS_WAYPOINT_ROUTING=true \
   --skip-confirmation
@@ -171,19 +188,21 @@ done
 
 kube create namespace argo-rollouts
 kube label namespace argo-rollouts istio.io/dataplane-mode=ambient
-kube apply --server-side --force-conflicts -n argo-rollouts -f \
-  https://github.com/argoproj/argo-rollouts/releases/download/v1.10.0/install.yaml
+kube_apply_remote \
+  https://github.com/argoproj/argo-rollouts/releases/download/v1.10.0/install.yaml \
+  --server-side --force-conflicts -n argo-rollouts
 kube rollout status deployment/argo-rollouts -n argo-rollouts --timeout=180s
 
-kube apply -f \
+kube_apply_remote \
   https://github.com/kubernetes-sigs/metrics-server/releases/download/v0.9.0/components.yaml
 kube patch deployment metrics-server -n kube-system --type=json -p \
   '[{"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--kubelet-insecure-tls"}]'
 kube rollout status deployment/metrics-server -n kube-system --timeout=180s
 
 kube create namespace argocd
-kube apply --server-side --force-conflicts -n argocd -f \
-  https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.2/manifests/core-install.yaml
+kube_apply_remote \
+  https://raw.githubusercontent.com/argoproj/argo-cd/v3.5.2/manifests/core-install.yaml \
+  --server-side --force-conflicts -n argocd
 kube set env deployment/argocd-applicationset-controller -n argocd \
   ARGOCD_APPLICATIONSET_CONTROLLER_ENABLE_PROGRESSIVE_SYNCS=true
 kube rollout status deployment/argocd-applicationset-controller -n argocd --timeout=240s

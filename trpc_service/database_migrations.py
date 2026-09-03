@@ -16,7 +16,8 @@ from trpc_service.admin_api.database import sqlalchemy_url
 MIGRATION = r"""
 DO $$ BEGIN
   IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = 'trpc_platform_app') THEN
-    CREATE ROLE trpc_platform_app NOLOGIN NOSUPERUSER NOCREATEDB NOCREATEROLE NOBYPASSRLS;
+    CREATE ROLE trpc_platform_app NOLOGIN NOINHERIT NOSUPERUSER NOCREATEDB
+      NOCREATEROLE NOREPLICATION NOBYPASSRLS;
   END IF;
 END $$;
 
@@ -152,20 +153,44 @@ async def apply_migrations(database_url: str, app_role_password: str | None = No
 
     config = Config()
     config.set_main_option("script_location", str(Path(__file__).with_name("migrations")))
-    config.set_main_option("sqlalchemy.url", sqlalchemy_url(database_url))
+    config.set_main_option("sqlalchemy.url", sqlalchemy_url(database_url).replace("%", "%%"))
     await asyncio.to_thread(command.upgrade, config, "head")
-    if app_role_password:
-        engine = create_async_engine(sqlalchemy_url(database_url))
-        try:
-            async with engine.begin() as connection:
+    engine = create_async_engine(sqlalchemy_url(database_url))
+    try:
+        async with engine.begin() as connection:
+            await connection.exec_driver_sql(
+                """ALTER ROLE trpc_platform_app NOINHERIT NOSUPERUSER NOCREATEDB
+                NOCREATEROLE NOREPLICATION NOBYPASSRLS"""
+            )
+            unsafe_memberships = await connection.scalar(
+                text(
+                    """SELECT count(*) FROM pg_auth_members memberships
+                    JOIN pg_roles member ON member.oid=memberships.member
+                    WHERE member.rolname='trpc_platform_app'"""
+                )
+            )
+            if unsafe_memberships:
+                raise RuntimeError("trpc_platform_app must not inherit or assume another role")
+            owned_objects = await connection.scalar(
+                text(
+                    """SELECT count(*) FROM pg_class objects
+                    JOIN pg_roles owner ON owner.oid=objects.relowner
+                    JOIN pg_namespace namespace ON namespace.oid=objects.relnamespace
+                    WHERE owner.rolname='trpc_platform_app'
+                      AND namespace.nspname IN ('platform','tenant')"""
+                )
+            )
+            if owned_objects:
+                raise RuntimeError("trpc_platform_app must not own tenant or platform objects")
+            if app_role_password:
                 quoted = await connection.scalar(
                     text("SELECT quote_literal(:password)"), {"password": app_role_password}
                 )
                 await connection.exec_driver_sql(
                     f"ALTER ROLE trpc_platform_app LOGIN PASSWORD {quoted}"
                 )
-        finally:
-            await engine.dispose()
+    finally:
+        await engine.dispose()
 
 
 def main() -> None:

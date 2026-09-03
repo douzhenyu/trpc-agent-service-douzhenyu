@@ -2,11 +2,10 @@
 
 from __future__ import annotations
 
-import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Annotated, Any, Literal
+from typing import Annotated, Any
 from uuid import UUID
 
 import httpx
@@ -15,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.exc import IntegrityError
 
+from trpc_service.admin_api.audit import insert_audit, write_audit
 from trpc_service.admin_api.auth import (
     Principal,
     begin_oidc_flow,
@@ -24,7 +24,7 @@ from trpc_service.admin_api.auth import (
     require_role,
     verify_emergency_password,
 )
-from trpc_service.admin_api.database import Connection, Database, record_to_dict
+from trpc_service.admin_api.database import Database, record_to_dict
 from trpc_service.admin_api.idempotency import (
     IdempotencyConflictError,
     remember,
@@ -32,6 +32,12 @@ from trpc_service.admin_api.idempotency import (
 )
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.preconditions import parse_if_match
+from trpc_service.admin_api.roles import (
+    PlatformRole,
+    PlatformUserNotFoundError,
+    PlatformUserVersionChangedError,
+    assign_platform_role,
+)
 from trpc_service.admin_api.schemas import (
     AuditEventList,
     EmergencyLoginRequest,
@@ -54,39 +60,28 @@ from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
 
+ERROR_RESPONSES: dict[int, dict[str, Any]] = {
+    400: {"model": ErrorResponse, "description": "Invalid request"},
+    401: {"model": ErrorResponse, "description": "Authentication failed"},
+    403: {"model": ErrorResponse, "description": "Authorization failed"},
+    404: {"model": ErrorResponse, "description": "Resource not found"},
+    409: {"model": ErrorResponse, "description": "Command conflict"},
+    412: {"model": ErrorResponse, "description": "Version precondition failed"},
+    422: {"model": ErrorResponse, "description": "Request validation failed"},
+    500: {"model": ErrorResponse, "description": "Internal error"},
+    502: {"model": ErrorResponse, "description": "Identity provider unavailable"},
+}
 
-async def _insert_audit(
-    connection: Connection,
-    principal: Principal | None,
-    action: str,
-    decision: str,
-    *,
-    target_type: str | None = None,
-    target_id: str | None = None,
-    tenant_id: UUID | None = None,
-    details: dict[str, Any] | None = None,
-) -> None:
-    await connection.execute(
-        """INSERT INTO platform.audit_event
-            (id,tenant_id,actor,auth_method,action,decision,target_type,target_id,details)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS jsonb))""",
-        uuid7(),
-        tenant_id,
-        principal.subject if principal else "anonymous",
-        principal.auth_method if principal else "anonymous",
-        action,
-        decision,
-        target_type,
-        target_id,
-        json.dumps(details or {}),
-    )
+ETAG_HEADER = {
+    "ETag": {
+        "description": "Quoted current resource version",
+        "schema": {"type": "string"},
+    }
+}
 
 
-async def _audit(
-    db: Database, principal: Principal | None, action: str, decision: str, **fields: Any
-) -> None:
-    async with db.transaction() as connection:
-        await _insert_audit(connection, principal, action, decision, **fields)
+def error_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
+    return {status_code: ERROR_RESPONSES[status_code] for status_code in status_codes}
 
 
 def _set_session(response: Response, settings: AdminSettings, principal: Principal) -> None:
@@ -121,10 +116,7 @@ def create_app(
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
         lifespan=lifespan,
-        responses={
-            422: {"model": ErrorResponse, "description": "Stable request validation error"},
-            500: {"model": ErrorResponse, "description": "Stable internal error"},
-        },
+        responses=error_responses(500),
     )
     application.state.settings = configured
 
@@ -184,12 +176,16 @@ def create_app(
     async def health() -> HealthResponse:
         return HealthResponse(version=__version__, trpc_agent_version=TRPC_AGENT_VERSION)
 
-    @application.post("/api/v1/auth/emergency/session", response_model=SessionResponse)
+    @application.post(
+        "/api/v1/auth/emergency/session",
+        response_model=SessionResponse,
+        responses=error_responses(401, 422),
+    )
     async def emergency_login(
         payload: EmergencyLoginRequest, response: Response
     ) -> SessionResponse:
         if not verify_emergency_password(configured, payload.username, payload.password):
-            await _audit(
+            await write_audit(
                 db, None, "auth.emergency.login", "DENY", details={"username": payload.username}
             )
             raise HTTPException(status_code=401, detail="invalid credentials")
@@ -198,13 +194,13 @@ def create_app(
             "emergency",
             frozenset({"PLATFORM_ADMIN"}),
         )
-        await _audit(db, principal, "auth.emergency.login", "ALLOW")
+        await write_audit(db, principal, "auth.emergency.login", "ALLOW")
         _set_session(response, configured, principal)
         return SessionResponse(
             subject=principal.subject, auth_method="emergency", roles=sorted(principal.roles)
         )
 
-    @application.get("/api/v1/auth/oidc/login")
+    @application.get("/api/v1/auth/oidc/login", responses=error_responses(404))
     async def oidc_login() -> Response:
         if not configured.oidc_enabled:
             raise HTTPException(status_code=404, detail="oidc is disabled")
@@ -220,7 +216,10 @@ def create_app(
         )
         return response
 
-    @application.get("/api/v1/auth/oidc/callback")
+    @application.get(
+        "/api/v1/auth/oidc/callback",
+        responses=error_responses(400, 401, 422, 502),
+    )
     async def oidc_callback(request: Request, code: str, state: str) -> Response:
         flow = request.cookies.get("trpc_oidc_flow")
         if not flow:
@@ -243,7 +242,7 @@ def create_app(
                 "SELECT role FROM platform.platform_role_assignment WHERE user_id=$1", row["id"]
             )
         principal = Principal(str(row["id"]), "oidc", frozenset(item["role"] for item in roles))
-        await _audit(
+        await write_audit(
             db,
             principal,
             "auth.oidc.login",
@@ -256,7 +255,11 @@ def create_app(
         response.delete_cookie("trpc_oidc_flow")
         return response
 
-    @application.get("/api/v1/auth/session", response_model=SessionResponse)
+    @application.get(
+        "/api/v1/auth/session",
+        response_model=SessionResponse,
+        responses=error_responses(401),
+    )
     async def session(
         principal: Annotated[Principal, Depends(principal_from_request)],
     ) -> SessionResponse:
@@ -270,7 +273,12 @@ def create_app(
     async def logout(response: Response) -> None:
         response.delete_cookie(configured.session_cookie_name)
 
-    @application.post("/api/v1/tenants", response_model=TenantResponse, status_code=201)
+    @application.post(
+        "/api/v1/tenants",
+        response_model=TenantResponse,
+        status_code=201,
+        responses={**error_responses(401, 403, 409, 422), 201: {"headers": ETAG_HEADER}},
+    )
     async def create_tenant(
         payload: TenantCreate,
         response: Response,
@@ -300,7 +308,7 @@ def create_app(
                     payload.slug,
                     payload.name,
                 )
-                await _insert_audit(
+                await insert_audit(
                     connection,
                     principal,
                     "tenant.create",
@@ -324,7 +332,11 @@ def create_app(
         response.headers["ETag"] = '"1"'
         return result
 
-    @application.get("/api/v1/tenants", response_model=TenantList)
+    @application.get(
+        "/api/v1/tenants",
+        response_model=TenantList,
+        responses=error_responses(400, 401, 403, 422),
+    )
     async def list_tenants(
         principal: Annotated[Principal, Depends(principal_from_request)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -350,7 +362,12 @@ def create_app(
             "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
         }
 
-    @application.post("/api/v1/tenant-groups", response_model=TenantGroupResponse, status_code=201)
+    @application.post(
+        "/api/v1/tenant-groups",
+        response_model=TenantGroupResponse,
+        status_code=201,
+        responses=error_responses(401, 403, 409, 422),
+    )
     async def create_group(
         payload: TenantGroupCreate,
         response: Response,
@@ -382,7 +399,7 @@ def create_app(
                     "INSERT INTO platform.tenant_group_member (group_id,tenant_id) VALUES ($1,$2)",
                     [(group_id, tenant_id) for tenant_id in payload.tenant_ids],
                 )
-                await _insert_audit(
+                await insert_audit(
                     connection,
                     principal,
                     "tenant_group.create",
@@ -406,7 +423,11 @@ def create_app(
             ) from error
         return result
 
-    @application.get("/api/v1/tenant-groups", response_model=TenantGroupList)
+    @application.get(
+        "/api/v1/tenant-groups",
+        response_model=TenantGroupList,
+        responses=error_responses(400, 401, 403, 422),
+    )
     async def list_groups(
         principal: Annotated[Principal, Depends(principal_from_request)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -436,7 +457,10 @@ def create_app(
         }
 
     @application.post(
-        "/api/v1/platform-users", response_model=PlatformUserResponse, status_code=201
+        "/api/v1/platform-users",
+        response_model=PlatformUserResponse,
+        status_code=201,
+        responses=error_responses(401, 403, 409, 422),
     )
     async def create_user(
         payload: PlatformUserCreate,
@@ -469,7 +493,7 @@ def create_app(
                     payload.email,
                     payload.display_name,
                 )
-                await _insert_audit(
+                await insert_audit(
                     connection,
                     principal,
                     "platform_user.create",
@@ -496,98 +520,46 @@ def create_app(
     @application.put(
         "/api/v1/platform-users/{user_id}/roles/{role}",
         status_code=200,
+        responses={
+            **error_responses(400, 401, 403, 404, 409, 412, 422),
+            200: {"headers": ETAG_HEADER},
+        },
     )
     async def assign_role(
         user_id: UUID,
-        role: Literal["PLATFORM_ADMIN", "PLATFORM_AUDITOR"],
+        role: PlatformRole,
         response: Response,
         principal: Annotated[Principal, Depends(principal_from_request)],
         key: Annotated[str, Header(alias="Idempotency-Key")],
         if_match: Annotated[str, Header(alias="If-Match")],
     ) -> None:
         require_role(principal, "PLATFORM_ADMIN")
-        validated_role = role
         try:
             expected_version = parse_if_match(if_match)
         except ValueError as error:
             raise HTTPException(status_code=400, detail=str(error)) from error
-        request_payload = {
-            "user_id": str(user_id),
-            "role": validated_role,
-            "version": expected_version,
-        }
         try:
-            async with db.transaction() as connection:
-                replayed = await replay_for(
-                    connection,
-                    actor=principal.subject,
-                    key=key,
-                    operation="platform_role.assign",
-                    payload=request_payload,
-                )
-                if replayed is not None:
-                    response.headers["Idempotency-Replayed"] = "true"
-                    response.headers["ETag"] = f'"{replayed["version"]}"'
-                    return
-                current = await connection.fetchrow(
-                    """SELECT u.version,
-                    EXISTS(SELECT 1 FROM platform.platform_role_assignment r
-                      WHERE r.user_id=u.id AND r.role=$2) assigned
-                    FROM platform.platform_user u WHERE u.id=$1""",
-                    user_id,
-                    validated_role,
-                )
-                if current is None:
-                    raise HTTPException(status_code=404, detail="platform user not found")
-                if current["version"] != expected_version:
-                    raise HTTPException(status_code=412, detail="platform user version changed")
-                if current["assigned"]:
-                    response.headers["ETag"] = f'"{expected_version}"'
-                    await remember(
-                        connection,
-                        actor=principal.subject,
-                        key=key,
-                        operation="platform_role.assign",
-                        payload=request_payload,
-                        response={"version": expected_version},
-                    )
-                    return
-                updated = await connection.fetchval(
-                    """UPDATE platform.platform_user SET version=version+1,updated_at=now()
-                    WHERE id=$1 AND version=$2 RETURNING version""",
-                    user_id,
-                    expected_version,
-                )
-                if updated is None:
-                    raise HTTPException(status_code=412, detail="platform user version changed")
-                await connection.execute(
-                    """INSERT INTO platform.platform_role_assignment (user_id,role)
-                    VALUES ($1,$2)""",
-                    user_id,
-                    validated_role,
-                )
-                await _insert_audit(
-                    connection,
-                    principal,
-                    "platform_role.assign",
-                    "ALLOW",
-                    target_type="platform_user",
-                    target_id=str(user_id),
-                    details={"role": validated_role},
-                )
-                await remember(
-                    connection,
-                    actor=principal.subject,
-                    key=key,
-                    operation="platform_role.assign",
-                    payload=request_payload,
-                    response={"version": updated},
-                )
-                response.headers["ETag"] = f'"{updated}"'
-        except IntegrityError as error:
+            result = await assign_platform_role(
+                db,
+                principal,
+                user_id=user_id,
+                role=role,
+                expected_version=expected_version,
+                idempotency_key=key,
+            )
+        except PlatformUserNotFoundError as error:
             raise HTTPException(status_code=404, detail="platform user not found") from error
+        except PlatformUserVersionChangedError as error:
+            raise HTTPException(status_code=412, detail="platform user version changed") from error
+        if result.replayed:
+            response.headers["Idempotency-Replayed"] = "true"
+        response.headers["ETag"] = f'"{result.version}"'
 
-    @application.get("/api/v1/platform-users", response_model=PlatformUserList)
+    @application.get(
+        "/api/v1/platform-users",
+        response_model=PlatformUserList,
+        responses=error_responses(400, 401, 403, 422),
+    )
     async def list_users(
         principal: Annotated[Principal, Depends(principal_from_request)],
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
@@ -615,7 +587,11 @@ def create_app(
             "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
         }
 
-    @application.get("/api/v1/audit-events", response_model=AuditEventList)
+    @application.get(
+        "/api/v1/audit-events",
+        response_model=AuditEventList,
+        responses=error_responses(400, 401, 403, 422),
+    )
     async def list_audit(
         principal: Annotated[Principal, Depends(principal_from_request)],
         tenant_id: Annotated[UUID | None, Query()] = None,

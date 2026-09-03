@@ -210,7 +210,15 @@ async def complete_oidc_flow(
             algorithms=["RS256"],
             audience=settings.oidc_client_id,
             issuer=settings.oidc_issuer,
+            options={"require": ["exp", "iat", "sub"]},
         )
+        audience = claims.get("aud")
+        if (
+            isinstance(audience, list)
+            and len(audience) > 1
+            and claims.get("azp") != settings.oidc_client_id
+        ):
+            raise jwt.InvalidTokenError("azp does not identify this client")
         if not secrets.compare_digest(str(claims.get("nonce", "")), str(flow["nonce"])):
             raise jwt.InvalidTokenError("nonce mismatch")
         return claims

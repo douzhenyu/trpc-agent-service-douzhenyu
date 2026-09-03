@@ -132,6 +132,20 @@
       "ErrorDetail": {
         "properties": {
           "code": {
+            "enum": [
+              "INVALID_REQUEST",
+              "INVALID_CREDENTIALS",
+              "IDENTITY_PROVIDER_UNAVAILABLE",
+              "UNAUTHENTICATED",
+              "FORBIDDEN",
+              "NOT_FOUND",
+              "CONFLICT",
+              "IDEMPOTENCY_CONFLICT",
+              "VERSION_MISMATCH",
+              "VALIDATION_ERROR",
+              "INTERNAL_ERROR",
+              "REQUEST_FAILED"
+            ],
             "title": "Code",
             "type": "string"
           },
@@ -576,6 +590,36 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -584,7 +628,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -594,7 +638,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "List Audit"
@@ -624,6 +668,16 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -632,7 +686,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -642,7 +696,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Emergency Login"
@@ -680,6 +734,26 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -688,7 +762,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -698,7 +772,17 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Identity provider unavailable"
           }
         },
         "summary": "Oidc Callback"
@@ -716,7 +800,7 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "404": {
             "content": {
               "application/json": {
                 "schema": {
@@ -724,7 +808,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Resource not found"
           },
           "500": {
             "content": {
@@ -734,7 +818,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Oidc Login"
@@ -755,16 +839,6 @@
             },
             "description": "Successful Response"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Stable request validation error"
-          },
           "500": {
             "content": {
               "application/json": {
@@ -773,7 +847,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Logout"
@@ -791,7 +865,7 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
                 "schema": {
@@ -799,7 +873,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Authentication failed"
           },
           "500": {
             "content": {
@@ -809,7 +883,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Session"
@@ -829,16 +903,6 @@
             },
             "description": "Successful Response"
           },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ErrorResponse"
-                }
-              }
-            },
-            "description": "Stable request validation error"
-          },
           "500": {
             "content": {
               "application/json": {
@@ -847,7 +911,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Health",
@@ -900,6 +964,36 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -908,7 +1002,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -918,7 +1012,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "List Users"
@@ -957,6 +1051,36 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -965,7 +1089,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -975,7 +1099,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Create User"
@@ -1037,7 +1161,75 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "ETag": {
+                "description": "Quoted current resource version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "412": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Version precondition failed"
           },
           "422": {
             "content": {
@@ -1047,7 +1239,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -1057,7 +1249,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Assign Role"
@@ -1107,6 +1299,36 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1115,7 +1337,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -1125,7 +1347,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "List Groups"
@@ -1164,6 +1386,36 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1172,7 +1424,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -1182,7 +1434,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Create Group"
@@ -1232,6 +1484,36 @@
             },
             "description": "Successful Response"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Invalid request"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1240,7 +1522,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -1250,7 +1532,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "List Tenants"
@@ -1287,7 +1569,45 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Successful Response",
+            "headers": {
+              "ETag": {
+                "description": "Quoted current resource version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
           },
           "422": {
             "content": {
@@ -1297,7 +1617,7 @@
                 }
               }
             },
-            "description": "Stable request validation error"
+            "description": "Request validation failed"
           },
           "500": {
             "content": {
@@ -1307,7 +1627,7 @@
                 }
               }
             },
-            "description": "Stable internal error"
+            "description": "Internal error"
           }
         },
         "summary": "Create Tenant"

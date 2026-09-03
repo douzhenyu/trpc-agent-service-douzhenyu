@@ -219,12 +219,26 @@ def test_admin_can_group_tenants_and_assign_platform_roles() -> None:
             },
         )
         assert user.status_code == 201
+        assignment_key = str(uuid4())
         assigned = client.put(
             f"/api/v1/platform-users/{user.json()['id']}/roles/PLATFORM_AUDITOR",
-            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+            headers={"Idempotency-Key": assignment_key, "If-Match": '"1"'},
         )
         assert assigned.status_code == 200
         assert assigned.headers["etag"] == '"2"'
+        replayed = client.put(
+            f"/api/v1/platform-users/{user.json()['id']}/roles/PLATFORM_AUDITOR",
+            headers={"Idempotency-Key": assignment_key, "If-Match": '"1"'},
+        )
+        assert replayed.status_code == 200
+        assert replayed.headers["idempotency-replayed"] == "true"
+        assert replayed.headers["etag"] == '"2"'
+        already_assigned = client.put(
+            f"/api/v1/platform-users/{user.json()['id']}/roles/PLATFORM_AUDITOR",
+            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"2"'},
+        )
+        assert already_assigned.status_code == 200
+        assert already_assigned.headers["etag"] == '"2"'
         assert client.get("/api/v1/platform-users").json()["items"][0]["roles"] == [
             "PLATFORM_AUDITOR"
         ]
@@ -261,6 +275,13 @@ def test_role_assignment_requires_the_current_platform_user_version() -> None:
         )
         assert stale.status_code == 412
         assert stale.json()["error"]["code"] == "VERSION_MISMATCH"
+
+        missing = client.put(
+            f"/api/v1/platform-users/{uuid4()}/roles/PLATFORM_ADMIN",
+            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+        )
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "NOT_FOUND"
 
 
 def test_emergency_login_failure_is_audited_without_granting_a_session() -> None:

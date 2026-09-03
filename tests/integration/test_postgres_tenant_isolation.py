@@ -37,13 +37,29 @@ async def _exercise_isolation() -> None:
             user_id,
         )
         role = await admin.fetchrow(
-            "SELECT rolsuper,rolbypassrls FROM pg_roles WHERE rolname='trpc_platform_app'"
+            "SELECT rolsuper,rolinherit,rolcreaterole,rolcreatedb,rolreplication,rolbypassrls "
+            "FROM pg_roles WHERE rolname='trpc_platform_app'"
         )
-        assert dict(role) == {"rolsuper": False, "rolbypassrls": False}
-        assert await admin.fetchval(
-            "SELECT tableowner <> 'trpc_platform_app' FROM pg_tables "
-            "WHERE schemaname='tenant' AND tablename='member'"
+        assert dict(role) == {
+            "rolsuper": False,
+            "rolinherit": False,
+            "rolcreaterole": False,
+            "rolcreatedb": False,
+            "rolreplication": False,
+            "rolbypassrls": False,
+        }
+        tenant_tables = await admin.fetch(
+            """SELECT class.relname, class.relrowsecurity, class.relforcerowsecurity,
+            roles.rolname AS owner
+            FROM pg_class class
+            JOIN pg_namespace namespace ON namespace.oid=class.relnamespace
+            JOIN pg_roles roles ON roles.oid=class.relowner
+            WHERE namespace.nspname='tenant' AND class.relkind='r'
+            ORDER BY class.relname"""
         )
+        assert [row["relname"] for row in tenant_tables] == ["member", "member_role"]
+        assert all(row["relrowsecurity"] and row["relforcerowsecurity"] for row in tenant_tables)
+        assert all(row["owner"] != "trpc_platform_app" for row in tenant_tables)
     finally:
         await admin.close()
 
@@ -55,6 +71,13 @@ async def _exercise_isolation() -> None:
                 tenant_a,
                 member_id,
                 user_id,
+            )
+            await app.execute(
+                "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
+                "VALUES ($1,$2,$3,'TENANT_ADMIN')",
+                tenant_a,
+                uuid4(),
+                member_id,
             )
 
         async with app.transaction():
@@ -79,6 +102,18 @@ async def _exercise_isolation() -> None:
         async with app.transaction():
             await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
             assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
+            assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await app.execute(
+                    "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
+                    "VALUES ($1,$2,$3,'TENANT_AUDITOR')",
+                    tenant_a,
+                    uuid4(),
+                    member_id,
+                )
+
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
             with pytest.raises(asyncpg.ForeignKeyViolationError):
                 await app.execute(
                     "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
@@ -89,9 +124,39 @@ async def _exercise_isolation() -> None:
                 )
 
         assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
+        assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
     finally:
         await app.close()
 
 
 def test_rls_context_and_composite_foreign_keys_block_cross_tenant_access() -> None:
     asyncio.run(_exercise_isolation())
+
+
+async def _exercise_role_drift_repair() -> None:
+    admin = await asyncpg.connect(ADMIN_URL)
+    try:
+        await admin.execute("ALTER ROLE trpc_platform_app BYPASSRLS INHERIT CREATEDB CREATEROLE")
+    finally:
+        await admin.close()
+
+    await apply_migrations(ADMIN_URL, "app-password")
+
+    admin = await asyncpg.connect(ADMIN_URL)
+    try:
+        role = await admin.fetchrow(
+            "SELECT rolinherit,rolcreatedb,rolcreaterole,rolbypassrls "
+            "FROM pg_roles WHERE rolname='trpc_platform_app'"
+        )
+        assert dict(role) == {
+            "rolinherit": False,
+            "rolcreatedb": False,
+            "rolcreaterole": False,
+            "rolbypassrls": False,
+        }
+    finally:
+        await admin.close()
+
+
+def test_migration_repairs_drifted_application_role_privileges() -> None:
+    asyncio.run(_exercise_role_drift_repair())
