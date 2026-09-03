@@ -1,13 +1,19 @@
 .idea
 .vscode
 .DS_Store
-*.lock
+.codegraph/
+.env
 *.log
 
 *.egg-info
+*.py[cod]
+*.tsbuildinfo
 
 build
 dist
+.mypy_cache
+.pytest_cache
+.ruff_cache
 .venv
 venv
 venv*
@@ -17,11 +23,10 @@ __pycache__
 htmlcov
 cov.tmp
 coverage.xml
-.pytest_cache
 
 node_modules
-package-lock.json
-pyrightconfig.json
+web-console/coverage
+web-console/test-results
 
 # spec-workflow tool artifacts
 .spec-workflow
