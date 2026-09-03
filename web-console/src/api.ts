@@ -6,6 +6,16 @@ export type Session = components["schemas"]["SessionResponse"];
 export type Tenant = components["schemas"]["TenantResponse"];
 export type TenantGroup = components["schemas"]["TenantGroupResponse"];
 export type PlatformUser = components["schemas"]["PlatformUserResponse"];
+export type AgentApplication =
+  components["schemas"]["AgentApplicationResponse"];
+export type AgentApplicationCreate =
+  components["schemas"]["AgentApplicationCreate"];
+export type AgentApplicationUpdate =
+  components["schemas"]["AgentApplicationUpdate"];
+export type AgentDraft = components["schemas"]["AgentDraftResponse"];
+export type AgentDraftCreate = components["schemas"]["AgentDraftCreate"];
+export type AgentDraftUpdate = components["schemas"]["AgentDraftUpdate"];
+export type DraftValidation = components["schemas"]["DraftValidationResponse"];
 
 const client = createClient<paths>({
   baseUrl: globalThis.location.origin,
@@ -15,6 +25,31 @@ const client = createClient<paths>({
 
 function key(): string {
   return crypto.randomUUID();
+}
+
+export class ApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+    readonly code?: string,
+  ) {
+    super(message);
+  }
+}
+
+function apiError(
+  response: Response,
+  fallback: string,
+  payload: unknown,
+): ApiError {
+  const body = payload as {
+    error?: { code?: string; message?: string };
+  } | null;
+  return new ApiError(
+    body?.error?.message ?? fallback,
+    response.status,
+    body?.error?.code,
+  );
 }
 
 export async function getSession(): Promise<Session | null> {
@@ -95,4 +130,175 @@ export async function assignRole(
     },
   );
   if (!response.ok) throw new Error("分配角色失败");
+}
+
+export async function getAgentApplications(
+  tenantId: string,
+): Promise<AgentApplication[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/agent-applications",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取 Agent 应用", error);
+  return data.items;
+}
+
+export async function createAgentApplication(
+  tenantId: string,
+  payload: AgentApplicationCreate,
+): Promise<AgentApplication> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/agent-applications",
+    {
+      params: {
+        path: { tenant_id: tenantId },
+        header: { "Idempotency-Key": key() },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法创建 Agent 应用", error);
+  return data;
+}
+
+export async function updateAgentApplication(
+  application: AgentApplication,
+  payload: AgentApplicationUpdate,
+): Promise<AgentApplication> {
+  const { data, error, response } = await client.PATCH(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}",
+    {
+      params: {
+        path: {
+          tenant_id: application.tenant_id,
+          application_id: application.id,
+        },
+        header: {
+          "Idempotency-Key": key(),
+          "If-Match": `"${application.version}"`,
+        },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法更新 Agent 应用", error);
+  return data;
+}
+
+export async function deleteAgentApplication(
+  application: AgentApplication,
+): Promise<void> {
+  const { error, response } = await client.DELETE(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}",
+    {
+      params: {
+        path: {
+          tenant_id: application.tenant_id,
+          application_id: application.id,
+        },
+        header: {
+          "Idempotency-Key": key(),
+          "If-Match": `"${application.version}"`,
+        },
+      },
+    },
+  );
+  if (!response.ok) throw apiError(response, "无法删除 Agent 应用", error);
+}
+
+export async function getAgentDraft(
+  tenantId: string,
+  applicationId: string,
+): Promise<AgentDraft | null> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/draft",
+    {
+      params: { path: { tenant_id: tenantId, application_id: applicationId } },
+    },
+  );
+  if (response.status === 404) return null;
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取 Agent Draft", error);
+  return data;
+}
+
+export async function createAgentDraft(
+  tenantId: string,
+  applicationId: string,
+  payload: AgentDraftCreate,
+): Promise<AgentDraft> {
+  const { data, error, response } = await client.PUT(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/draft",
+    {
+      params: {
+        path: { tenant_id: tenantId, application_id: applicationId },
+        header: { "Idempotency-Key": key() },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法创建 Agent Draft", error);
+  return data;
+}
+
+export async function updateAgentDraft(
+  draft: AgentDraft,
+  payload: AgentDraftUpdate,
+): Promise<AgentDraft> {
+  const { data, error, response } = await client.PATCH(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/draft",
+    {
+      params: {
+        path: {
+          tenant_id: draft.tenant_id,
+          application_id: draft.application_id,
+        },
+        header: { "Idempotency-Key": key(), "If-Match": `"${draft.version}"` },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法更新 Agent Draft", error);
+  return data;
+}
+
+export async function deleteAgentDraft(draft: AgentDraft): Promise<void> {
+  const { error, response } = await client.DELETE(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/draft",
+    {
+      params: {
+        path: {
+          tenant_id: draft.tenant_id,
+          application_id: draft.application_id,
+        },
+        header: { "Idempotency-Key": key(), "If-Match": `"${draft.version}"` },
+      },
+    },
+  );
+  if (!response.ok) throw apiError(response, "无法删除 Agent Draft", error);
+}
+
+export async function validateAgentDraft(
+  draft: AgentDraft,
+): Promise<DraftValidation> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/draft/validate",
+    {
+      params: {
+        path: {
+          tenant_id: draft.tenant_id,
+          application_id: draft.application_id,
+        },
+        header: { "Idempotency-Key": key(), "If-Match": `"${draft.version}"` },
+      },
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法校验 Agent Draft", error);
+  return data;
 }

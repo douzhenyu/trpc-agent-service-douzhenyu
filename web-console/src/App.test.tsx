@@ -177,3 +177,336 @@ test("错误的应急凭据显示失败提示", async () => {
   fireEvent.click(screen.getByRole("button", { name: "应急登录" }));
   expect(await screen.findByText("应急凭据无效")).toBeInTheDocument();
 });
+
+test("Agent 开发者通过公开 API 完成应用与 Draft 编辑校验闭环", async () => {
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const application = {
+    id: "00000000-0000-0000-0000-000000000002",
+    tenant_id: tenant.id,
+    slug: "support-agent",
+    name: "Support Agent",
+    description: "",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const draft = {
+    tenant_id: tenant.id,
+    application_id: application.id,
+    instructions: "Answer helpfully.",
+    model_alias: "balanced",
+    tool_aliases: ["search"],
+    knowledge_refs: ["handbook"],
+    governance_policy_ref: "standard-policy",
+    lifecycle: "DRAFT",
+    serves_production_traffic: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input) => {
+      const request = input as Request;
+      const url = new URL(request.url);
+      if (url.pathname === "/api/v1/auth/session") {
+        return Promise.resolve(
+          json({
+            subject: "admin",
+            auth_method: "emergency",
+            roles: ["PLATFORM_ADMIN"],
+          }),
+        );
+      }
+      if (url.pathname === "/api/v1/tenants")
+        return Promise.resolve(json({ items: [tenant] }));
+      if (
+        url.pathname === "/api/v1/tenant-groups" ||
+        url.pathname === "/api/v1/platform-users"
+      )
+        return Promise.resolve(json({ items: [] }));
+      if (
+        url.pathname.endsWith("/agent-applications") &&
+        request.method === "GET"
+      )
+        return Promise.resolve(json({ items: [] }));
+      if (
+        url.pathname.endsWith("/agent-applications") &&
+        request.method === "POST"
+      )
+        return Promise.resolve(json(application, 201));
+      if (url.pathname.endsWith("/draft") && request.method === "GET")
+        return Promise.resolve(json({ error: { code: "NOT_FOUND" } }, 404));
+      if (url.pathname.endsWith("/draft") && request.method === "PUT")
+        return Promise.resolve(json(draft, 201));
+      if (url.pathname.endsWith("/draft/validate"))
+        return Promise.resolve(
+          json({
+            valid: false,
+            draft_version: 1,
+            issues: [
+              {
+                code: "DRAFT_MODEL_ALIAS_INVALID",
+                path: "/model_alias",
+                message: "Model alias must be a stable resource name.",
+              },
+            ],
+          }),
+        );
+      if (request.method === "DELETE")
+        return Promise.resolve(new Response(null, { status: 204 }));
+      throw new Error(`Unexpected request: ${request.method} ${url.pathname}`);
+    });
+
+  render(<App />);
+  await screen.findByRole("heading", { name: "租户与权限管理" });
+  fireEvent.click(screen.getByRole("button", { name: "加载 Agent 应用" }));
+  fireEvent.change(screen.getByLabelText("Agent 应用标识"), {
+    target: { value: "support-agent" },
+  });
+  fireEvent.change(screen.getByLabelText("Agent 应用名称"), {
+    target: { value: "Support Agent" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "创建 Agent 应用" }));
+  expect(
+    await screen.findByText("Support Agent (support-agent)"),
+  ).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("Draft 指令"), {
+    target: { value: "Answer helpfully." },
+  });
+  fireEvent.change(screen.getByLabelText("模型别名"), {
+    target: { value: "balanced" },
+  });
+  fireEvent.change(screen.getByLabelText("工具别名"), {
+    target: { value: "search" },
+  });
+  fireEvent.change(screen.getByLabelText("Knowledge 引用"), {
+    target: { value: "handbook" },
+  });
+  fireEvent.change(screen.getByLabelText("治理策略引用"), {
+    target: { value: "standard-policy" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "创建 Agent Draft" }));
+  expect(
+    await screen.findByText("Draft 版本 1 · 不承载生产流量"),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "校验 Agent Draft" }));
+  expect(await screen.findByText("/model_alias")).toBeInTheDocument();
+  expect(
+    screen.getByText("Model alias must be a stable resource name."),
+  ).toBeInTheDocument();
+
+  fireEvent.click(screen.getByRole("button", { name: "删除 Agent Draft" }));
+  fireEvent.click(screen.getByRole("button", { name: "删除 Agent 应用" }));
+  await waitFor(() =>
+    expect(screen.queryByText("Support Agent (support-agent)")).toBeNull(),
+  );
+  expect(
+    fetchMock.mock.calls.every(([request]) =>
+      new URL(
+        request instanceof Request ? request.url : String(request),
+      ).pathname.startsWith("/api/v1"),
+    ),
+  ).toBe(true);
+});
+
+test("Agent 编辑遇到并发版本冲突时提示重新加载", async () => {
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const application = {
+    id: "00000000-0000-0000-0000-000000000002",
+    tenant_id: tenant.id,
+    slug: "support-agent",
+    name: "Support Agent",
+    description: "",
+    version: 4,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/api/v1/auth/session")
+        return Promise.resolve(
+          json({
+            subject: "admin",
+            auth_method: "emergency",
+            roles: ["PLATFORM_ADMIN"],
+          }),
+        );
+      if (path === "/api/v1/tenants")
+        return Promise.resolve(json({ items: [tenant] }));
+      if (path === "/api/v1/tenant-groups" || path === "/api/v1/platform-users")
+        return Promise.resolve(json({ items: [] }));
+      if (path.endsWith("/agent-applications") && request.method === "GET")
+        return Promise.resolve(json({ items: [application] }));
+      if (path.endsWith("/draft") && request.method === "GET")
+        return Promise.resolve(json({ error: { code: "NOT_FOUND" } }, 404));
+      if (request.method === "PATCH")
+        return Promise.resolve(
+          json(
+            {
+              error: {
+                code: "VERSION_MISMATCH",
+                message: "Agent application version changed",
+              },
+            },
+            412,
+          ),
+        );
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    });
+
+  render(<App />);
+  await screen.findByRole("heading", { name: "租户与权限管理" });
+  fireEvent.click(screen.getByRole("button", { name: "加载 Agent 应用" }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Support Agent (support-agent)",
+    }),
+  );
+  fireEvent.change(await screen.findByLabelText("Agent 应用显示名称"), {
+    target: { value: "Concurrent edit" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "保存 Agent 应用" }));
+
+  expect(
+    await screen.findByText("版本已变化，请重新加载后再编辑。"),
+  ).toBeInTheDocument();
+  const patch = fetchMock.mock.calls
+    .map(([request]) => request as Request)
+    .find((request) => request.method === "PATCH");
+  expect(patch?.headers.get("if-match")).toBe('"4"');
+});
+
+test("现有 Agent 应用和 Draft 可继续编辑并通过校验", async () => {
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const application = {
+    id: "00000000-0000-0000-0000-000000000002",
+    tenant_id: tenant.id,
+    slug: "support-agent",
+    name: "Support Agent",
+    description: "First version",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const draft = {
+    tenant_id: tenant.id,
+    application_id: application.id,
+    instructions: "Answer helpfully.",
+    model_alias: "balanced",
+    tool_aliases: ["search"],
+    knowledge_refs: ["handbook"],
+    governance_policy_ref: null,
+    lifecycle: "DRAFT",
+    serves_production_traffic: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/api/v1/auth/session")
+        return Promise.resolve(
+          json({
+            subject: "admin",
+            auth_method: "emergency",
+            roles: ["PLATFORM_ADMIN"],
+          }),
+        );
+      if (path === "/api/v1/tenants")
+        return Promise.resolve(json({ items: [tenant] }));
+      if (path === "/api/v1/tenant-groups" || path === "/api/v1/platform-users")
+        return Promise.resolve(json({ items: [] }));
+      if (path.endsWith("/agent-applications") && request.method === "GET")
+        return Promise.resolve(json({ items: [application] }));
+      if (
+        path.endsWith("/agent-applications/" + application.id) &&
+        request.method === "PATCH"
+      )
+        return Promise.resolve(
+          json({
+            ...application,
+            name: "Support Copilot",
+            description: "Second version",
+            version: 2,
+          }),
+        );
+      if (path.endsWith("/draft") && request.method === "GET")
+        return Promise.resolve(json(draft));
+      if (path.endsWith("/draft") && request.method === "PATCH")
+        return Promise.resolve(
+          json({ ...draft, instructions: "Answer concisely.", version: 2 }),
+        );
+      if (path.endsWith("/draft/validate"))
+        return Promise.resolve(
+          json({ valid: true, draft_version: 2, issues: [] }),
+        );
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    });
+
+  render(<App />);
+  await screen.findByRole("heading", { name: "租户与权限管理" });
+  fireEvent.click(screen.getByRole("button", { name: "加载 Agent 应用" }));
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Support Agent (support-agent)",
+    }),
+  );
+  expect(
+    await screen.findByText("Draft 版本 1 · 不承载生产流量"),
+  ).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("Agent 应用显示名称"), {
+    target: { value: "Support Copilot" },
+  });
+  fireEvent.change(screen.getByLabelText("Agent 应用描述"), {
+    target: { value: "Second version" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "保存 Agent 应用" }));
+  expect(
+    await screen.findByText("Support Copilot (support-agent)"),
+  ).toBeInTheDocument();
+
+  fireEvent.change(screen.getByLabelText("Draft 指令"), {
+    target: { value: "Answer concisely." },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "保存 Agent Draft" }));
+  expect(
+    await screen.findByText("Draft 版本 2 · 不承载生产流量"),
+  ).toBeInTheDocument();
+  fireEvent.click(screen.getByRole("button", { name: "校验 Agent Draft" }));
+  expect(await screen.findByText("Agent Draft 校验通过")).toBeInTheDocument();
+  expect(fetchMock).toHaveBeenCalled();
+});

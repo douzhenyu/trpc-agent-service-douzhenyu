@@ -49,6 +49,86 @@ class TenantList(BaseModel):
     next_cursor: str | None = None
 
 
+class AgentApplicationCreate(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2000)
+
+
+class AgentApplicationUpdate(BaseModel):
+    slug: str | None = Field(default=None, pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = Field(default=None, max_length=2000)
+
+
+class AgentApplicationResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    slug: str
+    name: str
+    description: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class AgentApplicationList(BaseModel):
+    items: list[AgentApplicationResponse]
+    next_cursor: str | None = None
+
+
+class AgentDraftCreate(BaseModel):
+    instructions: str = Field(default="", max_length=100_000)
+    model_alias: str = Field(default="", max_length=128)
+    tool_aliases: list[str] = Field(default_factory=list, max_length=100)
+    knowledge_refs: list[str] = Field(default_factory=list, max_length=100)
+    governance_policy_ref: str | None = Field(default=None, max_length=128)
+
+
+class AgentDraftUpdate(BaseModel):
+    instructions: str | None = Field(default=None, max_length=100_000)
+    model_alias: str | None = Field(default=None, max_length=128)
+    tool_aliases: list[str] | None = Field(default=None, max_length=100)
+    knowledge_refs: list[str] | None = Field(default=None, max_length=100)
+    governance_policy_ref: str | None = Field(default=None, max_length=128)
+
+
+class AgentDraftResponse(BaseModel):
+    tenant_id: UUID
+    application_id: UUID
+    instructions: str
+    model_alias: str
+    tool_aliases: list[str]
+    knowledge_refs: list[str]
+    governance_policy_ref: str | None
+    lifecycle: Literal["DRAFT"] = "DRAFT"
+    serves_production_traffic: Literal[False] = False
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+DraftIssueCode = Literal[
+    "DRAFT_INSTRUCTIONS_REQUIRED",
+    "DRAFT_MODEL_ALIAS_INVALID",
+    "DRAFT_DUPLICATE_TOOL_ALIAS",
+    "DRAFT_DUPLICATE_KNOWLEDGE_REF",
+    "DRAFT_GOVERNANCE_POLICY_REF_INVALID",
+]
+
+
+class DraftValidationIssue(BaseModel):
+    code: DraftIssueCode
+    path: str
+    message: str
+
+
+class DraftValidationResponse(BaseModel):
+    valid: bool
+    draft_version: int
+    issues: list[DraftValidationIssue]
+
+
 class TenantGroupCreate(BaseModel):
     name: str
     tenant_ids: list[UUID] = Field(default_factory=list)
