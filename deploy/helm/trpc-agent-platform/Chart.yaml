@@ -1,0 +1,6 @@
+apiVersion: v2
+name: trpc-agent-platform
+description: Production Kubernetes deployment skeleton for the tRPC-Agent platform
+type: application
+version: 0.1.0
+appVersion: "0.1.0"

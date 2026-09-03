@@ -1,0 +1,49 @@
+{{- range $name, $component := .Values.components }}
+{{- if $component.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name }}
+      app.kubernetes.io/component: {{ $name }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: argo-rollouts
+        - namespaceSelector:
+            matchLabels:
+              trpc-agent-platform.io/ingress: allowed
+      ports:
+        - port: {{ $component.port }}
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+---
+{{- end }}
+{{- end }}

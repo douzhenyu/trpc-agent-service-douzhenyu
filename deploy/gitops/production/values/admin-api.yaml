@@ -1,0 +1,13 @@
+components:
+  admin-api:
+    enabled: true
+  web-console:
+    enabled: false
+  agent-gateway:
+    enabled: false
+  channel-gateway:
+    enabled: false
+  agent-worker:
+    enabled: false
+  job-worker:
+    enabled: false

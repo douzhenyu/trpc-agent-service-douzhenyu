@@ -1,0 +1,20 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: trpc-agent-platform
+  namespace: argocd
+spec:
+  description: Six independently managed tRPC-Agent production units
+  sourceRepos:
+    - https://github.com/douzhenyu/trpc-agent-service-douzhenyu.git
+  destinations:
+    - namespace: trpc-agent-platform
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+  orphanedResources:
+    warn: true

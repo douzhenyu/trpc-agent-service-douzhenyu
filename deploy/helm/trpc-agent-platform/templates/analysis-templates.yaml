@@ -1,0 +1,27 @@
+{{- range $name, $component := .Values.components }}
+{{- if and $component.enabled (eq $component.workloadKind "Rollout") }}
+apiVersion: argoproj.io/v1alpha1
+kind: AnalysisTemplate
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-{{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  args:
+    - name: health-url
+    - name: expected-service
+  metrics:
+    - name: ready
+      interval: {{ $.Values.global.rollout.analysisInterval }}
+      count: {{ $.Values.global.rollout.analysisCount }}
+      successCondition: {{ printf "result.statusCode == 200 && result.body.status == 'ok' && result.body.service == '{{args.expected-service}}'" | quote }}
+      failureLimit: 0
+      provider:
+        web:
+          url: {{ printf "{{args.health-url}}" | quote }}
+          timeoutSeconds: 2
+---
+{{- end }}
+{{- end }}

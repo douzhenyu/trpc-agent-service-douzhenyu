@@ -1,0 +1,57 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: smoke-system
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: git-server
+  namespace: smoke-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: git-server
+  template:
+    metadata:
+      labels:
+        app: git-server
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: git-server
+          image: local/trpc-agent-git:smoke
+          imagePullPolicy: Never
+          ports:
+            - name: git
+              containerPort: 9418
+          readinessProbe:
+            tcpSocket:
+              port: git
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 250m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: git-server
+  namespace: smoke-system
+spec:
+  selector:
+    app: git-server
+  ports:
+    - name: git
+      port: 9418
+      targetPort: git

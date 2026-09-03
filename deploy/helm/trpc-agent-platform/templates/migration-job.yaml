@@ -1,0 +1,62 @@
+{{- if .Values.migration.enabled }}
+{{- $component := index .Values.components .Values.migration.component }}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" . }}-database-migration
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: database-migration
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+    argocd.argoproj.io/sync-wave: "-1"
+automountServiceAccountToken: false
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" . }}-database-migration
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: database-migration
+  annotations:
+    argocd.argoproj.io/hook: PreSync
+    argocd.argoproj.io/hook-delete-policy: BeforeHookCreation,HookSucceeded
+spec:
+  backoffLimit: 1
+  ttlSecondsAfterFinished: 300
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+        app.kubernetes.io/instance: {{ .Release.Name }}
+        app.kubernetes.io/component: database-migration
+    spec:
+      restartPolicy: Never
+      serviceAccountName: {{ include "trpc-agent-platform.fullname" . }}-database-migration
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: database-migration
+          image: {{ include "trpc-agent-platform.image" (dict "root" . "component" $component) | quote }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command:
+            - /app/.venv/bin/python
+          args:
+            - -m
+            - trpc_service.database_migrations
+          resources:
+{{ toYaml .Values.global.resources | indent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+{{- end }}
