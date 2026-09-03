@@ -1,7 +1,7 @@
 """Public Admin API response models."""
 
 from datetime import datetime
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -77,19 +77,22 @@ class AgentApplicationList(BaseModel):
     next_cursor: str | None = None
 
 
+DraftReference = Annotated[str, Field(max_length=128)]
+
+
 class AgentDraftCreate(BaseModel):
     instructions: str = Field(default="", max_length=100_000)
     model_alias: str = Field(default="", max_length=128)
-    tool_aliases: list[str] = Field(default_factory=list, max_length=100)
-    knowledge_refs: list[str] = Field(default_factory=list, max_length=100)
+    tool_aliases: list[DraftReference] = Field(default_factory=list, max_length=100)
+    knowledge_refs: list[DraftReference] = Field(default_factory=list, max_length=100)
     governance_policy_ref: str | None = Field(default=None, max_length=128)
 
 
 class AgentDraftUpdate(BaseModel):
     instructions: str | None = Field(default=None, max_length=100_000)
     model_alias: str | None = Field(default=None, max_length=128)
-    tool_aliases: list[str] | None = Field(default=None, max_length=100)
-    knowledge_refs: list[str] | None = Field(default=None, max_length=100)
+    tool_aliases: list[DraftReference] | None = Field(default=None, max_length=100)
+    knowledge_refs: list[DraftReference] | None = Field(default=None, max_length=100)
     governance_policy_ref: str | None = Field(default=None, max_length=128)
 
 

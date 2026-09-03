@@ -172,6 +172,7 @@
           },
           "knowledge_refs": {
             "items": {
+              "maxLength": 128,
               "type": "string"
             },
             "maxItems": 100,
@@ -186,6 +187,7 @@
           },
           "tool_aliases": {
             "items": {
+              "maxLength": 128,
               "type": "string"
             },
             "maxItems": 100,
@@ -313,6 +315,7 @@
             "anyOf": [
               {
                 "items": {
+                  "maxLength": 128,
                   "type": "string"
                 },
                 "maxItems": 100,
@@ -340,6 +343,7 @@
             "anyOf": [
               {
                 "items": {
+                  "maxLength": 128,
                   "type": "string"
                 },
                 "maxItems": 100,

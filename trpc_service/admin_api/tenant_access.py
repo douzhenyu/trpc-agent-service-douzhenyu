@@ -36,14 +36,20 @@ async def require_tenant_access(
     if principal.roles.intersection(_PLATFORM_ROLES[mode]):
         return
 
+    tenant_exists = False
     roles: set[str] = set()
-    if principal.auth_method == "oidc":
-        try:
-            user_id = UUID(principal.subject)
-        except ValueError:
-            user_id = None
-        if user_id is not None:
-            async with database.tenant_transaction(tenant_id) as connection:
+    async with database.tenant_transaction(tenant_id) as connection:
+        tenant_exists = bool(
+            await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM platform.tenant WHERE id=$1)", tenant_id
+            )
+        )
+        if principal.auth_method == "oidc":
+            try:
+                user_id = UUID(principal.subject)
+            except ValueError:
+                user_id = None
+            if user_id is not None:
                 rows = await connection.fetch(
                     """SELECT r.role FROM tenant.member m
                     JOIN tenant.member_role r
@@ -52,7 +58,7 @@ async def require_tenant_access(
                     tenant_id,
                     user_id,
                 )
-            roles = {str(row["role"]) for row in rows}
+                roles = {str(row["role"]) for row in rows}
     if roles.intersection(_TENANT_ROLES[mode]):
         return
 
@@ -63,7 +69,10 @@ async def require_tenant_access(
         "DENY",
         target_type=target_type,
         target_id=target_id,
-        tenant_id=tenant_id,
-        details={"reason": "insufficient_tenant_role"},
+        tenant_id=tenant_id if tenant_exists else None,
+        details={
+            "reason": "insufficient_tenant_role",
+            **({"requested_tenant_id": str(tenant_id)} if not tenant_exists else {}),
+        },
     )
     raise HTTPException(status_code=403, detail="insufficient tenant role")

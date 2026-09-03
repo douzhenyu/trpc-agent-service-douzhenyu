@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useState } from "react";
+import { FormEvent, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
@@ -31,6 +31,7 @@ function failureMessage(error: unknown): string {
 }
 
 export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
+  const selectionRequest = useRef(0);
   const [tenantId, setTenantId] = useState(tenants[0]?.id ?? "");
   const [applications, setApplications] = useState<AgentApplication[]>([]);
   const [selected, setSelected] = useState<AgentApplication | null>(null);
@@ -65,6 +66,7 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
   async function loadApplications() {
     if (!tenantId) return;
     try {
+      selectionRequest.current += 1;
       setApplications(await getAgentApplications(tenantId));
       setSelected(null);
       showDraft(null);
@@ -75,13 +77,21 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
   }
 
   async function selectApplication(application: AgentApplication) {
+    const request = ++selectionRequest.current;
     try {
       setSelected(application);
       setEditName(application.name);
       setDescription(application.description);
-      showDraft(await getAgentDraft(application.tenant_id, application.id));
+      showDraft(null);
+      const nextDraft = await getAgentDraft(
+        application.tenant_id,
+        application.id,
+      );
+      if (selectionRequest.current !== request) return;
+      showDraft(nextDraft);
       setMessage(null);
     } catch (error) {
+      if (selectionRequest.current !== request) return;
       setMessage(failureMessage(error));
     }
   }

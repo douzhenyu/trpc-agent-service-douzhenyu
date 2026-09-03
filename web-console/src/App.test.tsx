@@ -510,3 +510,127 @@ test("现有 Agent 应用和 Draft 可继续编辑并通过校验", async () => 
   expect(await screen.findByText("Agent Draft 校验通过")).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalled();
 });
+
+test("快速切换 Agent 时不会让较慢的旧 Draft 覆盖当前选择", async () => {
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const applications = [
+    {
+      id: "00000000-0000-0000-0000-000000000002",
+      tenant_id: tenant.id,
+      slug: "slow-agent",
+      name: "Slow Agent",
+      description: "",
+      version: 1,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    },
+    {
+      id: "00000000-0000-0000-0000-000000000003",
+      tenant_id: tenant.id,
+      slug: "fast-agent",
+      name: "Fast Agent",
+      description: "",
+      version: 1,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    },
+    {
+      id: "00000000-0000-0000-0000-000000000004",
+      tenant_id: tenant.id,
+      slug: "failing-agent",
+      name: "Failing Agent",
+      description: "",
+      version: 1,
+      created_at: "2026-01-01T00:00:00Z",
+      updated_at: "2026-01-01T00:00:00Z",
+    },
+  ];
+  const draft = (applicationId: string, instructions: string) => ({
+    tenant_id: tenant.id,
+    application_id: applicationId,
+    instructions,
+    model_alias: "balanced",
+    tool_aliases: [],
+    knowledge_refs: [],
+    governance_policy_ref: null,
+    lifecycle: "DRAFT",
+    serves_production_traffic: false,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  });
+  let resolveSlowDraft!: (response: Response) => void;
+  const slowDraft = new Promise<Response>((resolve) => {
+    resolveSlowDraft = resolve;
+  });
+  let rejectFailingDraft!: (reason: Error) => void;
+  const failingDraft = new Promise<Response>((_resolve, reject) => {
+    rejectFailingDraft = reject;
+  });
+
+  vi.spyOn(globalThis, "fetch").mockImplementation((input) => {
+    const request = input as Request;
+    const path = new URL(request.url).pathname;
+    if (path === "/api/v1/auth/session")
+      return Promise.resolve(
+        json({
+          subject: "admin",
+          auth_method: "emergency",
+          roles: ["PLATFORM_ADMIN"],
+        }),
+      );
+    if (path === "/api/v1/tenants")
+      return Promise.resolve(json({ items: [tenant] }));
+    if (path === "/api/v1/tenant-groups" || path === "/api/v1/platform-users")
+      return Promise.resolve(json({ items: [] }));
+    if (path.endsWith("/agent-applications"))
+      return Promise.resolve(json({ items: applications }));
+    if (path.includes(applications[0].id)) return slowDraft;
+    if (path.includes(applications[1].id))
+      return Promise.resolve(json(draft(applications[1].id, "Fast draft")));
+    if (path.includes(applications[2].id)) return failingDraft;
+    throw new Error(`Unexpected request: ${request.method} ${path}`);
+  });
+
+  render(<App />);
+  await screen.findByRole("heading", { name: "租户与权限管理" });
+  fireEvent.click(screen.getByRole("button", { name: "加载 Agent 应用" }));
+  fireEvent.click(
+    await screen.findByRole("button", { name: "Slow Agent (slow-agent)" }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Fast Agent (fast-agent)" }),
+  );
+
+  expect(await screen.findByDisplayValue("Fast draft")).toBeInTheDocument();
+  resolveSlowDraft(json(draft(applications[0].id, "Slow draft")));
+  await waitFor(() => {
+    expect(screen.getByDisplayValue("Fast draft")).toBeInTheDocument();
+    expect(screen.queryByDisplayValue("Slow draft")).toBeNull();
+  });
+
+  fireEvent.click(
+    screen.getByRole("button", { name: "Failing Agent (failing-agent)" }),
+  );
+  fireEvent.click(
+    screen.getByRole("button", { name: "Fast Agent (fast-agent)" }),
+  );
+  expect(await screen.findByDisplayValue("Fast draft")).toBeInTheDocument();
+  rejectFailingDraft(new Error("stale failure"));
+  await waitFor(() => {
+    expect(screen.getByDisplayValue("Fast draft")).toBeInTheDocument();
+    expect(screen.queryByText("stale failure")).toBeNull();
+  });
+  fireEvent.click(
+    screen.getByRole("button", { name: "Failing Agent (failing-agent)" }),
+  );
+  expect(await screen.findByText("stale failure")).toBeInTheDocument();
+});

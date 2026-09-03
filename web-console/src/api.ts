@@ -23,7 +23,7 @@ const client = createClient<paths>({
   credentials: "same-origin",
 });
 
-function key(): string {
+function idempotencyKey(): string {
   return crypto.randomUUID();
 }
 
@@ -84,7 +84,7 @@ export async function createTenant(
   name: string,
 ): Promise<Tenant> {
   const { data, response } = await client.POST("/api/v1/tenants", {
-    params: { header: { "Idempotency-Key": key() } },
+    params: { header: { "Idempotency-Key": idempotencyKey() } },
     body: { slug, name },
   });
   if (!response.ok || !data) throw new Error("创建租户失败");
@@ -102,7 +102,7 @@ export async function createGroup(
   tenantIds: string[],
 ): Promise<TenantGroup> {
   const { data, response } = await client.POST("/api/v1/tenant-groups", {
-    params: { header: { "Idempotency-Key": key() } },
+    params: { header: { "Idempotency-Key": idempotencyKey() } },
     body: { name, tenant_ids: tenantIds },
   });
   if (!response.ok || !data) throw new Error("创建 Tenant Group 失败");
@@ -125,7 +125,10 @@ export async function assignRole(
     {
       params: {
         path: { user_id: userId, role },
-        header: { "Idempotency-Key": key(), "If-Match": `"${version}"` },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"${version}"`,
+        },
       },
     },
   );
@@ -153,7 +156,7 @@ export async function createAgentApplication(
     {
       params: {
         path: { tenant_id: tenantId },
-        header: { "Idempotency-Key": key() },
+        header: { "Idempotency-Key": idempotencyKey() },
       },
       body: payload,
     },
@@ -176,7 +179,7 @@ export async function updateAgentApplication(
           application_id: application.id,
         },
         header: {
-          "Idempotency-Key": key(),
+          "Idempotency-Key": idempotencyKey(),
           "If-Match": `"${application.version}"`,
         },
       },
@@ -200,7 +203,7 @@ export async function deleteAgentApplication(
           application_id: application.id,
         },
         header: {
-          "Idempotency-Key": key(),
+          "Idempotency-Key": idempotencyKey(),
           "If-Match": `"${application.version}"`,
         },
       },
@@ -235,7 +238,7 @@ export async function createAgentDraft(
     {
       params: {
         path: { tenant_id: tenantId, application_id: applicationId },
-        header: { "Idempotency-Key": key() },
+        header: { "Idempotency-Key": idempotencyKey() },
       },
       body: payload,
     },
@@ -257,7 +260,10 @@ export async function updateAgentDraft(
           tenant_id: draft.tenant_id,
           application_id: draft.application_id,
         },
-        header: { "Idempotency-Key": key(), "If-Match": `"${draft.version}"` },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"${draft.version}"`,
+        },
       },
       body: payload,
     },
@@ -276,7 +282,10 @@ export async function deleteAgentDraft(draft: AgentDraft): Promise<void> {
           tenant_id: draft.tenant_id,
           application_id: draft.application_id,
         },
-        header: { "Idempotency-Key": key(), "If-Match": `"${draft.version}"` },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"${draft.version}"`,
+        },
       },
     },
   );
@@ -294,7 +303,10 @@ export async function validateAgentDraft(
           tenant_id: draft.tenant_id,
           application_id: draft.application_id,
         },
-        header: { "Idempotency-Key": key(), "If-Match": `"${draft.version}"` },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"${draft.version}"`,
+        },
       },
     },
   );

@@ -5,6 +5,7 @@ import os
 from uuid import uuid4
 
 import asyncpg
+import pytest
 from fastapi.testclient import TestClient
 
 from trpc_service.admin_api.app import create_app
@@ -23,6 +24,8 @@ PASSWORD_HASH = (
     "$argon2id$v=19$m=65536,t=3,p=4$MRV7DB8RCvU73jcYXzxkUA$"
     "z7yjdKaXuCwuYoWzAqb25/+4f8tW5j3cxFm/pComAo4"
 )
+
+pytestmark = pytest.mark.integration
 
 
 async def _prepare_database() -> None:
@@ -354,6 +357,12 @@ def test_tenant_developer_is_confined_to_its_tenant_and_denials_are_audited() ->
             headers={**developer, "Idempotency-Key": str(uuid4())},
             json={"slug": "owned", "name": "Owned Agent"},
         )
+        own_draft_url = f"/api/v1/tenants/{tenant_a}/agent-applications/{own.json()['id']}/draft"
+        own_draft = client.put(
+            own_draft_url,
+            headers={**developer, "Idempotency-Key": str(uuid4())},
+            json={"instructions": "Stay within the tenant.", "model_alias": "balanced"},
+        )
         own_listing = client.get(
             f"/api/v1/tenants/{tenant_a}/agent-applications", headers=developer
         )
@@ -365,12 +374,53 @@ def test_tenant_developer_is_confined_to_its_tenant_and_denials_are_audited() ->
             headers={**developer, "Idempotency-Key": str(uuid4())},
             json={"slug": "intruder", "name": "Intruder Agent"},
         )
+        foreign_draft_url = (
+            f"/api/v1/tenants/{tenant_b}/agent-applications/{own.json()['id']}/draft"
+        )
+        foreign_draft_responses = {
+            "agent_draft.get": client.get(foreign_draft_url, headers=developer),
+            "agent_draft.create": client.put(
+                foreign_draft_url,
+                headers={**developer, "Idempotency-Key": str(uuid4())},
+                json={"instructions": "Intrude.", "model_alias": "balanced"},
+            ),
+            "agent_draft.update": client.patch(
+                foreign_draft_url,
+                headers={
+                    **developer,
+                    "Idempotency-Key": str(uuid4()),
+                    "If-Match": '"1"',
+                },
+                json={"instructions": "Intrude again."},
+            ),
+            "agent_draft.delete": client.delete(
+                foreign_draft_url,
+                headers={
+                    **developer,
+                    "Idempotency-Key": str(uuid4()),
+                    "If-Match": '"1"',
+                },
+            ),
+            "agent_draft.validate": client.post(
+                f"{foreign_draft_url}/validate",
+                headers={
+                    **developer,
+                    "Idempotency-Key": str(uuid4()),
+                    "If-Match": '"1"',
+                },
+            ),
+        }
 
         assert own.status_code == 201
+        assert own_draft.status_code == 201
         assert [item["id"] for item in own_listing.json()["items"]] == [own.json()["id"]]
         assert foreign_listing.status_code == foreign_create.status_code == 403
         assert foreign_listing.json()["error"]["code"] == "FORBIDDEN"
         assert foreign_create.json()["error"]["code"] == "FORBIDDEN"
+        assert {
+            action: (response.status_code, response.json()["error"]["code"])
+            for action, response in foreign_draft_responses.items()
+        } == {action: (403, "FORBIDDEN") for action in foreign_draft_responses}
 
         audit = client.get("/api/v1/audit-events", params={"tenant_id": tenant_b})
         assert {
@@ -378,6 +428,58 @@ def test_tenant_developer_is_confined_to_its_tenant_and_denials_are_audited() ->
             for event in audit.json()["items"]
             if event["decision"] == "DENY" and event["actor"] == developer_id
         } >= {"agent_application.list", "agent_application.create"}
+        assert {
+            event["action"]
+            for event in audit.json()["items"]
+            if event["decision"] == "DENY" and event["actor"] == developer_id
+        } >= set(foreign_draft_responses)
+
+
+def test_unknown_tenant_is_denied_without_breaking_the_public_error_contract() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        own_tenant = _login_and_create_tenant(client)
+        token, developer_id = asyncio.run(_seed_tenant_developer(own_tenant))
+        missing_tenant = str(uuid4())
+
+        response = client.get(
+            f"/api/v1/tenants/{missing_tenant}/agent-applications",
+            headers={"Authorization": f"Bearer {token}"},
+        )
+
+        assert response.status_code == 403
+        assert response.json()["error"]["code"] == "FORBIDDEN"
+        audit = client.get("/api/v1/audit-events")
+        denied = next(
+            event
+            for event in audit.json()["items"]
+            if event["decision"] == "DENY" and event["actor"] == developer_id
+        )
+        assert denied["tenant_id"] is None
+        assert denied["details"]["requested_tenant_id"] == missing_tenant
+
+
+def test_draft_reference_items_are_bounded_at_the_public_api() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        tenant_id = _login_and_create_tenant(client)
+        application = client.post(
+            f"/api/v1/tenants/{tenant_id}/agent-applications",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"slug": "bounded", "name": "Bounded Draft"},
+        ).json()
+
+        response = client.put(
+            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/draft",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "tool_aliases": ["t" * 129],
+                "knowledge_refs": ["k" * 129],
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_agent_openapi_contract_declares_stable_errors_and_version_preconditions() -> None:
