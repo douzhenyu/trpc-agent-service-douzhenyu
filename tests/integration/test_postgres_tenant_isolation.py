@@ -137,6 +137,29 @@ async def _exercise_isolation() -> None:
             await app.execute("SELECT set_config('app.user_id',$1,true)", str(user_id))
             visible = await app.fetch("SELECT tenant_id FROM tenant.member ORDER BY tenant_id")
             assert [row["tenant_id"] for row in visible] == [tenant_a]
+            assert (
+                await app.execute(
+                    "UPDATE tenant.member SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+                    tenant_a,
+                    member_id,
+                )
+                == "UPDATE 0"
+            )
+            assert (
+                await app.execute(
+                    "DELETE FROM tenant.member WHERE tenant_id=$1 AND id=$2",
+                    tenant_a,
+                    member_id,
+                )
+                == "DELETE 0"
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await app.execute(
+                    "INSERT INTO tenant.member (tenant_id,id,user_id) VALUES ($1,$2,$3)",
+                    tenant_a,
+                    uuid4(),
+                    user_id,
+                )
 
         async with app.transaction():
             await app.execute("SELECT set_config('app.user_id',$1,true)", str(uuid4()))
