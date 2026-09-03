@@ -58,7 +58,7 @@ def test_each_unit_has_production_health_scaling_and_scheduling_policy() -> None
     resources = {
         (
             manifest["kind"],
-            manifest["metadata"]["labels"].get("app.kubernetes.io/component"),
+            manifest["metadata"].get("labels", {}).get("app.kubernetes.io/component"),
         ): manifest
         for manifest in manifests
     }
@@ -88,6 +88,7 @@ def test_each_unit_has_production_health_scaling_and_scheduling_policy() -> None
         assert zone_constraint["minDomains"] == 3
 
         hpa = resources[("HorizontalPodAutoscaler", unit)]
+        assert hpa["metadata"]["annotations"] == {"argocd.argoproj.io/sync-wave": "2"}
         assert hpa["spec"]["scaleTargetRef"] == {
             "apiVersion": ("argoproj.io/v1alpha1" if expected_kind == "Rollout" else "apps/v1"),
             "kind": expected_kind,
@@ -97,6 +98,7 @@ def test_each_unit_has_production_health_scaling_and_scheduling_policy() -> None
         assert hpa["spec"]["maxReplicas"] > hpa["spec"]["minReplicas"]
 
         pdb = resources[("PodDisruptionBudget", unit)]
+        assert pdb["metadata"]["annotations"] == {"argocd.argoproj.io/sync-wave": "2"}
         assert pdb["spec"]["maxUnavailable"] == 1
 
 
@@ -172,8 +174,8 @@ def test_rollouts_gate_canaries_on_health_and_keep_rollback_history() -> None:
     resources = {
         (
             manifest["kind"],
-            manifest["metadata"]["labels"].get("app.kubernetes.io/component"),
-            manifest["metadata"]["labels"].get("app.kubernetes.io/service-role", ""),
+            manifest["metadata"].get("labels", {}).get("app.kubernetes.io/component"),
+            manifest["metadata"].get("labels", {}).get("app.kubernetes.io/service-role", ""),
         ): manifest
         for manifest in manifests
     }
@@ -238,15 +240,20 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         }
 
         policy_spec = network_policy["spec"]
-        assert policy_spec["podSelector"]["matchLabels"]["app.kubernetes.io/component"] == unit
+        assert policy_spec["podSelector"]["matchLabels"] == {
+            "trpc-agent-platform.io/network-profile": unit
+        }
+        assert (
+            workload["spec"]["template"]["metadata"]["labels"][
+                "trpc-agent-platform.io/network-profile"
+            ]
+            == unit
+        )
         assert policy_spec["policyTypes"] == ["Ingress", "Egress"]
         assert any(
-            peer.get("namespaceSelector", {})
-            .get("matchLabels", {})
-            .get("kubernetes.io/metadata.name")
-            == "argo-rollouts"
+            port == {"port": 15008, "protocol": "TCP"}
             for rule in policy_spec["ingress"]
-            for peer in rule["from"]
+            for port in rule.get("ports", [])
         )
         assert any(
             port == {"port": 53, "protocol": "UDP"}
@@ -255,7 +262,7 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         )
 
 
-def test_chart_owns_namespace_resource_governance_and_a_presync_migration_job() -> None:
+def test_chart_owns_namespace_resource_governance_and_a_sync_migration_job() -> None:
     manifests = render_chart()
 
     quotas = [manifest for manifest in manifests if manifest["kind"] == "ResourceQuota"]
@@ -272,8 +279,9 @@ def test_chart_owns_namespace_resource_governance_and_a_presync_migration_job() 
     assert len(jobs) == 1
     job = jobs[0]
     assert job["metadata"]["annotations"] == {
-        "argocd.argoproj.io/hook": "PreSync",
+        "argocd.argoproj.io/hook": "Sync",
         "argocd.argoproj.io/hook-delete-policy": "BeforeHookCreation,HookSucceeded",
+        "argocd.argoproj.io/sync-wave": "0",
     }
     assert job["spec"]["backoffLimit"] == 1
     migration_container = job["spec"]["template"]["spec"]["containers"][0]

@@ -9,6 +9,10 @@ kind: Deployment
 {{- end }}
 metadata:
   name: {{ include "trpc-agent-platform.fullname" $ }}-{{ $name }}
+{{- if $.Values.zeroTrust.enabled }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+{{- end }}
   labels:
     app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
@@ -48,8 +52,9 @@ spec:
         app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
         app.kubernetes.io/instance: {{ $.Release.Name }}
         app.kubernetes.io/component: {{ $name }}
+        trpc-agent-platform.io/network-profile: {{ $name }}
     spec:
-      serviceAccountName: {{ include "trpc-agent-platform.fullname" $ }}-{{ $name }}
+      serviceAccountName: {{ $name }}
       automountServiceAccountToken: false
       terminationGracePeriodSeconds: 30
       securityContext:

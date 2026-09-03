@@ -1,0 +1,115 @@
+{{- if and .Values.zeroTrust.enabled .Values.zeroTrust.sharedResources }}
+apiVersion: security.istio.io/v1
+kind: PeerAuthentication
+metadata:
+  name: platform-strict-mtls
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  mtls:
+    mode: STRICT
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: {{ .Values.zeroTrust.waypointName }}
+  labels:
+    istio.io/waypoint-for: service
+  annotations:
+    argocd.argoproj.io/sync-wave: "-4"
+spec:
+  gatewayClassName: istio-waypoint
+  listeners:
+    - name: mesh
+      port: 15008
+      protocol: HBONE
+      allowedRoutes:
+        namespaces:
+          from: Same
+{{- end }}
+{{- if .Values.zeroTrust.enabled }}
+---
+{{- range $name, $component := .Values.components }}
+{{- if $component.enabled }}
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $name }}-require-waypoint
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: {{ $name }}
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            principals:
+              - {{ printf "%s/ns/%s/sa/%s" $.Values.zeroTrust.trustDomain $.Release.Namespace $.Values.zeroTrust.waypointName }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $name }}-allow-declared-calls
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  targetRefs:
+{{- if eq $component.workloadKind "Rollout" }}
+    - group: ""
+      kind: Service
+      name: {{ $name }}-stable
+    - group: ""
+      kind: Service
+      name: {{ $name }}-canary
+{{- else }}
+    - group: ""
+      kind: Service
+      name: {{ $name }}
+{{- end }}
+  action: ALLOW
+  rules:
+{{- range $call := $component.authorization.allowedCalls }}
+    - from:
+        - source:
+            serviceAccounts:
+              - {{ printf "%s/%s" (default $.Release.Namespace $call.namespace) $call.serviceAccount }}
+      to:
+        - operation:
+            methods:
+{{ toYaml $call.methods | indent 14 }}
+            paths:
+{{ toYaml $call.paths | indent 14 }}
+{{- end }}
+---
+apiVersion: security.istio.io/v1
+kind: AuthorizationPolicy
+metadata:
+  name: {{ $name }}-deny-unsigned-tenant-context
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  targetRefs:
+{{- if eq $component.workloadKind "Rollout" }}
+    - group: ""
+      kind: Service
+      name: {{ $name }}-stable
+    - group: ""
+      kind: Service
+      name: {{ $name }}-canary
+{{- else }}
+    - group: ""
+      kind: Service
+      name: {{ $name }}
+{{- end }}
+  action: DENY
+  rules:
+    - when:
+        - key: request.headers[x-tenant-id]
+          values:
+            - "*"
+---
+{{- end }}
+{{- end }}
+{{- end }}

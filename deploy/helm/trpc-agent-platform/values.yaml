@@ -30,6 +30,21 @@ migration:
   enabled: true
   component: admin-api
 
+zeroTrust:
+  enabled: true
+  sharedResources: true
+  trustDomain: cluster.local
+  waypointName: platform-waypoint
+  controlPlane:
+    namespace: istio-system
+    xdsPort: 15012
+  healthProbePort: 15021
+  egressGateway:
+    namespace: istio-egress
+    podLabels:
+      istio: egressgateway
+    port: 15008
+
 components:
   admin-api:
     enabled: true
@@ -43,6 +58,11 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    authorization:
+      allowedCalls:
+        - serviceAccount: web-console
+          methods: [GET]
+          paths: [/api/v1/health]
   web-console:
     enabled: true
     workloadKind: Deployment
@@ -55,6 +75,15 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-web-console
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    authorization:
+      allowedCalls:
+        - namespace: istio-ingress
+          serviceAccount: istio-ingress
+          methods: [GET, HEAD]
+          paths: ["/*"]
+    outboundDependencies:
+      - component: admin-api
+        port: 8000
   agent-gateway:
     enabled: true
     workloadKind: Rollout
@@ -67,6 +96,16 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    authorization:
+      allowedCalls:
+        - namespace: istio-ingress
+          serviceAccount: istio-ingress
+          methods: [GET]
+          paths: [/health/live, /health/ready]
+        - namespace: argo-rollouts
+          serviceAccount: argo-rollouts
+          methods: [GET]
+          paths: [/health/ready]
   channel-gateway:
     enabled: true
     workloadKind: Rollout
@@ -79,6 +118,16 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    authorization:
+      allowedCalls:
+        - namespace: istio-ingress
+          serviceAccount: istio-ingress
+          methods: [GET]
+          paths: [/health/live, /health/ready]
+        - namespace: argo-rollouts
+          serviceAccount: argo-rollouts
+          methods: [GET]
+          paths: [/health/ready]
   agent-worker:
     enabled: true
     workloadKind: Rollout
@@ -91,6 +140,12 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    authorization:
+      allowedCalls:
+        - namespace: argo-rollouts
+          serviceAccount: argo-rollouts
+          methods: [GET]
+          paths: [/health/ready]
   job-worker:
     enabled: true
     workloadKind: Rollout
@@ -103,3 +158,9 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    authorization:
+      allowedCalls:
+        - namespace: argo-rollouts
+          serviceAccount: argo-rollouts
+          methods: [GET]
+          paths: [/health/ready]

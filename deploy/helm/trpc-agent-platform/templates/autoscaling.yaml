@@ -4,6 +4,8 @@ apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
   name: {{ include "trpc-agent-platform.fullname" $ }}-{{ $name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
   labels:
     app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
