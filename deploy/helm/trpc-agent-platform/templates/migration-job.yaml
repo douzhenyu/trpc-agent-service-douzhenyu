@@ -57,6 +57,11 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.migration.databaseSecretName }}
                   key: {{ .Values.migration.databaseSecretKey }}
+            - name: DATABASE_APP_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.databaseSecretName }}
+                  key: {{ .Values.migration.appPasswordSecretKey }}
           resources:
 {{ toYaml .Values.global.resources | indent 12 }}
           securityContext:

@@ -91,6 +91,8 @@ spec:
               value: 1s
             - name: global.rollout.analysisCount
               value: "1"
+            - name: database.direct.enabled
+              value: "true"
             - name: components.{{unit}}.image.repository
               value: "{{image}}"
             - name: components.{{unit}}.image.digest

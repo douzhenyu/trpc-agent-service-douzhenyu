@@ -19,11 +19,10 @@ APP_URL = os.getenv(
 
 
 async def _exercise_isolation() -> None:
-    await apply_migrations(ADMIN_URL)
+    await apply_migrations(ADMIN_URL, "app-password")
     admin = await asyncpg.connect(ADMIN_URL)
     tenant_a, tenant_b, user_id, member_id = uuid4(), uuid4(), uuid4(), uuid4()
     try:
-        await admin.execute("ALTER ROLE trpc_platform_app LOGIN PASSWORD 'app-password'")
         await admin.execute(
             "TRUNCATE tenant.member_role, tenant.member, platform.platform_user, "
             "platform.audit_event, platform.tenant CASCADE"

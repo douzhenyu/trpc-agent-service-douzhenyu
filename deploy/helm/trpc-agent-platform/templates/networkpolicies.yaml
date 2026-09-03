@@ -45,6 +45,24 @@ spec:
       ports:
         - port: {{ .Values.zeroTrust.egressGateway.port }}
           protocol: TCP
+{{- if .Values.database.direct.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+{{ toYaml .Values.database.direct.podLabels | indent 14 }}
+      ports:
+        - port: {{ .Values.database.direct.port }}
+          protocol: TCP
+        - port: 15008
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: {{ .Values.zeroTrust.waypointName }}
+      ports:
+        - port: 15008
+          protocol: TCP
+{{- end }}
 ---
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
@@ -98,6 +116,15 @@ spec:
       ports:
         - port: 15008
           protocol: TCP
+{{- if .Values.database.direct.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+{{ toYaml .Values.database.direct.podLabels | indent 14 }}
+      ports:
+        - port: 15008
+          protocol: TCP
+{{- end }}
 ---
 {{- end }}
 {{- range $name, $component := .Values.components }}
@@ -163,6 +190,24 @@ spec:
         - port: 53
           protocol: TCP
 {{- if $.Values.zeroTrust.enabled }}
+{{- if and (eq $name "admin-api") $.Values.database.direct.enabled }}
+    - to:
+        - podSelector:
+            matchLabels:
+{{ toYaml $.Values.database.direct.podLabels | indent 14 }}
+      ports:
+        - port: {{ $.Values.database.direct.port }}
+          protocol: TCP
+        - port: 15008
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: {{ $.Values.zeroTrust.waypointName }}
+      ports:
+        - port: 15008
+          protocol: TCP
+{{- end }}
 {{- if $component.outboundDependencies }}
     - to:
         - podSelector:

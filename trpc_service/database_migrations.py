@@ -4,8 +4,14 @@ from __future__ import annotations
 
 import json
 import os
+from pathlib import Path
 
-import asyncpg
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import create_async_engine
+
+from trpc_service.admin_api.database import sqlalchemy_url
 
 MIGRATION = r"""
 DO $$ BEGIN
@@ -73,6 +79,16 @@ CREATE TABLE IF NOT EXISTS platform.audit_event (
   details jsonb NOT NULL DEFAULT '{}'::jsonb
 );
 
+CREATE TABLE IF NOT EXISTS platform.idempotency_record (
+  actor text NOT NULL,
+  key text NOT NULL,
+  operation text NOT NULL,
+  request_hash text NOT NULL,
+  response jsonb NOT NULL,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (actor, key)
+);
+
 CREATE TABLE IF NOT EXISTS tenant.member (
   tenant_id uuid NOT NULL REFERENCES platform.tenant(id) ON DELETE CASCADE,
   id uuid NOT NULL,
@@ -115,21 +131,41 @@ GRANT USAGE ON SCHEMA platform, tenant TO trpc_platform_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON
   platform.tenant, platform.tenant_group, platform.tenant_group_member,
   platform.platform_user, platform.platform_role_assignment,
+  platform.idempotency_record,
   tenant.member, tenant.member_role TO trpc_platform_app;
 REVOKE UPDATE, DELETE ON platform.audit_event FROM trpc_platform_app;
 GRANT SELECT, INSERT ON platform.audit_event TO trpc_platform_app;
 """
 
 
+def migration_statements() -> list[str]:
+    """Split the initial revision without breaking the role-creation DO block."""
+    block_end = "END $$;"
+    role_block, remaining = MIGRATION.split(block_end, maxsplit=1)
+    statements = [f"{role_block}{block_end}"]
+    statements.extend(statement for item in remaining.split(";") if (statement := item.strip()))
+    return statements
+
+
 async def apply_migrations(database_url: str, app_role_password: str | None = None) -> None:
-    connection = await asyncpg.connect(database_url)
-    try:
-        await connection.execute(MIGRATION)
-        if app_role_password:
-            quoted = await connection.fetchval("SELECT quote_literal($1)", app_role_password)
-            await connection.execute(f"ALTER ROLE trpc_platform_app LOGIN PASSWORD {quoted}")
-    finally:
-        await connection.close()
+    import asyncio
+
+    config = Config()
+    config.set_main_option("script_location", str(Path(__file__).with_name("migrations")))
+    config.set_main_option("sqlalchemy.url", sqlalchemy_url(database_url))
+    await asyncio.to_thread(command.upgrade, config, "head")
+    if app_role_password:
+        engine = create_async_engine(sqlalchemy_url(database_url))
+        try:
+            async with engine.begin() as connection:
+                quoted = await connection.scalar(
+                    text("SELECT quote_literal(:password)"), {"password": app_role_password}
+                )
+                await connection.exec_driver_sql(
+                    f"ALTER ROLE trpc_platform_app LOGIN PASSWORD {quoted}"
+                )
+        finally:
+            await engine.dispose()
 
 
 def main() -> None:

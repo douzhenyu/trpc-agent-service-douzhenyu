@@ -12,6 +12,7 @@ import yaml
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CHART_PATH = REPOSITORY_ROOT / "deploy" / "helm" / "trpc-agent-platform"
 APPLICATION_SET_PATH = REPOSITORY_ROOT / "deploy" / "gitops" / "production" / "applicationset.yaml"
+SMOKE_DATABASE_PATH = REPOSITORY_ROOT / "tests" / "deployment" / "fixtures" / "postgres-smoke.yaml"
 EXPECTED_UNITS = {
     "admin-api",
     "web-console",
@@ -118,7 +119,16 @@ def test_database_owner_and_application_credentials_are_separate_secrets() -> No
         {
             "name": "DATABASE_ADMIN_URL",
             "valueFrom": {"secretKeyRef": {"name": "trpc-platform-database-admin", "key": "url"}},
-        }
+        },
+        {
+            "name": "DATABASE_APP_PASSWORD",
+            "valueFrom": {
+                "secretKeyRef": {
+                    "name": "trpc-platform-database-admin",
+                    "key": "app-password",
+                }
+            },
+        },
     ]
     assert admin_container["env"] == [
         {
@@ -127,6 +137,75 @@ def test_database_owner_and_application_credentials_are_separate_secrets() -> No
         }
     ]
     assert admin_container["envFrom"] == [{"secretRef": {"name": "trpc-platform-admin-auth"}}]
+
+
+def test_smoke_database_fixture_satisfies_admin_api_first_install() -> None:
+    manifests = list(yaml.safe_load_all(SMOKE_DATABASE_PATH.read_text()))
+    resources = {(item["kind"], item["metadata"]["name"]): item for item in manifests}
+
+    assert ("Deployment", "smoke-postgres") in resources
+    assert ("Service", "smoke-postgres") in resources
+    database = resources[("Deployment", "smoke-postgres")]
+    assert database["metadata"]["labels"] == {"trpc-agent-platform.io/database": "true"}
+    container = database["spec"]["template"]["spec"]["containers"][0]
+    assert container["image"] == "local/trpc-agent-postgres:smoke"
+    assert container["imagePullPolicy"] == "Never"
+    database_policy = resources[("NetworkPolicy", "smoke-postgres")]
+    assert {"ports": [{"port": 15008, "protocol": "TCP"}]} in database_policy["spec"]["ingress"]
+    assert set(resources[("Secret", "trpc-platform-database-admin")]["stringData"]) == {
+        "url",
+        "app-password",
+    }
+    assert set(resources[("Secret", "trpc-platform-database-app")]["stringData"]) == {"url"}
+    assert {
+        "SESSION_SIGNING_KEY",
+        "OIDC_ENABLED",
+        "SESSION_COOKIE_SECURE",
+    } <= set(resources[("Secret", "trpc-platform-admin-auth")]["stringData"])
+
+
+def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
+    manifests = render_chart("--set", "database.direct.enabled=true")
+    policies = {
+        manifest["metadata"]["labels"].get("app.kubernetes.io/component"): manifest
+        for manifest in manifests
+        if manifest["kind"] == "NetworkPolicy"
+    }
+
+    expected_rule = {
+        "to": [{"podSelector": {"matchLabels": {"trpc-agent-platform.io/database": "true"}}}],
+        "ports": [
+            {"port": 5432, "protocol": "TCP"},
+            {"port": 15008, "protocol": "TCP"},
+        ],
+    }
+    assert expected_rule in policies["database-migration"]["spec"]["egress"]
+    assert expected_rule in policies["admin-api"]["spec"]["egress"]
+    assert expected_rule not in policies["web-console"]["spec"]["egress"]
+
+    waypoint_rule = {
+        "to": [
+            {
+                "podSelector": {
+                    "matchLabels": {"gateway.networking.k8s.io/gateway-name": "platform-waypoint"}
+                }
+            }
+        ],
+        "ports": [{"port": 15008, "protocol": "TCP"}],
+    }
+    assert waypoint_rule in policies["database-migration"]["spec"]["egress"]
+    assert waypoint_rule in policies["admin-api"]["spec"]["egress"]
+
+    waypoint = next(
+        manifest
+        for manifest in manifests
+        if manifest["kind"] == "NetworkPolicy"
+        and manifest["metadata"]["name"] == "platform-waypoint"
+    )
+    assert {
+        "to": [{"podSelector": {"matchLabels": {"trpc-agent-platform.io/database": "true"}}}],
+        "ports": [{"port": 15008, "protocol": "TCP"}],
+    } in waypoint["spec"]["egress"]
 
 
 def test_argo_cd_declares_each_unit_as_an_independent_helm_release() -> None:

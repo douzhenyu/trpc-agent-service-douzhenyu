@@ -186,6 +186,8 @@ export interface components {
         AuditEventList: {
             /** Items */
             items: components["schemas"]["AuditEventResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** AuditEventResponse */
         AuditEventResponse: {
@@ -267,6 +269,8 @@ export interface components {
         PlatformUserList: {
             /** Items */
             items: components["schemas"]["PlatformUserResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** PlatformUserResponse */
         PlatformUserResponse: {
@@ -309,16 +313,15 @@ export interface components {
         TenantGroupCreate: {
             /** Name */
             name: string;
-            /**
-             * Tenant Ids
-             * @default []
-             */
-            tenant_ids: string[];
+            /** Tenant Ids */
+            tenant_ids?: string[];
         };
         /** TenantGroupList */
         TenantGroupList: {
             /** Items */
             items: components["schemas"]["TenantGroupResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** TenantGroupResponse */
         TenantGroupResponse: {
@@ -338,6 +341,8 @@ export interface components {
         TenantList: {
             /** Items */
             items: components["schemas"]["TenantResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
         };
         /** TenantResponse */
         TenantResponse: {
@@ -387,6 +392,8 @@ export interface operations {
         parameters: {
             query?: {
                 tenant_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
             };
             header?: never;
             path?: never;
@@ -561,7 +568,10 @@ export interface operations {
     };
     list_users_api_v1_platform_users_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -575,6 +585,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PlatformUserList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -650,7 +669,10 @@ export interface operations {
     };
     list_groups_api_v1_tenant_groups_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -664,6 +686,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TenantGroupList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
@@ -705,7 +736,10 @@ export interface operations {
     };
     list_tenants_api_v1_tenants_get: {
         parameters: {
-            query?: never;
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
             header?: never;
             path?: never;
             cookie?: never;
@@ -719,6 +753,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TenantList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

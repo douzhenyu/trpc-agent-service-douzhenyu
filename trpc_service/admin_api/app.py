@@ -8,10 +8,10 @@ from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
 from uuid import UUID
 
-import asyncpg
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.responses import JSONResponse, RedirectResponse
+from sqlalchemy.exc import IntegrityError
 
 from trpc_service.admin_api.auth import (
     Principal,
@@ -22,7 +22,13 @@ from trpc_service.admin_api.auth import (
     require_role,
     verify_emergency_password,
 )
-from trpc_service.admin_api.database import Database, record_to_dict
+from trpc_service.admin_api.database import Connection, Database, record_to_dict
+from trpc_service.admin_api.idempotency import (
+    IdempotencyConflictError,
+    remember,
+    replay_for,
+)
+from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.schemas import (
     AuditEventList,
     EmergencyLoginRequest,
@@ -44,7 +50,7 @@ from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
 async def _insert_audit(
-    connection: asyncpg.Connection[Any],
+    connection: Connection,
     principal: Principal | None,
     action: str,
     decision: str,
@@ -57,7 +63,7 @@ async def _insert_audit(
     await connection.execute(
         """INSERT INTO platform.audit_event
             (id,tenant_id,actor,auth_method,action,decision,target_type,target_id,details)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9::jsonb)""",
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,CAST($9 AS jsonb))""",
         uuid7(),
         tenant_id,
         principal.subject if principal else "anonymous",
@@ -130,6 +136,20 @@ def create_app(
         )
         return JSONResponse(
             status_code=exc.status_code, content={"error": {"code": code, "message": detail}}
+        )
+
+    @application.exception_handler(IdempotencyConflictError)
+    async def idempotency_conflict(
+        _request: Request, _exc: IdempotencyConflictError
+    ) -> JSONResponse:
+        return JSONResponse(
+            status_code=409,
+            content={
+                "error": {
+                    "code": "IDEMPOTENCY_CONFLICT",
+                    "message": "idempotency key reused with a different request",
+                }
+            },
         )
 
     @application.get("/api/v1/health", response_model=HealthResponse, tags=["platform"])
@@ -227,12 +247,24 @@ def create_app(
         payload: TenantCreate,
         response: Response,
         principal: Annotated[Principal, Depends(principal_from_request)],
-        _key: Annotated[str, Header(alias="Idempotency-Key")],
+        key: Annotated[str, Header(alias="Idempotency-Key")],
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN")
         tenant_id = uuid7()
+        request_payload = payload.model_dump(mode="json")
         try:
             async with db.transaction() as connection:
+                replayed = await replay_for(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="tenant.create",
+                    payload=request_payload,
+                )
+                if replayed is not None:
+                    response.headers["Idempotency-Replayed"] = "true"
+                    response.headers["ETag"] = f'"{replayed["version"]}"'
+                    return replayed
                 row = await connection.fetchrow(
                     """INSERT INTO platform.tenant (id,slug,name) VALUES ($1,$2,$3)
                     RETURNING id,slug,name,status,version,created_at,updated_at""",
@@ -249,34 +281,69 @@ def create_app(
                     target_id=str(tenant_id),
                     tenant_id=tenant_id,
                 )
-        except asyncpg.UniqueViolationError as error:
+                assert row is not None
+                result = record_to_dict(row)
+                await remember(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="tenant.create",
+                    payload=request_payload,
+                    response=result,
+                )
+        except IntegrityError as error:
             raise HTTPException(status_code=409, detail="tenant slug already exists") from error
         response.headers["ETag"] = '"1"'
-        assert row is not None
-        return record_to_dict(row)
+        return result
 
     @application.get("/api/v1/tenants", response_model=TenantList)
     async def list_tenants(
         principal: Annotated[Principal, Depends(principal_from_request)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN", "PLATFORM_AUDITOR")
+        try:
+            cursor_id = decode_cursor(cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid cursor") from error
         async with db.transaction() as connection:
             rows = await connection.fetch(
                 """SELECT id,slug,name,status,version,created_at,updated_at
-                FROM platform.tenant ORDER BY created_at,id"""
+                FROM platform.tenant
+                WHERE (CAST($1 AS uuid) IS NULL OR id > $1)
+                ORDER BY id LIMIT $2""",
+                cursor_id,
+                limit + 1,
             )
-        return {"items": [record_to_dict(row) for row in rows]}
+        page = rows[:limit]
+        return {
+            "items": [record_to_dict(row) for row in page],
+            "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
+        }
 
     @application.post("/api/v1/tenant-groups", response_model=TenantGroupResponse, status_code=201)
     async def create_group(
         payload: TenantGroupCreate,
+        response: Response,
         principal: Annotated[Principal, Depends(principal_from_request)],
-        _key: Annotated[str, Header(alias="Idempotency-Key")],
+        key: Annotated[str, Header(alias="Idempotency-Key")],
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN")
         group_id = uuid7()
+        request_payload = payload.model_dump(mode="json")
         try:
             async with db.transaction() as connection:
+                replayed = await replay_for(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="tenant_group.create",
+                    payload=request_payload,
+                )
+                if replayed is not None:
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return replayed
                 row = await connection.fetchrow(
                     """INSERT INTO platform.tenant_group (id,name) VALUES ($1,$2)
                     RETURNING id,name,version""",
@@ -295,18 +362,33 @@ def create_app(
                     target_type="tenant_group",
                     target_id=str(group_id),
                 )
-        except asyncpg.IntegrityConstraintViolationError as error:
+                assert row is not None
+                result = {**record_to_dict(row), "tenant_ids": payload.tenant_ids}
+                await remember(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="tenant_group.create",
+                    payload=request_payload,
+                    response=result,
+                )
+        except IntegrityError as error:
             raise HTTPException(
                 status_code=409, detail="tenant group conflicts with existing data"
             ) from error
-        assert row is not None
-        return {**record_to_dict(row), "tenant_ids": payload.tenant_ids}
+        return result
 
     @application.get("/api/v1/tenant-groups", response_model=TenantGroupList)
     async def list_groups(
         principal: Annotated[Principal, Depends(principal_from_request)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN", "PLATFORM_AUDITOR")
+        try:
+            cursor_id = decode_cursor(cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid cursor") from error
         async with db.transaction() as connection:
             rows = await connection.fetch(
                 """SELECT g.id,g.name,g.version,
@@ -314,22 +396,41 @@ def create_app(
                   FILTER (WHERE m.tenant_id IS NOT NULL),'{}') tenant_ids
                 FROM platform.tenant_group g LEFT JOIN platform.tenant_group_member m
                   ON m.group_id=g.id
-                GROUP BY g.id ORDER BY g.name"""
+                WHERE (CAST($1 AS uuid) IS NULL OR g.id > $1)
+                GROUP BY g.id ORDER BY g.id LIMIT $2""",
+                cursor_id,
+                limit + 1,
             )
-        return {"items": [record_to_dict(row) for row in rows]}
+        page = rows[:limit]
+        return {
+            "items": [record_to_dict(row) for row in page],
+            "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
+        }
 
     @application.post(
         "/api/v1/platform-users", response_model=PlatformUserResponse, status_code=201
     )
     async def create_user(
         payload: PlatformUserCreate,
+        response: Response,
         principal: Annotated[Principal, Depends(principal_from_request)],
-        _key: Annotated[str, Header(alias="Idempotency-Key")],
+        key: Annotated[str, Header(alias="Idempotency-Key")],
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN")
         user_id = uuid7()
+        request_payload = payload.model_dump(mode="json")
         try:
             async with db.transaction() as connection:
+                replayed = await replay_for(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="platform_user.create",
+                    payload=request_payload,
+                )
+                if replayed is not None:
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return replayed
                 row = await connection.fetchrow(
                     """INSERT INTO platform.platform_user (id,issuer,subject,email,display_name)
                     VALUES ($1,$2,$3,$4,$5) RETURNING id,issuer,subject,email,display_name""",
@@ -347,12 +448,21 @@ def create_app(
                     target_type="platform_user",
                     target_id=str(user_id),
                 )
-        except asyncpg.UniqueViolationError as error:
+                assert row is not None
+                result = {**record_to_dict(row), "roles": []}
+                await remember(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="platform_user.create",
+                    payload=request_payload,
+                    response=result,
+                )
+        except IntegrityError as error:
             raise HTTPException(
                 status_code=409, detail="platform identity already exists"
             ) from error
-        assert row is not None
-        return {**record_to_dict(row), "roles": []}
+        return result
 
     @application.put(
         "/api/v1/platform-users/{user_id}/roles/{role}",
@@ -361,13 +471,25 @@ def create_app(
     async def assign_role(
         user_id: UUID,
         role: Literal["PLATFORM_ADMIN", "PLATFORM_AUDITOR"],
+        response: Response,
         principal: Annotated[Principal, Depends(principal_from_request)],
-        _key: Annotated[str, Header(alias="Idempotency-Key")],
+        key: Annotated[str, Header(alias="Idempotency-Key")],
     ) -> None:
         require_role(principal, "PLATFORM_ADMIN")
         validated_role = role
+        request_payload = {"user_id": str(user_id), "role": validated_role}
         try:
             async with db.transaction() as connection:
+                replayed = await replay_for(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="platform_role.assign",
+                    payload=request_payload,
+                )
+                if replayed is not None:
+                    response.headers["Idempotency-Replayed"] = "true"
+                    return
                 await connection.execute(
                     """INSERT INTO platform.platform_role_assignment (user_id,role)
                     VALUES ($1,$2) ON CONFLICT DO NOTHING""",
@@ -383,39 +505,73 @@ def create_app(
                     target_id=str(user_id),
                     details={"role": validated_role},
                 )
-        except asyncpg.ForeignKeyViolationError as error:
+                await remember(
+                    connection,
+                    actor=principal.subject,
+                    key=key,
+                    operation="platform_role.assign",
+                    payload=request_payload,
+                    response={},
+                )
+        except IntegrityError as error:
             raise HTTPException(status_code=404, detail="platform user not found") from error
 
     @application.get("/api/v1/platform-users", response_model=PlatformUserList)
     async def list_users(
         principal: Annotated[Principal, Depends(principal_from_request)],
+        limit: Annotated[int, Query(ge=1, le=100)] = 50,
+        cursor: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN", "PLATFORM_AUDITOR")
+        try:
+            cursor_id = decode_cursor(cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid cursor") from error
         async with db.transaction() as connection:
             rows = await connection.fetch(
                 """SELECT u.id,u.issuer,u.subject,u.email,u.display_name,
                 coalesce(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL),'{}') roles
                 FROM platform.platform_user u LEFT JOIN platform.platform_role_assignment r
                   ON r.user_id=u.id
-                GROUP BY u.id ORDER BY u.display_name"""
+                WHERE (CAST($1 AS uuid) IS NULL OR u.id > $1)
+                GROUP BY u.id ORDER BY u.id LIMIT $2""",
+                cursor_id,
+                limit + 1,
             )
-        return {"items": [record_to_dict(row) for row in rows]}
+        page = rows[:limit]
+        return {
+            "items": [record_to_dict(row) for row in page],
+            "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
+        }
 
     @application.get("/api/v1/audit-events", response_model=AuditEventList)
     async def list_audit(
         principal: Annotated[Principal, Depends(principal_from_request)],
         tenant_id: Annotated[UUID | None, Query()] = None,
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        cursor: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
         require_role(principal, "PLATFORM_ADMIN", "PLATFORM_AUDITOR")
+        try:
+            cursor_id = decode_cursor(cursor)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail="invalid cursor") from error
         async with db.transaction() as connection:
             rows = await connection.fetch(
                 """SELECT id,occurred_at,tenant_id,actor,auth_method,action,decision,
                 target_type,target_id,details FROM platform.audit_event
-                WHERE ($1::uuid IS NULL OR tenant_id=$1)
-                ORDER BY occurred_at DESC,id DESC LIMIT 200""",
+                WHERE (CAST($1 AS uuid) IS NULL OR tenant_id=$1)
+                  AND (CAST($2 AS uuid) IS NULL OR id < $2)
+                ORDER BY id DESC LIMIT $3""",
                 tenant_id,
+                cursor_id,
+                limit + 1,
             )
-        return {"items": [record_to_dict(row) for row in rows]}
+        page = rows[:limit]
+        return {
+            "items": [record_to_dict(row) for row in page],
+            "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
+        }
 
     return application
 

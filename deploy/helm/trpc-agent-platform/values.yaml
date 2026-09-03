@@ -31,6 +31,14 @@ migration:
   component: admin-api
   databaseSecretName: trpc-platform-database-admin
   databaseSecretKey: url
+  appPasswordSecretKey: app-password
+
+database:
+  direct:
+    enabled: false
+    podLabels:
+      trpc-agent-platform.io/database: "true"
+    port: 5432
 
 adminApi:
   databaseSecretName: trpc-platform-database-app

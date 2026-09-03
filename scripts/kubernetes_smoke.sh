@@ -51,6 +51,11 @@ wait_for_application() {
   echo "Application ${application} did not sync (sync=${sync}, health=${health}, operation=${operation})" >&2
   kubectl --context "${cluster_context}" get applications -n argocd -o wide >&2
   kubectl --context "${cluster_context}" describe application "${application}" -n argocd >&2
+  kube get jobs,pods -n platform-smoke -o wide >&2 || true
+  kube describe jobs -n platform-smoke \
+    -l app.kubernetes.io/component=database-migration >&2 || true
+  kube logs -n platform-smoke \
+    -l app.kubernetes.io/component=database-migration --all-containers=true >&2 || true
   return 1
 }
 
@@ -146,12 +151,15 @@ docker build --quiet -t local/trpc-agent-platform:smoke -f Dockerfile.admin-api 
 docker build --quiet -t local/trpc-agent-web-console:smoke web-console
 docker build --quiet -t local/trpc-agent-git:smoke \
   -f tests/deployment/fixtures/git-server.Dockerfile .
+docker build --quiet -t local/trpc-agent-postgres:smoke \
+  -f tests/deployment/fixtures/postgres-smoke.Dockerfile .
 platform_digest="$(docker image inspect --format '{{.Id}}' local/trpc-agent-platform:smoke)"
 web_digest="$(docker image inspect --format '{{.Id}}' local/trpc-agent-web-console:smoke)"
 kind load docker-image --name "${cluster_name}" \
   local/trpc-agent-platform:smoke \
   local/trpc-agent-web-console:smoke \
-  local/trpc-agent-git:smoke
+  local/trpc-agent-git:smoke \
+  local/trpc-agent-postgres:smoke
 for node in $(kind get nodes --name "${cluster_name}"); do
   docker exec "${node}" ctr -n k8s.io images tag \
     docker.io/local/trpc-agent-platform:smoke \
@@ -187,6 +195,13 @@ if ! kube rollout status deployment/git-server -n smoke-system --timeout=120s; t
   kube describe deployment/git-server -n smoke-system >&2
   kube get pods -n smoke-system -o wide >&2
   kube logs deployment/git-server -n smoke-system >&2
+  exit 1
+fi
+kube apply -f tests/deployment/fixtures/postgres-smoke.yaml
+if ! kube rollout status deployment/smoke-postgres -n platform-smoke --timeout=120s; then
+  kube describe deployment/smoke-postgres -n platform-smoke >&2
+  kube get pods -n platform-smoke -o wide >&2
+  kube logs deployment/smoke-postgres -n platform-smoke >&2
   exit 1
 fi
 sed \

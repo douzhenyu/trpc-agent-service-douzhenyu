@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class HealthResponse(BaseModel):
@@ -46,11 +46,12 @@ class TenantResponse(BaseModel):
 
 class TenantList(BaseModel):
     items: list[TenantResponse]
+    next_cursor: str | None = None
 
 
 class TenantGroupCreate(BaseModel):
     name: str
-    tenant_ids: list[UUID] = []
+    tenant_ids: list[UUID] = Field(default_factory=list)
 
 
 class TenantGroupResponse(BaseModel):
@@ -62,6 +63,7 @@ class TenantGroupResponse(BaseModel):
 
 class TenantGroupList(BaseModel):
     items: list[TenantGroupResponse]
+    next_cursor: str | None = None
 
 
 class PlatformUserCreate(BaseModel):
@@ -82,6 +84,7 @@ class PlatformUserResponse(BaseModel):
 
 class PlatformUserList(BaseModel):
     items: list[PlatformUserResponse]
+    next_cursor: str | None = None
 
 
 class AuditEventResponse(BaseModel):
@@ -99,3 +102,4 @@ class AuditEventResponse(BaseModel):
 
 class AuditEventList(BaseModel):
     items: list[AuditEventResponse]
+    next_cursor: str | None = None

@@ -32,12 +32,12 @@ PASSWORD_HASH = (
 
 
 async def _prepare_database() -> None:
-    await apply_migrations(ADMIN_URL)
+    await apply_migrations(ADMIN_URL, "app-password")
     connection = await asyncpg.connect(ADMIN_URL)
     try:
-        await connection.execute("ALTER ROLE trpc_platform_app LOGIN PASSWORD 'app-password'")
         await connection.execute(
-            "TRUNCATE platform.audit_event, platform.platform_role_assignment, "
+            "TRUNCATE platform.idempotency_record, platform.audit_event, "
+            "platform.platform_role_assignment, "
             "platform.platform_user, platform.tenant_group_member, platform.tenant_group, "
             "tenant.member_role, tenant.member, platform.tenant CASCADE"
         )
@@ -98,6 +98,62 @@ def test_emergency_admin_can_manage_tenants_and_audit_is_visible() -> None:
             ("auth.emergency.login", "emergency"),
             ("tenant.create", "emergency"),
         }
+
+
+def test_tenant_create_replays_a_matching_idempotency_key_and_rejects_reuse() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        client.post(
+            "/api/v1/auth/emergency/session",
+            json={"username": "break-glass", "password": "correct-horse"},
+        )
+        headers = {"Idempotency-Key": str(uuid4())}
+        payload = {"slug": "idempotent", "name": "Idempotent Tenant"}
+
+        created = client.post("/api/v1/tenants", headers=headers, json=payload)
+        replayed = client.post("/api/v1/tenants", headers=headers, json=payload)
+        conflicting = client.post(
+            "/api/v1/tenants",
+            headers=headers,
+            json={"slug": "different", "name": "Different Tenant"},
+        )
+
+        assert created.status_code == replayed.status_code == 201
+        assert replayed.json() == created.json()
+        assert replayed.headers["Idempotency-Replayed"] == "true"
+        assert conflicting.status_code == 409
+        assert conflicting.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+        assert len(client.get("/api/v1/tenants").json()["items"]) == 1
+
+
+def test_tenant_list_uses_an_opaque_cursor() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        client.post(
+            "/api/v1/auth/emergency/session",
+            json={"username": "break-glass", "password": "correct-horse"},
+        )
+        for slug in ("cursor-a", "cursor-b"):
+            response = client.post(
+                "/api/v1/tenants",
+                headers={"Idempotency-Key": str(uuid4())},
+                json={"slug": slug, "name": slug},
+            )
+            assert response.status_code == 201
+
+        first_page = client.get("/api/v1/tenants", params={"limit": 1})
+        assert first_page.status_code == 200
+        assert len(first_page.json()["items"]) == 1
+        assert first_page.json()["next_cursor"]
+
+        second_page = client.get(
+            "/api/v1/tenants",
+            params={"limit": 1, "cursor": first_page.json()["next_cursor"]},
+        )
+        assert second_page.status_code == 200
+        assert len(second_page.json()["items"]) == 1
+        assert second_page.json()["items"][0]["id"] != first_page.json()["items"][0]["id"]
+        assert second_page.json()["next_cursor"] is None
 
 
 def test_admin_can_group_tenants_and_assign_platform_roles() -> None:
