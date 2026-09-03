@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
+from hashlib import sha256
 from time import monotonic
 from typing import Any, Protocol
 from uuid import UUID
@@ -28,6 +30,7 @@ _CLASSIFICATION_RANK = {
     DataClassification.CONFIDENTIAL: 2,
     DataClassification.RESTRICTED: 3,
 }
+_LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -50,6 +53,7 @@ class GatewayRequest:
     messages: list[dict[str, str]]
     data_classification: DataClassification
     region: str
+    allowed_fallback_aliases: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -57,6 +61,21 @@ class GatewayResult:
     model_alias: str
     fallback_used: bool
     completion: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class GatewayEvent:
+    tenant_id: str
+    model_alias: str
+    fallback_used: bool
+    outcome: str
+    error_code: str | None
+    request_content_hash: str
+    response_content_hash: str | None
+    latency_ms: int
+    input_tokens: int | None
+    output_tokens: int | None
+    cost_micros: int | None
 
 
 class ModelGatewayError(RuntimeError):
@@ -73,6 +92,27 @@ class ModelProfileResolver(Protocol):
 
 class SecretProvider(Protocol):
     async def resolve(self, secret_ref: str) -> str: ...
+
+
+class GatewayObserver(Protocol):
+    def record(self, event: GatewayEvent) -> None: ...
+
+
+class LoggingGatewayObserver:
+    """Default safe observability sink; never receives credentials or content bodies."""
+
+    def record(self, event: GatewayEvent) -> None:
+        _LOGGER.info("llm_gateway_event=%s", event)
+
+
+class InMemoryGatewayObserver:
+    """Test-only safe observability sink."""
+
+    def __init__(self) -> None:
+        self.events: list[GatewayEvent] = []
+
+    def record(self, event: GatewayEvent) -> None:
+        self.events.append(event)
 
 
 class InMemoryModelProfileResolver:
@@ -128,20 +168,26 @@ class LLMGateway:
         *,
         circuit_failure_threshold: int = 3,
         circuit_reset_seconds: float = 30,
+        observer: GatewayObserver | None = None,
     ) -> None:
         self._profiles = profiles
         self._secrets = secrets
         self._client = client
         self._circuit_failure_threshold = circuit_failure_threshold
         self._circuit_reset_seconds = circuit_reset_seconds
+        self._observer = observer or LoggingGatewayObserver()
         self._failures: dict[tuple[str, str], int] = defaultdict(int)
         self._opened_at: dict[tuple[str, str], float] = {}
         self._requests: dict[tuple[str, str], deque[float]] = defaultdict(deque)
 
     async def complete(self, request: GatewayRequest) -> GatewayResult:
+        started_at = monotonic()
+        request_content_hash = _content_hash(request.messages)
         attempted = False
         rate_limited = False
         circuit_open = False
+        last_failure_code: str | None = None
+        failure_recorded = False
         for profile in await self._candidate_profiles(request):
             if not self._allows(request, profile):
                 continue
@@ -155,23 +201,81 @@ class LLMGateway:
                 continue
             try:
                 credential = await self._secrets.resolve(profile.secret_ref)
+            except Exception:  # Secret backends must never leak implementation errors to callers.
+                last_failure_code = "SECRET_RESOLUTION_FAILED"
+                self._record_failure(key)
+                self._record_event(
+                    request,
+                    profile.alias,
+                    False,
+                    "FAILURE",
+                    last_failure_code,
+                    request_content_hash,
+                    None,
+                    started_at,
+                    None,
+                )
+                failure_recorded = True
+                continue
+            try:
                 completion = await self._provider_completion(profile, request.messages, credential)
             except (httpx.HTTPError, ModelGatewayError):
+                last_failure_code = "UPSTREAM_FAILURE"
                 self._record_failure(key)
+                self._record_event(
+                    request,
+                    profile.alias,
+                    False,
+                    "FAILURE",
+                    last_failure_code,
+                    request_content_hash,
+                    None,
+                    started_at,
+                    None,
+                )
+                failure_recorded = True
                 continue
             self._record_success(key)
-            return GatewayResult(
+            result = GatewayResult(
                 model_alias=profile.alias,
                 fallback_used=profile.alias != request.model_alias,
                 completion=completion,
             )
+            self._record_event(
+                request,
+                result.model_alias,
+                result.fallback_used,
+                "SUCCESS",
+                None,
+                request_content_hash,
+                _content_hash(completion),
+                started_at,
+                completion,
+            )
+            return result
         if not attempted:
-            raise ModelGatewayError("MODEL_POLICY_DENIED")
-        if rate_limited and not circuit_open:
-            raise ModelGatewayError("RATE_LIMITED")
-        if circuit_open and not rate_limited:
-            raise ModelGatewayError("CIRCUIT_OPEN")
-        raise ModelGatewayError("MODEL_UNAVAILABLE")
+            error = ModelGatewayError("MODEL_POLICY_DENIED")
+        elif rate_limited and not circuit_open:
+            error = ModelGatewayError("RATE_LIMITED")
+        elif circuit_open and not rate_limited:
+            error = ModelGatewayError("CIRCUIT_OPEN")
+        elif last_failure_code == "SECRET_RESOLUTION_FAILED":
+            error = ModelGatewayError(last_failure_code)
+        else:
+            error = ModelGatewayError("MODEL_UNAVAILABLE")
+        if not failure_recorded:
+            self._record_event(
+                request,
+                request.model_alias,
+                False,
+                "FAILURE",
+                error.code,
+                request_content_hash,
+                None,
+                started_at,
+                None,
+            )
+        raise error
 
     async def _candidate_profiles(self, request: GatewayRequest) -> list[ModelProfile]:
         aliases = [request.model_alias]
@@ -186,15 +290,50 @@ class LLMGateway:
             if profile is None:
                 continue
             profiles.append(profile)
-            aliases.extend(profile.fallback_aliases)
+            aliases.extend(
+                fallback
+                for fallback in profile.fallback_aliases
+                if fallback in request.allowed_fallback_aliases
+            )
         return profiles
 
     @staticmethod
     def _allows(request: GatewayRequest, profile: ModelProfile) -> bool:
         return (
-            request.region == profile.region
+            request.data_classification is not DataClassification.RESTRICTED
+            and request.region == profile.region
             and _CLASSIFICATION_RANK[request.data_classification]
             <= _CLASSIFICATION_RANK[profile.data_classification]
+        )
+
+    def _record_event(
+        self,
+        request: GatewayRequest,
+        model_alias: str,
+        fallback_used: bool,
+        outcome: str,
+        error_code: str | None,
+        request_content_hash: str,
+        response_content_hash: str | None,
+        started_at: float,
+        completion: Mapping[str, Any] | None,
+    ) -> None:
+        usage = completion.get("usage") if completion is not None else None
+        usage_mapping = usage if isinstance(usage, Mapping) else {}
+        self._observer.record(
+            GatewayEvent(
+                tenant_id=request.tenant_id,
+                model_alias=model_alias,
+                fallback_used=fallback_used,
+                outcome=outcome,
+                error_code=error_code,
+                request_content_hash=request_content_hash,
+                response_content_hash=response_content_hash,
+                latency_ms=int((monotonic() - started_at) * 1000),
+                input_tokens=_token_count(usage_mapping, "prompt_tokens", "input_tokens"),
+                output_tokens=_token_count(usage_mapping, "completion_tokens", "output_tokens"),
+                cost_micros=None,
+            )
         )
 
     def _circuit_open(self, key: tuple[str, str]) -> bool:
@@ -249,3 +388,48 @@ class LLMGateway:
         if not isinstance(payload, Mapping):
             raise ModelGatewayError("UPSTREAM_INVALID_RESPONSE")
         return dict(payload)
+
+
+class GatewayModel:
+    """Credential-free model adapter for Agent Worker runtime integration."""
+
+    def __init__(
+        self,
+        *,
+        gateway: LLMGateway,
+        tenant_id: str,
+        model_alias: str,
+        data_classification: DataClassification,
+        region: str,
+        allowed_fallback_aliases: frozenset[str] = frozenset(),
+    ) -> None:
+        self._gateway = gateway
+        self._tenant_id = tenant_id
+        self._model_alias = model_alias
+        self._data_classification = data_classification
+        self._region = region
+        self._allowed_fallback_aliases = allowed_fallback_aliases
+
+    async def complete(self, messages: list[dict[str, str]]) -> GatewayResult:
+        return await self._gateway.complete(
+            GatewayRequest(
+                tenant_id=self._tenant_id,
+                model_alias=self._model_alias,
+                messages=messages,
+                data_classification=self._data_classification,
+                region=self._region,
+                allowed_fallback_aliases=self._allowed_fallback_aliases,
+            )
+        )
+
+
+def _content_hash(content: object) -> str:
+    return sha256(repr(content).encode()).hexdigest()
+
+
+def _token_count(usage: Mapping[str, Any], *keys: str) -> int | None:
+    for key in keys:
+        value = usage.get(key)
+        if isinstance(value, int):
+            return value
+    return None

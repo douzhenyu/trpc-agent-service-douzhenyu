@@ -613,3 +613,24 @@ def test_tenant_admin_manages_model_profiles_without_exposing_secret_contents() 
             "model_profile.update",
         }
         assert secret_ref not in str(events)
+
+
+def test_model_profile_rejects_endpoint_credentials() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        tenant_id = _login_and_create_tenant(client)
+        response = client.post(
+            f"/api/v1/tenants/{tenant_id}/model-profiles",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "alias": "balanced",
+                "provider_model": "fake-balanced",
+                "endpoint_url": "https://provider-secret@example.test/v1/chat/completions?api_key=leak",
+                "secret_ref": f"vault://tenant/{tenant_id}/llm/openai#api_key",
+                "data_classification": "CONFIDENTIAL",
+                "region": "cn-north-1",
+            },
+        )
+
+        assert response.status_code == 422
+        assert response.json()["error"]["code"] == "VALIDATION_ERROR"

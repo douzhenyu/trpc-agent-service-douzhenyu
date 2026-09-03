@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 
 class HealthResponse(BaseModel):
@@ -87,7 +88,22 @@ SecretReference = Annotated[
         max_length=384,
     ),
 ]
-ModelEndpoint = Annotated[str, Field(pattern=r"^https?://[^\s]{1,480}$", max_length=512)]
+
+
+def _endpoint_without_credentials(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("endpoint_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("endpoint_url must not contain query or fragment data")
+    return value
+
+
+ModelEndpoint = Annotated[
+    str,
+    Field(pattern=r"^https?://[^\s]{1,480}$", max_length=512),
+    AfterValidator(_endpoint_without_credentials),
+]
 ModelRegion = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{1,62}$", max_length=63)]
 DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
 
