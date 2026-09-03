@@ -1,3 +1,73 @@
+{{- if and .Values.zeroTrust.enabled .Values.zeroTrust.sharedResources }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-workloads-default-deny
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-waypoint
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-3"
+spec:
+  podSelector:
+    matchLabels:
+      gateway.networking.k8s.io/gateway-name: {{ .Values.zeroTrust.waypointName }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - ports:
+        - port: 15008
+          protocol: TCP
+    - from:
+        - ipBlock:
+            cidr: 169.254.7.127/32
+        - ipBlock:
+            cidr: fd16:9254:7127:1337:ffff:ffff:ffff:ffff/128
+      ports:
+        - port: {{ .Values.zeroTrust.healthProbePort }}
+          protocol: TCP
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.zeroTrust.controlPlane.namespace }}
+      ports:
+        - port: {{ .Values.zeroTrust.controlPlane.xdsPort }}
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+      ports:
+        - port: 15008
+          protocol: TCP
+---
+{{- end }}
 {{- range $name, $component := .Values.components }}
 {{- if $component.enabled }}
 apiVersion: networking.k8s.io/v1
@@ -8,15 +78,34 @@ metadata:
     app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
     app.kubernetes.io/component: {{ $name }}
+{{- if $.Values.zeroTrust.enabled }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "-1"
+{{- end }}
 spec:
   podSelector:
     matchLabels:
-      app.kubernetes.io/instance: {{ $.Release.Name }}
-      app.kubernetes.io/component: {{ $name }}
+      trpc-agent-platform.io/network-profile: {{ $name }}
   policyTypes:
     - Ingress
     - Egress
   ingress:
+{{- if $.Values.zeroTrust.enabled }}
+    # Ambient transports authenticated workload traffic over HBONE. L4 network
+    # policy cannot identify a ServiceAccount; the paired Istio policy does.
+    - ports:
+        - port: 15008
+          protocol: TCP
+    # Ambient SNATs kubelet probes to fixed, non-routable link-local addresses.
+    - from:
+        - ipBlock:
+            cidr: 169.254.7.127/32
+        - ipBlock:
+            cidr: fd16:9254:7127:1337:ffff:ffff:ffff:ffff/128
+      ports:
+        - port: {{ $component.port }}
+          protocol: TCP
+{{- else }}
     - from:
         - podSelector:
             matchLabels:
@@ -30,6 +119,7 @@ spec:
       ports:
         - port: {{ $component.port }}
           protocol: TCP
+{{- end }}
   egress:
     - to:
         - namespaceSelector:
@@ -40,10 +130,32 @@ spec:
           protocol: UDP
         - port: 53
           protocol: TCP
+{{- if $.Values.zeroTrust.enabled }}
+{{- if $component.outboundDependencies }}
+    - to:
+        - podSelector:
+            matchLabels:
+              gateway.networking.k8s.io/gateway-name: {{ $.Values.zeroTrust.waypointName }}
+      ports:
+        - port: 15008
+          protocol: TCP
+{{- end }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.zeroTrust.egressGateway.namespace }}
+          podSelector:
+            matchLabels:
+{{ toYaml $.Values.zeroTrust.egressGateway.podLabels | indent 14 }}
+      ports:
+        - port: {{ $.Values.zeroTrust.egressGateway.port }}
+          protocol: TCP
+{{- else }}
     - to:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+{{- end }}
 ---
 {{- end }}
 {{- end }}

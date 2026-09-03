@@ -6,6 +6,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ $name }}-{{ $role }}
+{{- if $.Values.zeroTrust.enabled }}
+  annotations:
+    # A Service has no endpoints before its workload exists. Creating it early
+    # lets Istio accept targetRef policies before any Pod can receive traffic.
+    argocd.argoproj.io/sync-wave: "-3"
+{{- end }}
   labels:
     app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}
@@ -28,6 +34,12 @@ apiVersion: v1
 kind: Service
 metadata:
   name: {{ $name }}
+{{- if $.Values.zeroTrust.enabled }}
+  annotations:
+    # A Service has no endpoints before its workload exists. Creating it early
+    # lets Istio accept targetRef policies before any Pod can receive traffic.
+    argocd.argoproj.io/sync-wave: "-3"
+{{- end }}
   labels:
     app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
     app.kubernetes.io/instance: {{ $.Release.Name }}

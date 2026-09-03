@@ -57,6 +57,11 @@ spec:
         automated:
           prune: true
           selfHeal: true
+        managedNamespaceMetadata:
+          labels:
+            istio.io/dataplane-mode: ambient
+            istio.io/ingress-use-waypoint: "true"
+            istio.io/use-waypoint: platform-waypoint
         syncOptions:
           - CreateNamespace=true
           - ServerSideApply=true
