@@ -46,6 +46,9 @@ test("应急管理员可通过 Web Console 完成租户管理闭环", async ({
   await expect(page.getByText("Agent Draft 校验通过")).toBeVisible();
 
   await page.getByRole("button", { name: "删除 Agent Draft" }).click();
+  await expect(
+    page.getByRole("button", { name: "删除 Agent Draft" }),
+  ).toHaveCount(0);
   await page.getByRole("button", { name: "删除 Agent 应用" }).click();
   await expect(page.getByText(`Smoke Agent (${agentSlug})`)).toHaveCount(0);
 });
