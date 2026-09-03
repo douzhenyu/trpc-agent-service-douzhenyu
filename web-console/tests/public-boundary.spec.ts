@@ -30,6 +30,27 @@ test("应急管理员可通过 Web Console 完成租户管理闭环", async ({
   await page.getByLabel("租户名称").fill("Smoke Tenant");
   await page.getByRole("button", { name: "创建租户" }).click();
   await expect(page.getByText(`Smoke Tenant (${slug})`)).toBeVisible();
+
+  await page.getByRole("button", { name: "加载 Agent 应用" }).click();
+  const agentSlug = `agent-${Date.now()}`;
+  await page.getByLabel("Agent 应用标识").fill(agentSlug);
+  await page.getByLabel("Agent 应用名称").fill("Smoke Agent");
+  await page.getByRole("button", { name: "创建 Agent 应用" }).click();
+  await expect(page.getByText(`Smoke Agent (${agentSlug})`)).toBeVisible();
+
+  await page.getByLabel("Draft 指令").fill("Answer smoke-test questions.");
+  await page.getByLabel("模型别名").fill("balanced");
+  await page.getByRole("button", { name: "创建 Agent Draft" }).click();
+  await expect(page.getByText("Draft 版本 1 · 不承载生产流量")).toBeVisible();
+  await page.getByRole("button", { name: "校验 Agent Draft" }).click();
+  await expect(page.getByText("Agent Draft 校验通过")).toBeVisible();
+
+  await page.getByRole("button", { name: "删除 Agent Draft" }).click();
+  await expect(
+    page.getByRole("button", { name: "删除 Agent Draft" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "删除 Agent 应用" }).click();
+  await expect(page.getByText(`Smoke Agent (${agentSlug})`)).toHaveCount(0);
 });
 
 test("开发 Fake 可编排外部限流并恢复默认状态", async ({ request }) => {

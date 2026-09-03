@@ -57,13 +57,19 @@ async def _exercise_isolation() -> None:
             WHERE namespace.nspname='tenant' AND class.relkind='r'
             ORDER BY class.relname"""
         )
-        assert [row["relname"] for row in tenant_tables] == ["member", "member_role"]
+        assert [row["relname"] for row in tenant_tables] == [
+            "agent_application",
+            "agent_draft",
+            "member",
+            "member_role",
+        ]
         assert all(row["relrowsecurity"] and row["relforcerowsecurity"] for row in tenant_tables)
         assert all(row["owner"] != "trpc_platform_app" for row in tenant_tables)
     finally:
         await admin.close()
 
     app = await asyncpg.connect(APP_URL)
+    application_id = uuid4()
     try:
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             await app.execute(
@@ -88,6 +94,19 @@ async def _exercise_isolation() -> None:
                 uuid4(),
                 member_id,
             )
+            await app.execute(
+                """INSERT INTO tenant.agent_application (tenant_id,id,slug,name)
+                VALUES ($1,$2,'isolated-agent','Isolated Agent')""",
+                tenant_a,
+                application_id,
+            )
+            await app.execute(
+                """INSERT INTO tenant.agent_draft
+                (tenant_id,application_id,instructions,model_alias)
+                VALUES ($1,$2,'Answer safely.','balanced')""",
+                tenant_a,
+                application_id,
+            )
 
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             async with app.transaction():
@@ -103,6 +122,8 @@ async def _exercise_isolation() -> None:
             await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
             assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
+            assert await app.fetchval("SELECT count(*) FROM tenant.agent_application") == 0
+            assert await app.fetchval("SELECT count(*) FROM tenant.agent_draft") == 0
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await app.execute(
                     "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
@@ -110,6 +131,48 @@ async def _exercise_isolation() -> None:
                     tenant_a,
                     uuid4(),
                     member_id,
+                )
+
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.user_id',$1,true)", str(user_id))
+            visible = await app.fetch("SELECT tenant_id FROM tenant.member ORDER BY tenant_id")
+            assert [row["tenant_id"] for row in visible] == [tenant_a]
+            assert (
+                await app.execute(
+                    "UPDATE tenant.member SET version=version+1 WHERE tenant_id=$1 AND id=$2",
+                    tenant_a,
+                    member_id,
+                )
+                == "UPDATE 0"
+            )
+            assert (
+                await app.execute(
+                    "DELETE FROM tenant.member WHERE tenant_id=$1 AND id=$2",
+                    tenant_a,
+                    member_id,
+                )
+                == "DELETE 0"
+            )
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await app.execute(
+                    "INSERT INTO tenant.member (tenant_id,id,user_id) VALUES ($1,$2,$3)",
+                    tenant_a,
+                    uuid4(),
+                    user_id,
+                )
+
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.user_id',$1,true)", str(uuid4()))
+            assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
+
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await app.execute(
+                    """INSERT INTO tenant.agent_application (tenant_id,id,slug,name)
+                    VALUES ($1,$2,'cross-tenant','Cross Tenant')""",
+                    tenant_a,
+                    uuid4(),
                 )
 
         async with app.transaction():
@@ -123,8 +186,21 @@ async def _exercise_isolation() -> None:
                     member_id,
                 )
 
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
+            with pytest.raises(asyncpg.ForeignKeyViolationError):
+                await app.execute(
+                    """INSERT INTO tenant.agent_draft
+                    (tenant_id,application_id,instructions,model_alias)
+                    VALUES ($1,$2,'Cross tenant.','balanced')""",
+                    tenant_b,
+                    application_id,
+                )
+
         assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
+        assert await app.fetchval("SELECT count(*) FROM tenant.agent_application") == 0
+        assert await app.fetchval("SELECT count(*) FROM tenant.agent_draft") == 0
     finally:
         await app.close()
 

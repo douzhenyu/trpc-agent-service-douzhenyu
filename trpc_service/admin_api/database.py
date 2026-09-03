@@ -94,6 +94,12 @@ class Database:
             await connection.execute("SELECT set_config('app.tenant_id', $1, true)", str(tenant_id))
             yield connection
 
+    @asynccontextmanager
+    async def user_transaction(self, user_id: UUID) -> AsyncIterator[Connection]:
+        async with self.transaction() as connection:
+            await connection.execute("SELECT set_config('app.user_id', $1, true)", str(user_id))
+            yield connection
+
 
 def record_to_dict(record: Any) -> dict[str, Any]:
     return dict(record)

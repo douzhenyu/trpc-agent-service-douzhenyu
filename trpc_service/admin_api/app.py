@@ -14,6 +14,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.exc import IntegrityError
 
+from trpc_service.admin_api.agents import create_agent_router
 from trpc_service.admin_api.audit import insert_audit, write_audit
 from trpc_service.admin_api.auth import (
     Principal,
@@ -25,6 +26,7 @@ from trpc_service.admin_api.auth import (
     verify_emergency_password,
 )
 from trpc_service.admin_api.database import Database, record_to_dict
+from trpc_service.admin_api.http_contract import ETAG_HEADER, error_responses
 from trpc_service.admin_api.idempotency import (
     IdempotencyConflictError,
     remember,
@@ -41,7 +43,6 @@ from trpc_service.admin_api.roles import (
 from trpc_service.admin_api.schemas import (
     AuditEventList,
     EmergencyLoginRequest,
-    ErrorResponse,
     HealthResponse,
     PlatformUserCreate,
     PlatformUserList,
@@ -59,29 +60,6 @@ from trpc_service.ids import uuid7
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
-
-ERROR_RESPONSES: dict[int, dict[str, Any]] = {
-    400: {"model": ErrorResponse, "description": "Invalid request"},
-    401: {"model": ErrorResponse, "description": "Authentication failed"},
-    403: {"model": ErrorResponse, "description": "Authorization failed"},
-    404: {"model": ErrorResponse, "description": "Resource not found"},
-    409: {"model": ErrorResponse, "description": "Command conflict"},
-    412: {"model": ErrorResponse, "description": "Version precondition failed"},
-    422: {"model": ErrorResponse, "description": "Request validation failed"},
-    500: {"model": ErrorResponse, "description": "Internal error"},
-    502: {"model": ErrorResponse, "description": "Identity provider unavailable"},
-}
-
-ETAG_HEADER = {
-    "ETag": {
-        "description": "Quoted current resource version",
-        "schema": {"type": "string"},
-    }
-}
-
-
-def error_responses(*status_codes: int) -> dict[int | str, dict[str, Any]]:
-    return {status_code: ERROR_RESPONSES[status_code] for status_code in status_codes}
 
 
 def _set_session(response: Response, settings: AdminSettings, principal: Principal) -> None:
@@ -119,6 +97,7 @@ def create_app(
         responses=error_responses(500),
     )
     application.state.settings = configured
+    application.include_router(create_agent_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -342,19 +321,30 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         cursor: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
-        require_role(principal, "PLATFORM_ADMIN", "PLATFORM_AUDITOR")
         try:
             cursor_id = decode_cursor(cursor)
         except ValueError as error:
             raise HTTPException(status_code=400, detail="invalid cursor") from error
-        async with db.transaction() as connection:
+        platform_reader = bool(principal.roles.intersection({"PLATFORM_ADMIN", "PLATFORM_AUDITOR"}))
+        if not platform_reader and principal.auth_method != "oidc":
+            raise HTTPException(status_code=403, detail="insufficient role")
+        transaction = (
+            db.transaction() if platform_reader else db.user_transaction(UUID(principal.subject))
+        )
+        async with transaction as connection:
             rows = await connection.fetch(
                 """SELECT id,slug,name,status,version,created_at,updated_at
-                FROM platform.tenant
-                WHERE (CAST($1 AS uuid) IS NULL OR id > $1)
-                ORDER BY id LIMIT $2""",
+                FROM platform.tenant t
+                WHERE (CAST($1 AS uuid) IS NULL OR t.id > $1)
+                  AND (CAST($3 AS boolean) OR EXISTS (
+                    SELECT 1 FROM tenant.member m
+                    WHERE m.tenant_id=t.id AND m.user_id=$4
+                  ))
+                ORDER BY t.id LIMIT $2""",
                 cursor_id,
                 limit + 1,
+                platform_reader,
+                UUID(principal.subject) if principal.auth_method == "oidc" else None,
             )
         page = rows[:limit]
         return {
