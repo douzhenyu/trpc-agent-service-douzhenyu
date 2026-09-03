@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Annotated, Any, Literal
@@ -10,6 +11,7 @@ from uuid import UUID
 
 import httpx
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, RedirectResponse
 from sqlalchemy.exc import IntegrityError
 
@@ -29,9 +31,11 @@ from trpc_service.admin_api.idempotency import (
     replay_for,
 )
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
+from trpc_service.admin_api.preconditions import parse_if_match
 from trpc_service.admin_api.schemas import (
     AuditEventList,
     EmergencyLoginRequest,
+    ErrorResponse,
     HealthResponse,
     PlatformUserCreate,
     PlatformUserList,
@@ -47,6 +51,8 @@ from trpc_service.admin_api.schemas import (
 from trpc_service.admin_api.settings import AdminSettings
 from trpc_service.ids import uuid7
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
+
+LOGGER = logging.getLogger(__name__)
 
 
 async def _insert_audit(
@@ -115,6 +121,10 @@ def create_app(
         docs_url="/api/docs",
         openapi_url="/api/openapi.json",
         lifespan=lifespan,
+        responses={
+            422: {"model": ErrorResponse, "description": "Stable request validation error"},
+            500: {"model": ErrorResponse, "description": "Stable internal error"},
+        },
     )
     application.state.settings = configured
 
@@ -129,11 +139,11 @@ def create_app(
             412: "VERSION_MISMATCH",
         }
         detail = str(exc.detail)
-        code = (
-            "INVALID_CREDENTIALS"
-            if detail == "invalid credentials"
-            else codes.get(exc.status_code, "REQUEST_FAILED")
-        )
+        detail_codes = {
+            "invalid credentials": "INVALID_CREDENTIALS",
+            "identity provider unavailable": "IDENTITY_PROVIDER_UNAVAILABLE",
+        }
+        code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(
             status_code=exc.status_code, content={"error": {"code": code, "message": detail}}
         )
@@ -150,6 +160,24 @@ def create_app(
                     "message": "idempotency key reused with a different request",
                 }
             },
+        )
+
+    @application.exception_handler(RequestValidationError)
+    async def validation_error(_request: Request, _exc: RequestValidationError) -> JSONResponse:
+        return JSONResponse(
+            status_code=422,
+            content={"error": {"code": "VALIDATION_ERROR", "message": "request validation failed"}},
+        )
+
+    @application.exception_handler(Exception)
+    async def internal_error(_request: Request, exc: Exception) -> JSONResponse:
+        LOGGER.error(
+            "Unhandled Admin API exception",
+            exc_info=(type(exc), exc, exc.__traceback__),
+        )
+        return JSONResponse(
+            status_code=500,
+            content={"error": {"code": "INTERNAL_ERROR", "message": "internal server error"}},
         )
 
     @application.get("/api/v1/health", response_model=HealthResponse, tags=["platform"])
@@ -433,7 +461,8 @@ def create_app(
                     return replayed
                 row = await connection.fetchrow(
                     """INSERT INTO platform.platform_user (id,issuer,subject,email,display_name)
-                    VALUES ($1,$2,$3,$4,$5) RETURNING id,issuer,subject,email,display_name""",
+                    VALUES ($1,$2,$3,$4,$5)
+                    RETURNING id,issuer,subject,email,display_name,version""",
                     user_id,
                     payload.issuer,
                     payload.subject,
@@ -474,10 +503,19 @@ def create_app(
         response: Response,
         principal: Annotated[Principal, Depends(principal_from_request)],
         key: Annotated[str, Header(alias="Idempotency-Key")],
+        if_match: Annotated[str, Header(alias="If-Match")],
     ) -> None:
         require_role(principal, "PLATFORM_ADMIN")
         validated_role = role
-        request_payload = {"user_id": str(user_id), "role": validated_role}
+        try:
+            expected_version = parse_if_match(if_match)
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        request_payload = {
+            "user_id": str(user_id),
+            "role": validated_role,
+            "version": expected_version,
+        }
         try:
             async with db.transaction() as connection:
                 replayed = await replay_for(
@@ -489,10 +527,42 @@ def create_app(
                 )
                 if replayed is not None:
                     response.headers["Idempotency-Replayed"] = "true"
+                    response.headers["ETag"] = f'"{replayed["version"]}"'
                     return
+                current = await connection.fetchrow(
+                    """SELECT u.version,
+                    EXISTS(SELECT 1 FROM platform.platform_role_assignment r
+                      WHERE r.user_id=u.id AND r.role=$2) assigned
+                    FROM platform.platform_user u WHERE u.id=$1""",
+                    user_id,
+                    validated_role,
+                )
+                if current is None:
+                    raise HTTPException(status_code=404, detail="platform user not found")
+                if current["version"] != expected_version:
+                    raise HTTPException(status_code=412, detail="platform user version changed")
+                if current["assigned"]:
+                    response.headers["ETag"] = f'"{expected_version}"'
+                    await remember(
+                        connection,
+                        actor=principal.subject,
+                        key=key,
+                        operation="platform_role.assign",
+                        payload=request_payload,
+                        response={"version": expected_version},
+                    )
+                    return
+                updated = await connection.fetchval(
+                    """UPDATE platform.platform_user SET version=version+1,updated_at=now()
+                    WHERE id=$1 AND version=$2 RETURNING version""",
+                    user_id,
+                    expected_version,
+                )
+                if updated is None:
+                    raise HTTPException(status_code=412, detail="platform user version changed")
                 await connection.execute(
                     """INSERT INTO platform.platform_role_assignment (user_id,role)
-                    VALUES ($1,$2) ON CONFLICT DO NOTHING""",
+                    VALUES ($1,$2)""",
                     user_id,
                     validated_role,
                 )
@@ -511,8 +581,9 @@ def create_app(
                     key=key,
                     operation="platform_role.assign",
                     payload=request_payload,
-                    response={},
+                    response={"version": updated},
                 )
+                response.headers["ETag"] = f'"{updated}"'
         except IntegrityError as error:
             raise HTTPException(status_code=404, detail="platform user not found") from error
 
@@ -529,7 +600,7 @@ def create_app(
             raise HTTPException(status_code=400, detail="invalid cursor") from error
         async with db.transaction() as connection:
             rows = await connection.fetch(
-                """SELECT u.id,u.issuer,u.subject,u.email,u.display_name,
+                """SELECT u.id,u.issuer,u.subject,u.email,u.display_name,u.version,
                 coalesce(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL),'{}') roles
                 FROM platform.platform_user u LEFT JOIN platform.platform_role_assignment r
                   ON r.user_id=u.id

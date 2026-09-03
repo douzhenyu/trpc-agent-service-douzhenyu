@@ -79,7 +79,17 @@ class PlatformUserResponse(BaseModel):
     subject: str
     email: str | None
     display_name: str
+    version: int
     roles: list[str]
+
+
+class ErrorDetail(BaseModel):
+    code: str
+    message: str
+
+
+class ErrorResponse(BaseModel):
+    error: ErrorDetail
 
 
 class PlatformUserList(BaseModel):

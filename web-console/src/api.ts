@@ -83,13 +83,14 @@ export async function getUsers(): Promise<PlatformUser[]> {
 export async function assignRole(
   userId: string,
   role: "PLATFORM_ADMIN" | "PLATFORM_AUDITOR",
+  version: number,
 ): Promise<void> {
   const { response } = await client.PUT(
     "/api/v1/platform-users/{user_id}/roles/{role}",
     {
       params: {
         path: { user_id: userId, role },
-        header: { "Idempotency-Key": key() },
+        header: { "Idempotency-Key": key(), "If-Match": `"${version}"` },
       },
     },
   );

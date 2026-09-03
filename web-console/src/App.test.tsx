@@ -136,6 +136,7 @@ test("平台角色按钮调用公开 API 并刷新", async () => {
     subject: "alice",
     email: null,
     display_name: "Alice",
+    version: 1,
     roles: [],
   };
   const fetchMock = vi
@@ -148,6 +149,9 @@ test("平台角色按钮调用公开 API 并刷新", async () => {
   render(<App />);
   fireEvent.click(await screen.findByRole("button", { name: "授予管理员" }));
   await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(8));
+  const roleRequest = fetchMock.mock.calls[4]?.[0];
+  expect(roleRequest).toBeInstanceOf(Request);
+  expect((roleRequest as Request).headers.get("if-match")).toBe('"1"');
 });
 
 test("管理 API 不可用时显示错误", async () => {

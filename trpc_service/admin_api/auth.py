@@ -163,36 +163,46 @@ async def complete_oidc_flow(
     except (jwt.InvalidTokenError, KeyError) as error:
         raise HTTPException(status_code=400, detail="invalid oidc flow") from error
 
-    async with httpx.AsyncClient(transport=transport, timeout=10) as client:
-        token_response = await client.post(
-            settings.oidc_token_endpoint,
-            data={
-                "grant_type": "authorization_code",
-                "code": code,
-                "redirect_uri": settings.oidc_redirect_uri,
-                "client_id": settings.oidc_client_id,
-                "client_secret": settings.oidc_client_secret.get_secret_value(),
-                "code_verifier": flow["verifier"],
-            },
-        )
-        if token_response.status_code != 200:
-            raise HTTPException(status_code=401, detail="oidc code exchange failed")
-        id_token = token_response.json().get("id_token")
-        if not id_token:
-            raise HTTPException(status_code=401, detail="oidc id token missing")
-        jwks_response = await client.get(settings.oidc_jwks_uri)
-        jwks_response.raise_for_status()
-
-    header = jwt.get_unverified_header(id_token)
-    if header.get("alg") != "RS256" or not header.get("kid"):
-        raise HTTPException(status_code=401, detail="unsupported oidc signing key")
-    jwk = next(
-        (key for key in jwks_response.json().get("keys", []) if key.get("kid") == header["kid"]),
-        None,
-    )
-    if jwk is None:
-        raise HTTPException(status_code=401, detail="unknown oidc signing key")
     try:
+        async with httpx.AsyncClient(transport=transport, timeout=10) as client:
+            token_response = await client.post(
+                settings.oidc_token_endpoint,
+                data={
+                    "grant_type": "authorization_code",
+                    "code": code,
+                    "redirect_uri": settings.oidc_redirect_uri,
+                    "client_id": settings.oidc_client_id,
+                    "client_secret": settings.oidc_client_secret.get_secret_value(),
+                    "code_verifier": flow["verifier"],
+                },
+            )
+            if token_response.status_code != 200:
+                raise HTTPException(status_code=401, detail="oidc code exchange failed")
+            token_payload = token_response.json()
+            if not isinstance(token_payload, dict):
+                raise HTTPException(status_code=502, detail="identity provider unavailable")
+            id_token = token_payload.get("id_token")
+            if not id_token:
+                raise HTTPException(status_code=401, detail="oidc id token missing")
+            jwks_response = await client.get(settings.oidc_jwks_uri)
+            jwks_response.raise_for_status()
+            jwks = jwks_response.json()
+            if not isinstance(jwks, dict) or not isinstance(jwks.get("keys"), list):
+                raise HTTPException(status_code=502, detail="identity provider unavailable")
+            keys = jwks["keys"]
+    except (httpx.HTTPError, ValueError) as error:
+        raise HTTPException(status_code=502, detail="identity provider unavailable") from error
+
+    try:
+        header = jwt.get_unverified_header(id_token)
+        if header.get("alg") != "RS256" or not header.get("kid"):
+            raise HTTPException(status_code=401, detail="unsupported oidc signing key")
+        jwk = next(
+            (key for key in keys if isinstance(key, dict) and key.get("kid") == header["kid"]),
+            None,
+        )
+        if jwk is None:
+            raise HTTPException(status_code=401, detail="unknown oidc signing key")
         public_key = cast(Any, RSAAlgorithm.from_jwk(jwk))
         claims = jwt.decode(
             id_token,
@@ -206,3 +216,5 @@ async def complete_oidc_flow(
         return claims
     except jwt.InvalidTokenError as error:
         raise HTTPException(status_code=401, detail="invalid oidc id token") from error
+    except (TypeError, ValueError, jwt.PyJWTError) as error:
+        raise HTTPException(status_code=502, detail="identity provider unavailable") from error

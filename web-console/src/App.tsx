@@ -235,8 +235,8 @@ export default function App() {
                   </span>
                   <button
                     onClick={() =>
-                      assignRole(user.id, "PLATFORM_ADMIN").then(() =>
-                        load(state.session),
+                      assignRole(user.id, "PLATFORM_ADMIN", user.version).then(
+                        () => load(state.session),
                       )
                     }
                   >
@@ -244,9 +244,11 @@ export default function App() {
                   </button>
                   <button
                     onClick={() =>
-                      assignRole(user.id, "PLATFORM_AUDITOR").then(() =>
-                        load(state.session),
-                      )
+                      assignRole(
+                        user.id,
+                        "PLATFORM_AUDITOR",
+                        user.version,
+                      ).then(() => load(state.session))
                     }
                   >
                     授予审计员

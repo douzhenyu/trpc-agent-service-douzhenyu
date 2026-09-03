@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import os
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from urllib.parse import parse_qs, urlparse
 from uuid import uuid4
 
@@ -14,6 +16,7 @@ from fastapi.testclient import TestClient
 from jwt.algorithms import RSAAlgorithm
 
 from trpc_service.admin_api.app import create_app
+from trpc_service.admin_api.database import Connection, Database
 from trpc_service.admin_api.settings import AdminSettings
 from trpc_service.database_migrations import apply_migrations
 
@@ -97,6 +100,35 @@ def test_emergency_admin_can_manage_tenants_and_audit_is_visible() -> None:
         assert {(event["action"], event["auth_method"]) for event in audit.json()["items"]} >= {
             ("auth.emergency.login", "emergency"),
             ("tenant.create", "emergency"),
+        }
+
+
+def test_request_validation_and_unexpected_failures_use_the_stable_error_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        invalid = client.post(
+            "/api/v1/auth/emergency/session",
+            json={"username": "break-glass"},
+        )
+        assert invalid.status_code == 422
+        assert invalid.json()["error"]["code"] == "VALIDATION_ERROR"
+
+    @asynccontextmanager
+    async def broken_transaction(_database: Database) -> AsyncIterator[Connection]:
+        raise RuntimeError("database detail must not escape")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(Database, "transaction", broken_transaction)
+    with TestClient(create_app(_settings()), raise_server_exceptions=False) as client:
+        failed = client.post(
+            "/api/v1/auth/emergency/session",
+            json={"username": "break-glass", "password": "correct-horse"},
+        )
+        assert failed.status_code == 500
+        assert failed.json() == {
+            "error": {"code": "INTERNAL_ERROR", "message": "internal server error"}
         }
 
 
@@ -189,12 +221,46 @@ def test_admin_can_group_tenants_and_assign_platform_roles() -> None:
         assert user.status_code == 201
         assigned = client.put(
             f"/api/v1/platform-users/{user.json()['id']}/roles/PLATFORM_AUDITOR",
-            headers={"Idempotency-Key": str(uuid4())},
+            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
         )
         assert assigned.status_code == 200
+        assert assigned.headers["etag"] == '"2"'
         assert client.get("/api/v1/platform-users").json()["items"][0]["roles"] == [
             "PLATFORM_AUDITOR"
         ]
+
+
+def test_role_assignment_requires_the_current_platform_user_version() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        client.post(
+            "/api/v1/auth/emergency/session",
+            json={"username": "break-glass", "password": "correct-horse"},
+        )
+        user = client.post(
+            "/api/v1/platform-users",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "issuer": "https://identity.example.test",
+                "subject": "versioned-user",
+                "display_name": "Versioned User",
+            },
+        ).json()
+        assert user["version"] == 1
+
+        missing = client.put(
+            f"/api/v1/platform-users/{user['id']}/roles/PLATFORM_ADMIN",
+            headers={"Idempotency-Key": str(uuid4())},
+        )
+        assert missing.status_code == 422
+        assert missing.json()["error"]["code"] == "VALIDATION_ERROR"
+
+        stale = client.put(
+            f"/api/v1/platform-users/{user['id']}/roles/PLATFORM_ADMIN",
+            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"9"'},
+        )
+        assert stale.status_code == 412
+        assert stale.json()["error"]["code"] == "VERSION_MISMATCH"
 
 
 def test_emergency_login_failure_is_audited_without_granting_a_session() -> None:
@@ -271,3 +337,33 @@ def test_enterprise_oidc_authorization_code_flow_uses_pkce_and_nonce() -> None:
         session = client.get("/api/v1/auth/session")
         assert session.status_code == 200
         assert session.json()["auth_method"] == "oidc"
+
+
+def test_oidc_provider_failure_uses_a_stable_upstream_error() -> None:
+    asyncio.run(_prepare_database())
+
+    def provider(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/token":
+            return httpx.Response(200, json={"id_token": "not-yet-verified"})
+        return httpx.Response(503)
+
+    settings = _settings().model_copy(
+        update={
+            "oidc_enabled": True,
+            "oidc_issuer": "https://identity.example.test",
+            "oidc_authorization_endpoint": "https://identity.example.test/authorize",
+            "oidc_token_endpoint": "https://identity.example.test/token",
+            "oidc_jwks_uri": "https://identity.example.test/jwks",
+            "oidc_client_id": "admin-console",
+        }
+    )
+    with TestClient(create_app(settings, oidc_transport=httpx.MockTransport(provider))) as client:
+        start = client.get("/api/v1/auth/oidc/login", follow_redirects=False)
+        state = parse_qs(urlparse(start.headers["location"]).query)["state"][0]
+        callback = client.get(
+            "/api/v1/auth/oidc/callback",
+            params={"code": "provider-code", "state": state},
+        )
+
+        assert callback.status_code == 502
+        assert callback.json()["error"]["code"] == "IDENTITY_PROVIDER_UNAVAILABLE"
