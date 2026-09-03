@@ -27,9 +27,13 @@ jobs:
           cache-dependency-path: web-console/package-lock.json
 
       - run: uv sync --frozen
+      - run: scripts/install_kubernetes_tools.sh "${RUNNER_TEMP}/k8s-tools"
+      - run: echo "${RUNNER_TEMP}/k8s-tools" >> "${GITHUB_PATH}"
       - run: uv run ruff format --check .
       - run: uv run ruff check .
       - run: uv run mypy
+      - run: helm lint deploy/helm/trpc-agent-platform
+      - run: uv run pytest tests/deployment/test_helm_contract.py
       - run: >-
           uv run pytest tests/unit
           --cov=trpc_service.version
@@ -75,3 +79,23 @@ jobs:
         run: docker compose logs --no-color
       - if: always()
         run: docker compose down --volumes
+
+  kubernetes-production-smoke:
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.28"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - run: scripts/install_kubernetes_tools.sh "${RUNNER_TEMP}/k8s-tools"
+      - run: echo "${RUNNER_TEMP}/k8s-tools" >> "${GITHUB_PATH}"
+      - run: uv run pytest tests/deployment/test_kubernetes_smoke.py -v -s
+        env:
+          RUN_KUBERNETES_SMOKE: "1"

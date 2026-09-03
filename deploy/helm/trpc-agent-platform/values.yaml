@@ -1,0 +1,105 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  imagePullPolicy: IfNotPresent
+  allowMutableTags: false
+  rollout:
+    firstPause: 30s
+    secondPause: 60s
+    analysisInterval: 5s
+    analysisCount: 3
+  resources:
+    requests:
+      cpu: 100m
+      memory: 128Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi
+
+resourceQuota:
+  enabled: true
+  hard:
+    pods: "100"
+    requests.cpu: "20"
+    requests.memory: 40Gi
+    limits.cpu: "100"
+    limits.memory: 100Gi
+
+migration:
+  enabled: true
+  component: admin-api
+
+components:
+  admin-api:
+    enabled: true
+    workloadKind: Deployment
+    port: 8000
+    healthPath: /api/v1/health
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 6
+    image:
+      repository: ghcr.io/douzhenyu/trpc-agent-platform
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      tag: ""
+  web-console:
+    enabled: true
+    workloadKind: Deployment
+    port: 8080
+    healthPath: /
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 4
+    image:
+      repository: ghcr.io/douzhenyu/trpc-agent-web-console
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      tag: ""
+  agent-gateway:
+    enabled: true
+    workloadKind: Rollout
+    port: 8000
+    healthPath: /health/ready
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 12
+    image:
+      repository: ghcr.io/douzhenyu/trpc-agent-platform
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      tag: ""
+  channel-gateway:
+    enabled: true
+    workloadKind: Rollout
+    port: 8000
+    healthPath: /health/ready
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 12
+    image:
+      repository: ghcr.io/douzhenyu/trpc-agent-platform
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      tag: ""
+  agent-worker:
+    enabled: true
+    workloadKind: Rollout
+    port: 8000
+    healthPath: /health/ready
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 30
+    image:
+      repository: ghcr.io/douzhenyu/trpc-agent-platform
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      tag: ""
+  job-worker:
+    enabled: true
+    workloadKind: Rollout
+    port: 8000
+    healthPath: /health/ready
+    autoscaling:
+      minReplicas: 2
+      maxReplicas: 20
+    image:
+      repository: ghcr.io/douzhenyu/trpc-agent-platform
+      digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
+      tag: ""

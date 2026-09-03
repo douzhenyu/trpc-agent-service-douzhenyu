@@ -1,0 +1,48 @@
+{{- range $name, $component := .Values.components }}
+{{- if $component.enabled }}
+{{- if eq $component.workloadKind "Rollout" }}
+{{- range $role := list "stable" "canary" }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}-{{ $role }}
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+    app.kubernetes.io/service-role: {{ $role }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - name: http
+      port: {{ $component.port }}
+      targetPort: http-health
+      protocol: TCP
+---
+{{- end }}
+{{- else }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ $name }}
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: {{ $name }}
+  ports:
+    - name: http
+      port: {{ $component.port }}
+      targetPort: http-health
+      protocol: TCP
+---
+{{- end }}
+{{- end }}
+{{- end }}

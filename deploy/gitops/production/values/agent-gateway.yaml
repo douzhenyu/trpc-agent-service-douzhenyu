@@ -1,0 +1,17 @@
+resourceQuota:
+  enabled: false
+migration:
+  enabled: false
+components:
+  admin-api:
+    enabled: false
+  web-console:
+    enabled: false
+  agent-gateway:
+    enabled: true
+  channel-gateway:
+    enabled: false
+  agent-worker:
+    enabled: false
+  job-worker:
+    enabled: false

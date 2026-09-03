@@ -1,0 +1,106 @@
+apiVersion: argoproj.io/v1alpha1
+kind: AppProject
+metadata:
+  name: trpc-agent-platform-smoke
+  namespace: argocd
+spec:
+  sourceRepos:
+    - git://git-server.smoke-system.svc.cluster.local/platform.git
+  destinations:
+    - namespace: platform-smoke
+      server: https://kubernetes.default.svc
+  clusterResourceWhitelist:
+    - group: ""
+      kind: Namespace
+  namespaceResourceWhitelist:
+    - group: "*"
+      kind: "*"
+---
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: trpc-agent-platform-smoke
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - unit: admin-api
+            image: docker.io/local/trpc-agent-platform
+            digest: PLATFORM_IMAGE_DIGEST
+            syncPhase: migration-gate
+          - unit: web-console
+            image: docker.io/local/trpc-agent-web-console
+            digest: WEB_IMAGE_DIGEST
+            syncPhase: workloads
+          - unit: agent-gateway
+            image: docker.io/local/trpc-agent-platform
+            digest: PLATFORM_IMAGE_DIGEST
+            syncPhase: workloads
+          - unit: channel-gateway
+            image: docker.io/local/trpc-agent-platform
+            digest: PLATFORM_IMAGE_DIGEST
+            syncPhase: workloads
+          - unit: agent-worker
+            image: docker.io/local/trpc-agent-platform
+            digest: PLATFORM_IMAGE_DIGEST
+            syncPhase: workloads
+          - unit: job-worker
+            image: docker.io/local/trpc-agent-platform
+            digest: PLATFORM_IMAGE_DIGEST
+            syncPhase: workloads
+  strategy:
+    type: RollingSync
+    rollingSync:
+      steps:
+        - matchExpressions:
+            - key: trpc-agent-platform.io/sync-phase
+              operator: In
+              values:
+                - migration-gate
+          maxUpdate: 1
+        - matchExpressions:
+            - key: trpc-agent-platform.io/sync-phase
+              operator: In
+              values:
+                - workloads
+  template:
+    metadata:
+      name: smoke-{{unit}}
+      labels:
+        app.kubernetes.io/part-of: trpc-agent-platform-smoke
+        trpc-agent-platform.io/sync-phase: "{{syncPhase}}"
+    spec:
+      project: trpc-agent-platform-smoke
+      source:
+        repoURL: git://git-server.smoke-system.svc.cluster.local/platform.git
+        targetRevision: main
+        path: deploy/helm/trpc-agent-platform
+        helm:
+          releaseName: smoke-{{unit}}
+          valueFiles:
+            - ../../gitops/production/values/{{unit}}.yaml
+          parameters:
+            - name: global.imagePullPolicy
+              value: Never
+            - name: global.rollout.firstPause
+              value: 1s
+            - name: global.rollout.secondPause
+              value: 1s
+            - name: global.rollout.analysisInterval
+              value: 1s
+            - name: global.rollout.analysisCount
+              value: "1"
+            - name: components.{{unit}}.image.repository
+              value: "{{image}}"
+            - name: components.{{unit}}.image.digest
+              value: "{{digest}}"
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: platform-smoke
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true

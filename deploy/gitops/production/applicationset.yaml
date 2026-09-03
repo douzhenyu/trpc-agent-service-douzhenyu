@@ -1,0 +1,62 @@
+apiVersion: argoproj.io/v1alpha1
+kind: ApplicationSet
+metadata:
+  name: trpc-agent-platform
+  namespace: argocd
+spec:
+  generators:
+    - list:
+        elements:
+          - unit: admin-api
+            syncPhase: migration-gate
+          - unit: web-console
+            syncPhase: workloads
+          - unit: agent-gateway
+            syncPhase: workloads
+          - unit: channel-gateway
+            syncPhase: workloads
+          - unit: agent-worker
+            syncPhase: workloads
+          - unit: job-worker
+            syncPhase: workloads
+  strategy:
+    type: RollingSync
+    rollingSync:
+      steps:
+        - matchExpressions:
+            - key: trpc-agent-platform.io/sync-phase
+              operator: In
+              values:
+                - migration-gate
+          maxUpdate: 1
+        - matchExpressions:
+            - key: trpc-agent-platform.io/sync-phase
+              operator: In
+              values:
+                - workloads
+  template:
+    metadata:
+      name: trpc-agent-platform-{{unit}}
+      labels:
+        app.kubernetes.io/name: trpc-agent-platform
+        app.kubernetes.io/component: "{{unit}}"
+        trpc-agent-platform.io/sync-phase: "{{syncPhase}}"
+    spec:
+      project: trpc-agent-platform
+      source:
+        repoURL: https://github.com/douzhenyu/trpc-agent-service-douzhenyu.git
+        targetRevision: main
+        path: deploy/helm/trpc-agent-platform
+        helm:
+          valueFiles:
+            - ../../gitops/production/values/{{unit}}.yaml
+      destination:
+        server: https://kubernetes.default.svc
+        namespace: trpc-agent-platform
+      syncPolicy:
+        automated:
+          prune: true
+          selfHeal: true
+        syncOptions:
+          - CreateNamespace=true
+          - ServerSideApply=true

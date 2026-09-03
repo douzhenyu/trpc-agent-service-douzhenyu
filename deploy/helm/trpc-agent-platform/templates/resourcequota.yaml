@@ -1,0 +1,13 @@
+{{- if .Values.resourceQuota.enabled }}
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: {{ include "trpc-agent-platform.name" . }}
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: platform-governance
+spec:
+  hard:
+{{ toYaml .Values.resourceQuota.hard | indent 4 }}
+{{- end }}
