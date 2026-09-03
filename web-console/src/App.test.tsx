@@ -553,6 +553,16 @@ test("快速切换 Agent 时不会让较慢的旧 Draft 覆盖当前选择", asy
       updated_at: "2026-01-01T00:00:00Z",
     },
   ];
+  const createdApplication = {
+    id: "00000000-0000-0000-0000-000000000005",
+    tenant_id: tenant.id,
+    slug: "created-agent",
+    name: "Created Agent",
+    description: "",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
   const draft = (applicationId: string, instructions: string) => ({
     tenant_id: tenant.id,
     application_id: applicationId,
@@ -591,8 +601,10 @@ test("快速切换 Agent 时不会让较慢的旧 Draft 覆盖当前选择", asy
       return Promise.resolve(json({ items: [tenant] }));
     if (path === "/api/v1/tenant-groups" || path === "/api/v1/platform-users")
       return Promise.resolve(json({ items: [] }));
-    if (path.endsWith("/agent-applications"))
+    if (path.endsWith("/agent-applications") && request.method === "GET")
       return Promise.resolve(json({ items: applications }));
+    if (path.endsWith("/agent-applications") && request.method === "POST")
+      return Promise.resolve(json(createdApplication, 201));
     if (path.includes(applications[0].id)) return slowDraft;
     if (path.includes(applications[1].id))
       return Promise.resolve(json(draft(applications[1].id, "Fast draft")));
@@ -606,15 +618,26 @@ test("快速切换 Agent 时不会让较慢的旧 Draft 覆盖当前选择", asy
   fireEvent.click(
     await screen.findByRole("button", { name: "Slow Agent (slow-agent)" }),
   );
-  fireEvent.click(
-    screen.getByRole("button", { name: "Fast Agent (fast-agent)" }),
-  );
-
-  expect(await screen.findByDisplayValue("Fast draft")).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Agent 应用标识"), {
+    target: { value: "created-agent" },
+  });
+  fireEvent.change(screen.getByLabelText("Agent 应用名称"), {
+    target: { value: "Created Agent" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "创建 Agent 应用" }));
+  expect(
+    await screen.findByRole("button", {
+      name: "Created Agent (created-agent)",
+    }),
+  ).toBeInTheDocument();
   resolveSlowDraft(json(draft(applications[0].id, "Slow draft")));
+  await new Promise((resolve) => setTimeout(resolve, 0));
   await waitFor(() => {
-    expect(screen.getByDisplayValue("Fast draft")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("Created Agent")).toBeInTheDocument();
     expect(screen.queryByDisplayValue("Slow draft")).toBeNull();
+    expect(
+      screen.getByRole("button", { name: "创建 Agent Draft" }),
+    ).toBeInTheDocument();
   });
 
   fireEvent.click(

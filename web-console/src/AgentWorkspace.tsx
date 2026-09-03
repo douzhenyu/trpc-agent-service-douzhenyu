@@ -104,6 +104,7 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
         name: createName,
         description: "",
       });
+      selectionRequest.current += 1;
       setApplications((current) => [...current, application]);
       setSelected(application);
       showDraft(null);
@@ -141,6 +142,7 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
     if (!selected) return;
     try {
       await deleteAgentApplication(selected);
+      selectionRequest.current += 1;
       setApplications((current) =>
         current.filter((application) => application.id !== selected.id),
       );
@@ -208,7 +210,13 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
               <select
                 aria-label="Agent 租户"
                 value={tenantId}
-                onChange={(event) => setTenantId(event.target.value)}
+                onChange={(event) => {
+                  selectionRequest.current += 1;
+                  setTenantId(event.target.value);
+                  setApplications([]);
+                  setSelected(null);
+                  showDraft(null);
+                }}
               >
                 {tenants.map((tenant) => (
                   <option key={tenant.id} value={tenant.id}>
