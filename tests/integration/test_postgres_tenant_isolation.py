@@ -72,13 +72,6 @@ async def _exercise_isolation() -> None:
                 member_id,
                 user_id,
             )
-            await app.execute(
-                "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
-                "VALUES ($1,$2,$3,'TENANT_ADMIN')",
-                tenant_a,
-                uuid4(),
-                member_id,
-            )
 
         async with app.transaction():
             await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_a))
@@ -87,6 +80,13 @@ async def _exercise_isolation() -> None:
                 tenant_a,
                 member_id,
                 user_id,
+            )
+            await app.execute(
+                "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
+                "VALUES ($1,$2,$3,'TENANT_ADMIN')",
+                tenant_a,
+                uuid4(),
+                member_id,
             )
 
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
@@ -160,3 +160,25 @@ async def _exercise_role_drift_repair() -> None:
 
 def test_migration_repairs_drifted_application_role_privileges() -> None:
     asyncio.run(_exercise_role_drift_repair())
+
+
+async def _exercise_unsafe_membership_fail_closed() -> None:
+    admin = await asyncpg.connect(ADMIN_URL)
+    try:
+        await admin.execute("DROP ROLE IF EXISTS trpc_platform_smoke_parent")
+        await admin.execute("CREATE ROLE trpc_platform_smoke_parent NOLOGIN")
+        await admin.execute("GRANT trpc_platform_smoke_parent TO trpc_platform_app")
+        with pytest.raises(RuntimeError, match="must not inherit or assume"):
+            await apply_migrations(ADMIN_URL, "app-password")
+        assert not await admin.fetchval(
+            "SELECT rolcanlogin FROM pg_roles WHERE rolname='trpc_platform_app'"
+        )
+    finally:
+        await admin.execute("REVOKE trpc_platform_smoke_parent FROM trpc_platform_app")
+        await admin.execute("DROP ROLE IF EXISTS trpc_platform_smoke_parent")
+        await admin.close()
+    await apply_migrations(ADMIN_URL, "app-password")
+
+
+def test_migration_disables_login_before_rejecting_unsafe_role_membership() -> None:
+    asyncio.run(_exercise_unsafe_membership_fail_closed())

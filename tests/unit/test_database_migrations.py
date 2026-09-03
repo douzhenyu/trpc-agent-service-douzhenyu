@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import importlib
+import runpy
 from contextlib import asynccontextmanager
 from typing import Any
 
 import pytest
+from alembic import context
 
 from trpc_service import database_migrations
 
@@ -44,12 +47,14 @@ def test_migration_entrypoint_applies_head_and_reports_success(
 class _FakeMigrationConnection:
     def __init__(self, scalar_results: list[int] | None = None) -> None:
         self.statements: list[str] = []
+        self.scalar_statements: list[str] = []
         self.scalar_results = scalar_results or []
 
     async def exec_driver_sql(self, statement: str) -> None:
         self.statements.append(statement)
 
     async def scalar(self, _statement: object, _parameters: object = None) -> int:
+        self.scalar_statements.append(str(_statement))
         return self.scalar_results.pop(0) if self.scalar_results else 0
 
 
@@ -85,6 +90,9 @@ def test_apply_migrations_accepts_url_encoded_password_and_hardens_role(
     assert any(
         "ALTER ROLE trpc_platform_app" in statement for statement in engine.connection.statements
     )
+    ownership_query = "\n".join(engine.connection.scalar_statements)
+    for catalog in ("pg_namespace", "pg_database", "pg_proc", "pg_type"):
+        assert catalog in ownership_query
     assert engine.disposed
 
 
@@ -101,11 +109,41 @@ def test_apply_migrations_blocks_unsafe_role_relationships(
     message: str,
 ) -> None:
     engine = _FakeMigrationEngine(scalar_results)
-    monkeypatch.setattr(database_migrations.command, "upgrade", lambda *_args: None)
+    upgrades: list[str] = []
+    monkeypatch.setattr(
+        database_migrations.command,
+        "upgrade",
+        lambda _config, revision: upgrades.append(revision),
+    )
     monkeypatch.setattr(database_migrations, "create_async_engine", lambda _url: engine)
 
     with pytest.raises(RuntimeError, match=message):
         asyncio.run(
             database_migrations.apply_migrations("postgresql://admin:secret@database/platform")
         )
+    assert upgrades == []
+    assert "NOLOGIN" in engine.connection.statements[0]
     assert engine.disposed
+
+
+def test_revision_executes_every_statement_and_is_irreversible(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    revision = importlib.import_module("trpc_service.migrations.versions.0001_platform_identity")
+    executed: list[str] = []
+    monkeypatch.setattr(revision, "migration_statements", lambda: ["FIRST", "SECOND"])
+    monkeypatch.setattr(revision.op, "execute", executed.append)
+
+    revision.upgrade()
+
+    assert executed == ["FIRST", "SECOND"]
+    with pytest.raises(RuntimeError, match="intentionally irreversible"):
+        revision.downgrade()
+
+
+def test_alembic_environment_rejects_offline_migrations(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(context, "is_offline_mode", lambda: True)
+    with pytest.raises(RuntimeError, match="offline migrations are not supported"):
+        runpy.run_module("trpc_service.migrations.env", run_name="__offline_test__")

@@ -176,6 +176,8 @@ async def complete_oidc_flow(
                     "code_verifier": flow["verifier"],
                 },
             )
+            if token_response.status_code == 429 or token_response.status_code >= 500:
+                raise HTTPException(status_code=502, detail="identity provider unavailable")
             if token_response.status_code != 200:
                 raise HTTPException(status_code=401, detail="oidc code exchange failed")
             token_payload = token_response.json()
@@ -213,10 +215,13 @@ async def complete_oidc_flow(
             options={"require": ["exp", "iat", "sub"]},
         )
         audience = claims.get("aud")
+        authorized_party = claims.get("azp")
+        if authorized_party is not None and authorized_party != settings.oidc_client_id:
+            raise jwt.InvalidTokenError("azp does not identify this client")
         if (
             isinstance(audience, list)
             and len(audience) > 1
-            and claims.get("azp") != settings.oidc_client_id
+            and authorized_party != settings.oidc_client_id
         ):
             raise jwt.InvalidTokenError("azp does not identify this client")
         if not secrets.compare_digest(str(claims.get("nonce", "")), str(flow["nonce"])):

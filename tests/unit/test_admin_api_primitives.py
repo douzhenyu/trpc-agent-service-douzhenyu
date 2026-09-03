@@ -399,6 +399,17 @@ def test_oidc_flow_rejects_invalid_protocol_responses() -> None:
         asyncio.run(complete(httpx.MockTransport(token_error)))
     assert error.value.status_code == 401
 
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(
+            complete(
+                httpx.MockTransport(
+                    lambda request: httpx.Response(503 if request.url.path == "/token" else 200)
+                )
+            )
+        )
+    assert error.value.status_code == 502
+    assert error.value.detail == "identity provider unavailable"
+
     def missing_token(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={})
 
@@ -479,6 +490,10 @@ def test_oidc_id_token_requires_lifecycle_subject_and_authorized_party() -> None
         with pytest.raises(HTTPException) as error:
             asyncio.run(complete(invalid))
         assert error.value.status_code == 401
+
+    with pytest.raises(HTTPException) as error:
+        asyncio.run(complete({**base_claims, "azp": "other-client"}))
+    assert error.value.status_code == 401
 
     multiple_audiences = {**base_claims, "aud": [settings.oidc_client_id, "other-client"]}
     with pytest.raises(HTTPException) as error:
