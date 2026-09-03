@@ -10,6 +10,7 @@ from enum import StrEnum
 from hashlib import sha256
 from time import monotonic
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
@@ -94,6 +95,80 @@ class SecretProvider(Protocol):
     async def resolve(self, secret_ref: str) -> str: ...
 
 
+class OutboundPolicy(Protocol):
+    async def allows(self, request: GatewayRequest, profile: ModelProfile) -> bool: ...
+
+
+class VaultSecretProvider:
+    """Vault KV v2 adapter authenticated through Kubernetes Auth."""
+
+    def __init__(self, client: httpx.AsyncClient, *, kubernetes_jwt: str, role: str) -> None:
+        self._client, self._kubernetes_jwt, self._role = client, kubernetes_jwt, role
+        self._token: str | None = None
+
+    async def resolve(self, secret_ref: str) -> str:
+        parsed = urlsplit(secret_ref)
+        path = parsed.path.lstrip("/")
+        if (
+            parsed.scheme != "vault"
+            or parsed.netloc != "tenant"
+            or not parsed.fragment
+            or "/" not in path
+        ):
+            raise ModelGatewayError("SECRET_REFERENCE_INVALID")
+        if self._token is None:
+            response = await self._client.post(
+                "/v1/auth/kubernetes/login", json={"jwt": self._kubernetes_jwt, "role": self._role}
+            )
+            response.raise_for_status()
+            payload = response.json()
+            token = (
+                payload.get("auth", {}).get("client_token")
+                if isinstance(payload, Mapping)
+                else None
+            )
+            if not isinstance(token, str) or not token:
+                raise ModelGatewayError("SECRET_RESOLUTION_FAILED")
+            self._token = token
+        response = await self._client.get(
+            f"/v1/tenant/data/{path}", headers={"X-Vault-Token": self._token}
+        )
+        response.raise_for_status()
+        payload = response.json()
+        data = payload.get("data", {}).get("data", {}) if isinstance(payload, Mapping) else {}
+        value = data.get(parsed.fragment) if isinstance(data, Mapping) else None
+        if not isinstance(value, str):
+            raise ModelGatewayError("SECRET_RESOLUTION_FAILED")
+        return value
+
+
+class OpaOutboundPolicy:
+    """Fail-closed OPA adapter evaluated before any provider request."""
+
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self._client = client
+
+    async def allows(self, request: GatewayRequest, profile: ModelProfile) -> bool:
+        try:
+            response = await self._client.post(
+                "/v1/data/platform/llm/allow",
+                json={
+                    "input": {
+                        "tenant_id": request.tenant_id,
+                        "model_alias": profile.alias,
+                        "data_classification": request.data_classification,
+                        "region": request.region,
+                        "messages": request.messages,
+                    }
+                },
+            )
+            response.raise_for_status()
+            result = response.json().get("result")
+            return result is True or (isinstance(result, Mapping) and result.get("allow") is True)
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return False
+
+
 class GatewayObserver(Protocol):
     def record(self, event: GatewayEvent) -> None: ...
 
@@ -169,6 +244,7 @@ class LLMGateway:
         circuit_failure_threshold: int = 3,
         circuit_reset_seconds: float = 30,
         observer: GatewayObserver | None = None,
+        policy: OutboundPolicy | None = None,
     ) -> None:
         self._profiles = profiles
         self._secrets = secrets
@@ -176,6 +252,7 @@ class LLMGateway:
         self._circuit_failure_threshold = circuit_failure_threshold
         self._circuit_reset_seconds = circuit_reset_seconds
         self._observer = observer or LoggingGatewayObserver()
+        self._policy = policy
         self._failures: dict[tuple[str, str], int] = defaultdict(int)
         self._opened_at: dict[tuple[str, str], float] = {}
         self._requests: dict[tuple[str, str], deque[float]] = defaultdict(deque)
@@ -189,7 +266,7 @@ class LLMGateway:
         last_failure_code: str | None = None
         failure_recorded = False
         for profile in await self._candidate_profiles(request):
-            if not self._allows(request, profile):
+            if not await self._allows(request, profile):
                 continue
             attempted = True
             key = (profile.tenant_id, profile.alias)
@@ -297,14 +374,14 @@ class LLMGateway:
             )
         return profiles
 
-    @staticmethod
-    def _allows(request: GatewayRequest, profile: ModelProfile) -> bool:
-        return (
+    async def _allows(self, request: GatewayRequest, profile: ModelProfile) -> bool:
+        allowed = (
             request.data_classification is not DataClassification.RESTRICTED
             and request.region == profile.region
             and _CLASSIFICATION_RANK[request.data_classification]
             <= _CLASSIFICATION_RANK[profile.data_classification]
         )
+        return allowed and (self._policy is None or await self._policy.allows(request, profile))
 
     def _record_event(
         self,
