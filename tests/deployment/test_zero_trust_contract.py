@@ -172,8 +172,8 @@ def test_authorization_is_default_deny_and_only_allows_declared_l7_calls() -> No
             "to": [
                 {
                     "operation": {
-                        "methods": ["GET"],
-                        "paths": ["/api/v1/health"],
+                        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "paths": ["/api/v1/*"],
                     }
                 }
             ],

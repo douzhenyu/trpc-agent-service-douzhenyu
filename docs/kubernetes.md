@@ -15,13 +15,13 @@ Kubernetes 是唯一正式支持的生产运行基座。Docker Compose 仍只用
 
 每个单元有独立的 production values、稳定命名且不共享的 ServiceAccount、Service、HPA、PDB 和 NetworkPolicy。工作负载不声明 `spec.replicas`，副本下限由 HPA 唯一管理，避免 Argo CD `selfHeal` 与 HPA 相互回写。Gateway 与 Worker 使用 Argo Rollouts 金丝雀；Admin API 与 Web Console 使用 Kubernetes Deployment。当前 Gateway/Worker 进程只实现本工单要求的健康边界，后续业务工单在同一部署边界内替换健康骨架。
 
-Admin API release 同时拥有 namespace 级 `ResourceQuota` 和 Argo CD `Sync` 数据库迁移 hook；其余五个 release 显式关闭这两个共享资源，避免重复配额叠加。当前尚无数据库 schema revision，迁移入口会报告零项变更；后续数据库工单在这个受控入口接入 Alembic，迁移失败将阻断应用同步。
+Admin API release 同时拥有 namespace 级 `ResourceQuota` 和 Argo CD `Sync` 数据库迁移 hook；其余五个 release 显式关闭这两个共享资源，避免重复配额叠加。迁移入口由 Alembic revision 管理，使用数据库 owner Secret 建表和配置 RLS，并从同一 Secret 的独立 key 初始化非 owner 应用角色密码；应用 Pod 只读取应用角色 URL。任何 revision 或角色初始化失败都会阻断应用同步。
 
 ## 零信任通信边界
 
 ApplicationSet 创建生产 namespace 时会写入 `istio.io/dataplane-mode=ambient`、`istio.io/use-waypoint=platform-waypoint` 和 `istio.io/ingress-use-waypoint=true`。Admin API release 负责创建 namespace 级 `STRICT` PeerAuthentication 和共享 Waypoint；其他 release 只创建自己单元的策略，避免共享资源被多个 Argo CD Application 争用。所有常驻安全资源都是 Argo CD 正常管理的期望状态，不使用会先删后建的 hook；sync wave 依次落地 mTLS/Waypoint（`-4`），namespace deny-all 与尚无 endpoints 的 Service（`-3`），已被 Istio 接受的授权策略（`-2`）和单元网络放行（`-1`），数据库迁移 Sync hook 位于 `0`，工作负载位于 `1`。首次部署和后续同步都保持失败关闭。
 
-每个单元有两层默认拒绝：共享 NetworkPolicy 先兜底隔离所有平台 Pod（包括 Sync 迁移任务），单元 NetworkPolicy 再在 L4 只开放 Ambient HBONE `15008`、Ambient 固定 kubelet 探针地址、DNS、声明出站所需的 Waypoint HBONE 通道以及受控 egress gateway；Istio AuthorizationPolicy 在 ztunnel 只接受 Waypoint 身份，在 Waypoint 再按调用方 ServiceAccount、HTTP 方法和路径放行。迁移任务在声明数据库出口前保持完全隔离。Web Console 当前只可用 `GET /api/v1/health` 调用 Admin API。平台策略拒绝携带裸 `x-tenant-id` 的内部请求；后续业务接口必须从短期签名凭证验证租户上下文，不能信任调用方自报的 tenant id。
+每个单元有两层默认拒绝：共享 NetworkPolicy 先兜底隔离所有平台 Pod（包括 Sync 迁移任务），单元 NetworkPolicy 再在 L4 只开放 Ambient HBONE `15008`、Ambient 固定 kubelet 探针地址、DNS、声明出站所需的 Waypoint HBONE 通道以及受控 egress gateway；Istio AuthorizationPolicy 在 ztunnel 只接受 Waypoint 身份，在 Waypoint 再按调用方 ServiceAccount、HTTP 方法和路径放行。迁移任务在声明数据库出口前保持完全隔离。Web Console 可按声明的 `GET`、`POST`、`PUT`、`PATCH` 与 `DELETE /api/v1/*` 管理接口调用 Admin API，但不能访问文档端点。平台策略拒绝携带裸 `x-tenant-id` 的内部请求；后续业务接口必须从短期签名凭证验证租户上下文，不能信任调用方自报的 tenant id。
 
 `zeroTrust.egressGateway` 指向唯一允许的外部出口。当前六类骨架没有声明任何外部依赖，因此 Chart 只预留到 gateway 的 L4 通道，不创建宽泛的 ServiceEntry 或透明外部路由；集群必须在外部依赖接入时部署与该 namespace、Pod 标签和 HBONE 端口匹配的 egress gateway，并在平台外的网格基础设施层按获批目的地配置 ServiceEntry/路由和审计策略。缺失这些资源时外部连接按设计失败关闭，直接访问公网始终不在工作负载 NetworkPolicy 的允许列表中。
 
@@ -96,7 +96,7 @@ kubectl argo rollouts status "${rollout_name}" -n trpc-agent-platform --timeout 
 
 ## 可重复黑盒验证
 
-以下测试创建带三个 worker 故障域的临时 Kind 集群，安装固定版本的 Gateway API、Istio Ambient、Rollouts、Metrics Server 与 Argo CD，通过集群内 Git 服务让 Argo CD 以本地镜像 digest 同步六个独立 release。测试会证明 Web Console 身份可访问声明的 Admin 健康路径，而错误路径、伪造 `x-tenant-id`、未授权 ServiceAccount 和未加入网格的工作负载均被拒绝；随后制造错误 canary 并验证安全回滚。全程不依赖 Compose，结束后自动删除自己的唯一命名集群。
+以下测试创建带三个 worker 故障域的临时 Kind 集群，安装固定版本的 Gateway API、Istio Ambient、Rollouts、Metrics Server 与 Argo CD，并启动非 root PostgreSQL 夹具。测试通过集群内 Git 服务让 Argo CD 以本地镜像 digest 同步六个独立 release，先验证 Alembic hook 与非 owner Admin API 首装，再证明 Web Console 身份可访问声明的 Admin 健康路径，而错误路径、伪造 `x-tenant-id`、未授权 ServiceAccount 和未加入网格的工作负载均被拒绝；随后制造错误 canary 并验证安全回滚。全程不依赖 Compose，结束后自动删除自己的唯一命名集群。
 
 ```bash
 scripts/install_kubernetes_tools.sh /tmp/trpc-platform-tools

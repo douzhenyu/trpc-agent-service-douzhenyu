@@ -1,0 +1,129 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: platform-smoke
+  labels:
+    istio.io/dataplane-mode: ambient
+    istio.io/ingress-use-waypoint: "true"
+    istio.io/use-waypoint: platform-waypoint
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trpc-platform-database-admin
+  namespace: platform-smoke
+type: Opaque
+stringData:
+  url: postgresql://postgres:postgres@smoke-postgres:5432/trpc_platform
+  app-password: app-password
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trpc-platform-database-app
+  namespace: platform-smoke
+type: Opaque
+stringData:
+  url: postgresql://trpc_platform_app:app-password@smoke-postgres:5432/trpc_platform
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trpc-platform-admin-auth
+  namespace: platform-smoke
+type: Opaque
+stringData:
+  SESSION_SIGNING_KEY: smoke-only-session-signing-key-32-bytes
+  OIDC_ENABLED: "false"
+  SESSION_COOKIE_SECURE: "false"
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: smoke-postgres
+  namespace: platform-smoke
+  labels:
+    trpc-agent-platform.io/database: "true"
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: smoke-postgres
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: smoke-postgres
+        trpc-agent-platform.io/database: "true"
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        runAsGroup: 999
+        fsGroup: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: local/trpc-agent-postgres:smoke
+          imagePullPolicy: Never
+          env:
+            - name: POSTGRES_DB
+              value: trpc_platform
+            - name: POSTGRES_PASSWORD
+              value: postgres
+            - name: PGDATA
+              value: /tmp/pgdata
+          ports:
+            - name: postgres
+              containerPort: 5432
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres, -d, trpc_platform]
+            periodSeconds: 2
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: smoke-postgres
+  namespace: platform-smoke
+spec:
+  selector:
+    app.kubernetes.io/name: smoke-postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: smoke-postgres
+  namespace: platform-smoke
+spec:
+  podSelector:
+    matchLabels:
+      trpc-agent-platform.io/database: "true"
+  policyTypes: [Ingress]
+  ingress:
+    - ports:
+        - {port: 15008, protocol: TCP}
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: trpc-agent-platform.io/network-profile
+                operator: In
+                values: [admin-api, database-migration]
+      ports:
+        - {port: 5432, protocol: TCP}

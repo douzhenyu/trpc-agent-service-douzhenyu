@@ -11,6 +11,7 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+      - ./dev/postgres/init.sql:/docker-entrypoint-initdb.d/10-app-role.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U trpc_platform -d trpc_platform"]
       interval: 5s
@@ -97,12 +98,29 @@ services:
       timeout: 3s
       retries: 20
 
+  database-migration:
+    build:
+      context: .
+      dockerfile: Dockerfile.admin-api
+    command: ["/app/.venv/bin/python", "-m", "trpc_service.database_migrations"]
+    environment:
+      DATABASE_ADMIN_URL: postgresql://trpc_platform:local-development-only@postgres:5432/trpc_platform
+      DATABASE_APP_PASSWORD: app-password
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   admin-api:
     build:
       context: .
       dockerfile: Dockerfile.admin-api
     environment:
-      DATABASE_URL: postgresql+asyncpg://trpc_platform:local-development-only@postgres:5432/trpc_platform
+      DATABASE_URL: postgresql://trpc_platform_app:app-password@postgres:5432/trpc_platform
+      SESSION_SIGNING_KEY: local-session-signing-key-change-before-production
+      SESSION_COOKIE_SECURE: "false"
+      EMERGENCY_ADMIN_USERNAME: emergency-admin
+      EMERGENCY_ADMIN_PASSWORD_HASH: "$$argon2id$$v=19$$m=65536,t=3,p=4$$MRV7DB8RCvU73jcYXzxkUA$$z7yjdKaXuCwuYoWzAqb25/+4f8tW5j3cxFm/pComAo4"
+      OIDC_ENABLED: "false"
       REDIS_URL: redis://redis:6379/0
       KAFKA_BOOTSTRAP_SERVERS: redpanda:9092
       S3_ENDPOINT_URL: http://minio:9000
@@ -113,6 +131,8 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      database-migration:
+        condition: service_completed_successfully
       redis:
         condition: service_healthy
       redpanda:
