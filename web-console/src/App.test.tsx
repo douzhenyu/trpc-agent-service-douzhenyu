@@ -124,6 +124,39 @@ test("本地应急管理员可登录", async () => {
   expect(await screen.findByText("应急管理员")).toBeInTheDocument();
 });
 
+test("租户 Agent 开发者只加载可访问租户并直接进入 Agent 工作区", async () => {
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockResolvedValueOnce(
+      json({
+        subject: "00000000-0000-0000-0000-000000000009",
+        auth_method: "oidc",
+        roles: [],
+      }),
+    )
+    .mockResolvedValueOnce(json({ items: [tenant], next_cursor: null }));
+
+  render(<App />);
+
+  expect(
+    await screen.findByRole("heading", { name: "Agent 应用与 Draft" }),
+  ).toBeInTheDocument();
+  expect(
+    screen.getByRole("button", { name: "加载 Agent 应用" }),
+  ).toBeInTheDocument();
+  expect(screen.queryByRole("button", { name: "创建租户" })).toBeNull();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
 test("平台角色按钮调用公开 API 并刷新", async () => {
   const session = {
     subject: "admin",

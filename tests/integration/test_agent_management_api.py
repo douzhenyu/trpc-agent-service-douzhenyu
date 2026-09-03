@@ -366,6 +366,7 @@ def test_tenant_developer_is_confined_to_its_tenant_and_denials_are_audited() ->
         own_listing = client.get(
             f"/api/v1/tenants/{tenant_a}/agent-applications", headers=developer
         )
+        visible_tenants = client.get("/api/v1/tenants", headers=developer)
         foreign_listing = client.get(
             f"/api/v1/tenants/{tenant_b}/agent-applications", headers=developer
         )
@@ -414,6 +415,7 @@ def test_tenant_developer_is_confined_to_its_tenant_and_denials_are_audited() ->
         assert own.status_code == 201
         assert own_draft.status_code == 201
         assert [item["id"] for item in own_listing.json()["items"]] == [own.json()["id"]]
+        assert [item["id"] for item in visible_tenants.json()["items"]] == [tenant_a]
         assert foreign_listing.status_code == foreign_create.status_code == 403
         assert foreign_listing.json()["error"]["code"] == "FORBIDDEN"
         assert foreign_create.json()["error"]["code"] == "FORBIDDEN"

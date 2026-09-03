@@ -321,19 +321,30 @@ def create_app(
         limit: Annotated[int, Query(ge=1, le=100)] = 50,
         cursor: Annotated[str | None, Query()] = None,
     ) -> dict[str, Any]:
-        require_role(principal, "PLATFORM_ADMIN", "PLATFORM_AUDITOR")
         try:
             cursor_id = decode_cursor(cursor)
         except ValueError as error:
             raise HTTPException(status_code=400, detail="invalid cursor") from error
-        async with db.transaction() as connection:
+        platform_reader = bool(principal.roles.intersection({"PLATFORM_ADMIN", "PLATFORM_AUDITOR"}))
+        if not platform_reader and principal.auth_method != "oidc":
+            raise HTTPException(status_code=403, detail="insufficient role")
+        transaction = (
+            db.transaction() if platform_reader else db.user_transaction(UUID(principal.subject))
+        )
+        async with transaction as connection:
             rows = await connection.fetch(
                 """SELECT id,slug,name,status,version,created_at,updated_at
-                FROM platform.tenant
-                WHERE (CAST($1 AS uuid) IS NULL OR id > $1)
-                ORDER BY id LIMIT $2""",
+                FROM platform.tenant t
+                WHERE (CAST($1 AS uuid) IS NULL OR t.id > $1)
+                  AND (CAST($3 AS boolean) OR EXISTS (
+                    SELECT 1 FROM tenant.member m
+                    WHERE m.tenant_id=t.id AND m.user_id=$4
+                  ))
+                ORDER BY t.id LIMIT $2""",
                 cursor_id,
                 limit + 1,
+                platform_reader,
+                UUID(principal.subject) if principal.auth_method == "oidc" else None,
             )
         page = rows[:limit]
         return {

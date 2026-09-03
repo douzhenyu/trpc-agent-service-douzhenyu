@@ -142,6 +142,29 @@ def test_revision_executes_every_statement_and_is_irreversible(
         revision.downgrade()
 
 
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "trpc_service.migrations.versions.0002_agent_drafts",
+        "trpc_service.migrations.versions.0003_visible_tenant_memberships",
+    ],
+)
+def test_tenant_revisions_execute_frozen_sql_and_are_irreversible(
+    monkeypatch: pytest.MonkeyPatch, module_name: str
+) -> None:
+    revision = importlib.import_module(module_name)
+    statements = revision.migration_statements()
+    executed: list[str] = []
+    monkeypatch.setattr(revision.op, "execute", executed.append)
+
+    revision.upgrade()
+
+    assert statements
+    assert executed == statements
+    with pytest.raises(RuntimeError, match="intentionally unsupported"):
+        revision.downgrade()
+
+
 def test_alembic_environment_rejects_offline_migrations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

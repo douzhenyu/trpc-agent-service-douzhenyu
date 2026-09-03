@@ -42,10 +42,13 @@ export default function App() {
       setState({ kind: "anonymous" });
       return;
     }
+    const platformReader = active.roles.some((role) =>
+      ["PLATFORM_ADMIN", "PLATFORM_AUDITOR"].includes(role),
+    );
     const [tenants, groups, users] = await Promise.all([
       getTenants(),
-      getGroups(),
-      getUsers(),
+      platformReader ? getGroups() : Promise.resolve([]),
+      platformReader ? getUsers() : Promise.resolve([]),
     ]);
     setState({ kind: "ready", session: active, tenants, groups, users });
   }
@@ -132,6 +135,10 @@ export default function App() {
       </main>
     );
 
+  const platformReader = state.session.roles.some((role) =>
+    ["PLATFORM_ADMIN", "PLATFORM_AUDITOR"].includes(role),
+  );
+
   return (
     <main className="console-shell">
       <header>
@@ -146,119 +153,125 @@ export default function App() {
         </span>
       </header>
       <div className="management-grid">
-        <section className="panel">
-          <h2>租户</h2>
-          <form onSubmit={onTenant} className="stack">
-            <label>
-              租户标识
-              <input
-                aria-label="租户标识"
-                value={slug}
-                onChange={(event) => setSlug(event.target.value)}
-                required
-                pattern="[a-z0-9][a-z0-9-]+"
-              />
-            </label>
-            <label>
-              租户名称
-              <input
-                aria-label="租户名称"
-                value={tenantName}
-                onChange={(event) => setTenantName(event.target.value)}
-                required
-              />
-            </label>
-            <button type="submit">创建租户</button>
-          </form>
-          <ul>
-            {state.tenants.map((tenant) => (
-              <li key={tenant.id}>
-                {tenant.name} ({tenant.slug})
-              </li>
-            ))}
-          </ul>
-        </section>
-
-        <section className="panel">
-          <h2>Tenant Group</h2>
-          <form onSubmit={onGroup} className="stack">
-            <label>
-              Tenant Group 名称
-              <input
-                aria-label="Tenant Group 名称"
-                value={groupName}
-                onChange={(event) => setGroupName(event.target.value)}
-                required
-              />
-            </label>
-            <fieldset>
-              <legend>成员租户</legend>
-              {state.tenants.map((tenant) => (
-                <label key={tenant.id} className="check">
+        {platformReader && (
+          <>
+            <section className="panel">
+              <h2>租户</h2>
+              <form onSubmit={onTenant} className="stack">
+                <label>
+                  租户标识
                   <input
-                    type="checkbox"
-                    aria-label={tenant.name}
-                    checked={selected.includes(tenant.id)}
-                    onChange={() =>
-                      setSelected(
-                        selected.includes(tenant.id)
-                          ? selected.filter((id) => id !== tenant.id)
-                          : [...selected, tenant.id],
-                      )
-                    }
+                    aria-label="租户标识"
+                    value={slug}
+                    onChange={(event) => setSlug(event.target.value)}
+                    required
+                    pattern="[a-z0-9][a-z0-9-]+"
                   />
-                  {tenant.name}
                 </label>
-              ))}
-            </fieldset>
-            <button type="submit">创建 Tenant Group</button>
-          </form>
-          <ul>
-            {state.groups.map((group) => (
-              <li key={group.id}>
-                {group.name} · {group.tenant_ids.length} 个租户
-              </li>
-            ))}
-          </ul>
-        </section>
+                <label>
+                  租户名称
+                  <input
+                    aria-label="租户名称"
+                    value={tenantName}
+                    onChange={(event) => setTenantName(event.target.value)}
+                    required
+                  />
+                </label>
+                <button type="submit">创建租户</button>
+              </form>
+              <ul>
+                {state.tenants.map((tenant) => (
+                  <li key={tenant.id}>
+                    {tenant.name} ({tenant.slug})
+                  </li>
+                ))}
+              </ul>
+            </section>
 
-        <section className="panel panel--wide">
-          <h2>平台角色</h2>
-          {state.users.length === 0 ? (
-            <p className="muted">OIDC 用户登录后会出现在这里。</p>
-          ) : (
-            <ul>
-              {state.users.map((user) => (
-                <li key={user.id} className="role-row">
-                  <span>
-                    {user.display_name}{" "}
-                    <small>{user.roles.join(" · ") || "无角色"}</small>
-                  </span>
-                  <button
-                    onClick={() =>
-                      assignRole(user.id, "PLATFORM_ADMIN", user.version).then(
-                        () => load(state.session),
-                      )
-                    }
-                  >
-                    授予管理员
-                  </button>
-                  <button
-                    onClick={() =>
-                      assignRole(
-                        user.id,
-                        "PLATFORM_AUDITOR",
-                        user.version,
-                      ).then(() => load(state.session))
-                    }
-                  >
-                    授予审计员
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </section>
+            <section className="panel">
+              <h2>Tenant Group</h2>
+              <form onSubmit={onGroup} className="stack">
+                <label>
+                  Tenant Group 名称
+                  <input
+                    aria-label="Tenant Group 名称"
+                    value={groupName}
+                    onChange={(event) => setGroupName(event.target.value)}
+                    required
+                  />
+                </label>
+                <fieldset>
+                  <legend>成员租户</legend>
+                  {state.tenants.map((tenant) => (
+                    <label key={tenant.id} className="check">
+                      <input
+                        type="checkbox"
+                        aria-label={tenant.name}
+                        checked={selected.includes(tenant.id)}
+                        onChange={() =>
+                          setSelected(
+                            selected.includes(tenant.id)
+                              ? selected.filter((id) => id !== tenant.id)
+                              : [...selected, tenant.id],
+                          )
+                        }
+                      />
+                      {tenant.name}
+                    </label>
+                  ))}
+                </fieldset>
+                <button type="submit">创建 Tenant Group</button>
+              </form>
+              <ul>
+                {state.groups.map((group) => (
+                  <li key={group.id}>
+                    {group.name} · {group.tenant_ids.length} 个租户
+                  </li>
+                ))}
+              </ul>
+            </section>
+
+            <section className="panel panel--wide">
+              <h2>平台角色</h2>
+              {state.users.length === 0 ? (
+                <p className="muted">OIDC 用户登录后会出现在这里。</p>
+              ) : (
+                <ul>
+                  {state.users.map((user) => (
+                    <li key={user.id} className="role-row">
+                      <span>
+                        {user.display_name}{" "}
+                        <small>{user.roles.join(" · ") || "无角色"}</small>
+                      </span>
+                      <button
+                        onClick={() =>
+                          assignRole(
+                            user.id,
+                            "PLATFORM_ADMIN",
+                            user.version,
+                          ).then(() => load(state.session))
+                        }
+                      >
+                        授予管理员
+                      </button>
+                      <button
+                        onClick={() =>
+                          assignRole(
+                            user.id,
+                            "PLATFORM_AUDITOR",
+                            user.version,
+                          ).then(() => load(state.session))
+                        }
+                      >
+                        授予审计员
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </section>
+          </>
+        )}
         <AgentWorkspace tenants={state.tenants} />
       </div>
     </main>

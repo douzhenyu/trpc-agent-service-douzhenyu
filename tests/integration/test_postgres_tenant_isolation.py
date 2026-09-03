@@ -134,6 +134,15 @@ async def _exercise_isolation() -> None:
                 )
 
         async with app.transaction():
+            await app.execute("SELECT set_config('app.user_id',$1,true)", str(user_id))
+            visible = await app.fetch("SELECT tenant_id FROM tenant.member ORDER BY tenant_id")
+            assert [row["tenant_id"] for row in visible] == [tenant_a]
+
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.user_id',$1,true)", str(uuid4()))
+            assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
+
+        async with app.transaction():
             await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await app.execute(
