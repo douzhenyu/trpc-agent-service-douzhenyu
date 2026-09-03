@@ -10,8 +10,14 @@ from fastapi.testclient import TestClient
 
 from trpc_service.admin_api.app import create_app
 from trpc_service.admin_api.auth import Principal, encode_session
+from trpc_service.admin_api.database import Database
 from trpc_service.admin_api.settings import AdminSettings
 from trpc_service.database_migrations import apply_migrations
+from trpc_service.llm_gateway import (
+    DatabaseModelProfileResolver,
+    DataClassification,
+    ModelProfile,
+)
 
 ADMIN_URL = os.getenv(
     "TEST_DATABASE_ADMIN_URL", "postgresql://postgres:postgres@127.0.0.1:55432/trpc_platform"
@@ -33,7 +39,7 @@ async def _prepare_database() -> None:
     connection = await asyncpg.connect(ADMIN_URL)
     try:
         await connection.execute(
-            "TRUNCATE tenant.agent_draft, tenant.agent_application, "
+            "TRUNCATE tenant.model_profile, tenant.agent_draft, tenant.agent_application, "
             "platform.idempotency_record, platform.audit_event, "
             "platform.platform_role_assignment, platform.platform_user, "
             "platform.tenant_group_member, platform.tenant_group, "
@@ -531,3 +537,79 @@ def test_agent_openapi_contract_declares_stable_errors_and_version_preconditions
     )
     assert if_match["required"] is True
     assert schema["components"]["schemas"]["ErrorDetail"]["properties"]["code"]["enum"]
+
+
+def test_tenant_admin_manages_model_profiles_without_exposing_secret_contents() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        tenant_id = _login_and_create_tenant(client)
+        collection = f"/api/v1/tenants/{tenant_id}/model-profiles"
+        secret_ref = f"vault://tenant/{tenant_id}/llm/openai#api_key"
+        created = client.post(
+            collection,
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "alias": "balanced",
+                "provider_model": "fake-balanced",
+                "endpoint_url": "http://fake-llm.internal/v1/chat/completions",
+                "secret_ref": secret_ref,
+                "data_classification": "CONFIDENTIAL",
+                "region": "cn-north-1",
+                "fallback_aliases": ["economy"],
+                "requests_per_minute": 120,
+            },
+        )
+
+        assert created.status_code == 201
+        assert created.headers["etag"] == '"1"'
+        assert created.json() == {
+            **created.json(),
+            "tenant_id": tenant_id,
+            "alias": "balanced",
+            "provider_model": "fake-balanced",
+            "endpoint_url": "http://fake-llm.internal/v1/chat/completions",
+            "secret_ref": secret_ref,
+            "data_classification": "CONFIDENTIAL",
+            "region": "cn-north-1",
+            "fallback_aliases": ["economy"],
+            "requests_per_minute": 120,
+            "version": 1,
+        }
+        assert "api_key" not in {key.lower() for key in created.json()}
+
+        fetched = client.get(f"{collection}/balanced")
+        assert fetched.status_code == 200
+        assert fetched.json() == created.json()
+
+        async def resolve_runtime_profile() -> ModelProfile | None:
+            database = Database(APP_URL)
+            await database.open()
+            try:
+                return await DatabaseModelProfileResolver(database).resolve(tenant_id, "balanced")
+            finally:
+                await database.close()
+
+        runtime_profile = asyncio.run(resolve_runtime_profile())
+        assert runtime_profile is not None
+        assert runtime_profile.secret_ref == secret_ref
+        assert runtime_profile.data_classification is DataClassification.CONFIDENTIAL
+
+        updated = client.patch(
+            f"{collection}/balanced",
+            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+            json={"fallback_aliases": ["premium"], "requests_per_minute": 60},
+        )
+        assert updated.status_code == 200
+        assert updated.headers["etag"] == '"2"'
+        assert updated.json()["fallback_aliases"] == ["premium"]
+        assert updated.json()["requests_per_minute"] == 60
+
+        audit = client.get("/api/v1/audit-events", params={"tenant_id": tenant_id})
+        events = [
+            event for event in audit.json()["items"] if event["action"].startswith("model_profile.")
+        ]
+        assert {event["action"] for event in events} == {
+            "model_profile.create",
+            "model_profile.update",
+        }
+        assert secret_ref not in str(events)

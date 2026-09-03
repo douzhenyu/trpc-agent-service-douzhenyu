@@ -1,0 +1,251 @@
+"""Credential-injecting, tenant-scoped LLM Gateway routing boundary."""
+
+from __future__ import annotations
+
+from collections import defaultdict, deque
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from enum import StrEnum
+from time import monotonic
+from typing import Any, Protocol
+from uuid import UUID
+
+import httpx
+
+from trpc_service.admin_api.database import Database
+
+
+class DataClassification(StrEnum):
+    PUBLIC = "PUBLIC"
+    INTERNAL = "INTERNAL"
+    CONFIDENTIAL = "CONFIDENTIAL"
+    RESTRICTED = "RESTRICTED"
+
+
+_CLASSIFICATION_RANK = {
+    DataClassification.PUBLIC: 0,
+    DataClassification.INTERNAL: 1,
+    DataClassification.CONFIDENTIAL: 2,
+    DataClassification.RESTRICTED: 3,
+}
+
+
+@dataclass(frozen=True)
+class ModelProfile:
+    tenant_id: str
+    alias: str
+    provider_model: str
+    endpoint_url: str
+    secret_ref: str
+    data_classification: DataClassification
+    region: str
+    fallback_aliases: tuple[str, ...]
+    requests_per_minute: int
+
+
+@dataclass(frozen=True)
+class GatewayRequest:
+    tenant_id: str
+    model_alias: str
+    messages: list[dict[str, str]]
+    data_classification: DataClassification
+    region: str
+
+
+@dataclass(frozen=True)
+class GatewayResult:
+    model_alias: str
+    fallback_used: bool
+    completion: dict[str, Any]
+
+
+class ModelGatewayError(RuntimeError):
+    """Safe, stable error for callers; never embeds provider response bodies."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class ModelProfileResolver(Protocol):
+    async def resolve(self, tenant_id: str, alias: str) -> ModelProfile | None: ...
+
+
+class SecretProvider(Protocol):
+    async def resolve(self, secret_ref: str) -> str: ...
+
+
+class InMemoryModelProfileResolver:
+    """Test-only profile source. Production adapters must read tenant-scoped metadata."""
+
+    def __init__(self, profiles: Sequence[ModelProfile]) -> None:
+        self._profiles = {(profile.tenant_id, profile.alias): profile for profile in profiles}
+
+    async def resolve(self, tenant_id: str, alias: str) -> ModelProfile | None:
+        return self._profiles.get((tenant_id, alias))
+
+
+class DatabaseModelProfileResolver:
+    """Runtime resolver for tenant-scoped configuration stored by the Admin API."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def resolve(self, tenant_id: str, alias: str) -> ModelProfile | None:
+        try:
+            parsed_tenant_id = UUID(tenant_id)
+        except ValueError:
+            return None
+        async with self._database.tenant_transaction(parsed_tenant_id) as connection:
+            row = await connection.fetchrow(
+                """SELECT tenant_id,alias,provider_model,endpoint_url,secret_ref,
+                data_classification,region,fallback_aliases,requests_per_minute
+                FROM tenant.model_profile WHERE tenant_id=$1 AND alias=$2""",
+                parsed_tenant_id,
+                alias,
+            )
+        if row is None:
+            return None
+        return ModelProfile(
+            tenant_id=str(row["tenant_id"]),
+            alias=str(row["alias"]),
+            provider_model=str(row["provider_model"]),
+            endpoint_url=str(row["endpoint_url"]),
+            secret_ref=str(row["secret_ref"]),
+            data_classification=DataClassification(str(row["data_classification"])),
+            region=str(row["region"]),
+            fallback_aliases=tuple(str(item) for item in row["fallback_aliases"]),
+            requests_per_minute=int(row["requests_per_minute"]),
+        )
+
+
+class LLMGateway:
+    def __init__(
+        self,
+        profiles: ModelProfileResolver,
+        secrets: SecretProvider,
+        client: httpx.AsyncClient,
+        *,
+        circuit_failure_threshold: int = 3,
+        circuit_reset_seconds: float = 30,
+    ) -> None:
+        self._profiles = profiles
+        self._secrets = secrets
+        self._client = client
+        self._circuit_failure_threshold = circuit_failure_threshold
+        self._circuit_reset_seconds = circuit_reset_seconds
+        self._failures: dict[tuple[str, str], int] = defaultdict(int)
+        self._opened_at: dict[tuple[str, str], float] = {}
+        self._requests: dict[tuple[str, str], deque[float]] = defaultdict(deque)
+
+    async def complete(self, request: GatewayRequest) -> GatewayResult:
+        attempted = False
+        rate_limited = False
+        circuit_open = False
+        for profile in await self._candidate_profiles(request):
+            if not self._allows(request, profile):
+                continue
+            attempted = True
+            key = (profile.tenant_id, profile.alias)
+            if self._circuit_open(key):
+                circuit_open = True
+                continue
+            if not self._within_rate_limit(key, profile.requests_per_minute):
+                rate_limited = True
+                continue
+            try:
+                credential = await self._secrets.resolve(profile.secret_ref)
+                completion = await self._provider_completion(profile, request.messages, credential)
+            except (httpx.HTTPError, ModelGatewayError):
+                self._record_failure(key)
+                continue
+            self._record_success(key)
+            return GatewayResult(
+                model_alias=profile.alias,
+                fallback_used=profile.alias != request.model_alias,
+                completion=completion,
+            )
+        if not attempted:
+            raise ModelGatewayError("MODEL_POLICY_DENIED")
+        if rate_limited and not circuit_open:
+            raise ModelGatewayError("RATE_LIMITED")
+        if circuit_open and not rate_limited:
+            raise ModelGatewayError("CIRCUIT_OPEN")
+        raise ModelGatewayError("MODEL_UNAVAILABLE")
+
+    async def _candidate_profiles(self, request: GatewayRequest) -> list[ModelProfile]:
+        aliases = [request.model_alias]
+        profiles: list[ModelProfile] = []
+        seen: set[str] = set()
+        while aliases:
+            alias = aliases.pop(0)
+            if alias in seen:
+                continue
+            seen.add(alias)
+            profile = await self._profiles.resolve(request.tenant_id, alias)
+            if profile is None:
+                continue
+            profiles.append(profile)
+            aliases.extend(profile.fallback_aliases)
+        return profiles
+
+    @staticmethod
+    def _allows(request: GatewayRequest, profile: ModelProfile) -> bool:
+        return (
+            request.region == profile.region
+            and _CLASSIFICATION_RANK[request.data_classification]
+            <= _CLASSIFICATION_RANK[profile.data_classification]
+        )
+
+    def _circuit_open(self, key: tuple[str, str]) -> bool:
+        opened_at = self._opened_at.get(key)
+        if opened_at is None:
+            return False
+        if monotonic() - opened_at < self._circuit_reset_seconds:
+            return True
+        self._opened_at.pop(key, None)
+        self._failures[key] = 0
+        return False
+
+    def _within_rate_limit(self, key: tuple[str, str], limit: int) -> bool:
+        now = monotonic()
+        requests = self._requests[key]
+        while requests and requests[0] <= now - 60:
+            requests.popleft()
+        if len(requests) >= limit:
+            return False
+        requests.append(now)
+        return True
+
+    def _record_failure(self, key: tuple[str, str]) -> None:
+        self._failures[key] += 1
+        if self._failures[key] >= self._circuit_failure_threshold:
+            self._opened_at[key] = monotonic()
+
+    def _record_success(self, key: tuple[str, str]) -> None:
+        self._failures[key] = 0
+        self._opened_at.pop(key, None)
+
+    async def _provider_completion(
+        self,
+        profile: ModelProfile,
+        messages: list[dict[str, str]],
+        credential: str,
+    ) -> dict[str, Any]:
+        response = await self._client.post(
+            profile.endpoint_url,
+            headers={
+                "Authorization": f"Bearer {credential}",
+                "X-Model-Alias": profile.alias,
+            },
+            json={"model": profile.provider_model, "messages": messages},
+        )
+        if response.status_code >= 400:
+            raise ModelGatewayError("UPSTREAM_FAILURE")
+        try:
+            payload = response.json()
+        except ValueError as error:
+            raise ModelGatewayError("UPSTREAM_INVALID_RESPONSE") from error
+        if not isinstance(payload, Mapping):
+            raise ModelGatewayError("UPSTREAM_INVALID_RESPONSE")
+        return dict(payload)

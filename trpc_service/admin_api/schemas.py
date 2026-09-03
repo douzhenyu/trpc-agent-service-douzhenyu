@@ -78,6 +78,60 @@ class AgentApplicationList(BaseModel):
 
 
 DraftReference = Annotated[str, Field(max_length=128)]
+ModelAlias = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+ModelFallbackAlias = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+SecretReference = Annotated[
+    str,
+    Field(
+        pattern=r"^vault://tenant/[0-9a-f-]{36}/[a-z0-9][a-z0-9/_-]{0,255}#[A-Za-z0-9_.-]{1,64}$",
+        max_length=384,
+    ),
+]
+ModelEndpoint = Annotated[str, Field(pattern=r"^https?://[^\s]{1,480}$", max_length=512)]
+ModelRegion = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{1,62}$", max_length=63)]
+DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+
+
+class ModelProfileCreate(BaseModel):
+    alias: ModelAlias
+    provider_model: str = Field(min_length=1, max_length=256)
+    endpoint_url: ModelEndpoint
+    secret_ref: SecretReference
+    data_classification: DataClassification
+    region: ModelRegion
+    fallback_aliases: list[ModelFallbackAlias] = Field(default_factory=list, max_length=10)
+    requests_per_minute: int = Field(default=60, ge=1, le=100_000)
+
+
+class ModelProfileUpdate(BaseModel):
+    provider_model: str | None = Field(default=None, min_length=1, max_length=256)
+    endpoint_url: ModelEndpoint | None = None
+    secret_ref: SecretReference | None = None
+    data_classification: DataClassification | None = None
+    region: ModelRegion | None = None
+    fallback_aliases: list[ModelFallbackAlias] | None = Field(default=None, max_length=10)
+    requests_per_minute: int | None = Field(default=None, ge=1, le=100_000)
+
+
+class ModelProfileResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    alias: str
+    provider_model: str
+    endpoint_url: str
+    secret_ref: str
+    data_classification: DataClassification
+    region: str
+    fallback_aliases: list[str]
+    requests_per_minute: int
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelProfileList(BaseModel):
+    items: list[ModelProfileResponse]
+    next_cursor: str | None = None
 
 
 class AgentDraftCreate(BaseModel):
