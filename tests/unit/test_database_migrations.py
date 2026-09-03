@@ -13,7 +13,8 @@ from trpc_service import database_migrations
 
 
 def test_migration_statements_keep_the_role_block_intact() -> None:
-    statements = database_migrations.migration_statements()
+    revision = importlib.import_module("trpc_service.migrations.versions.0001_platform_identity")
+    statements = revision.migration_statements()
     assert statements[0].lstrip().startswith("DO $$ BEGIN")
     assert statements[0].endswith("END $$;")
     assert any("CREATE TABLE IF NOT EXISTS platform.tenant" in item for item in statements)
