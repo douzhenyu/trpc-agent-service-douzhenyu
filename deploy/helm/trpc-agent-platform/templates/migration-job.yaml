@@ -33,6 +33,7 @@ spec:
         app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
         app.kubernetes.io/instance: {{ .Release.Name }}
         app.kubernetes.io/component: database-migration
+        trpc-agent-platform.io/network-profile: database-migration
     spec:
       restartPolicy: Never
       serviceAccountName: {{ include "trpc-agent-platform.fullname" . }}-database-migration
@@ -50,6 +51,12 @@ spec:
           args:
             - -m
             - trpc_service.database_migrations
+          env:
+            - name: DATABASE_ADMIN_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.migration.databaseSecretName }}
+                  key: {{ .Values.migration.databaseSecretKey }}
           resources:
 {{ toYaml .Values.global.resources | indent 12 }}
           securityContext:

@@ -17,6 +17,38 @@ spec:
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
+  name: platform-database-migration
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: database-migration
+spec:
+  podSelector:
+    matchLabels:
+      trpc-agent-platform.io/network-profile: database-migration
+  policyTypes: [Egress]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - {port: 53, protocol: UDP}
+        - {port: 53, protocol: TCP}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.zeroTrust.egressGateway.namespace }}
+          podSelector:
+            matchLabels:
+{{ toYaml .Values.zeroTrust.egressGateway.podLabels | indent 14 }}
+      ports:
+        - port: {{ .Values.zeroTrust.egressGateway.port }}
+          protocol: TCP
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
   name: platform-waypoint
   labels:
     app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}

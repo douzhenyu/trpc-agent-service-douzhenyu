@@ -1,6 +1,9 @@
 import { expect, test } from "@playwright/test";
 
-test("公开健康接口可通过 Web Console 查看", async ({ page, request }) => {
+test("应急管理员可通过 Web Console 完成租户管理闭环", async ({
+  page,
+  request,
+}) => {
   const response = await request.get("/api/v1/health");
 
   expect(response.ok()).toBe(true);
@@ -12,12 +15,21 @@ test("公开健康接口可通过 Web Console 查看", async ({ page, request })
   });
 
   await page.goto("/");
-
   await expect(
-    page.getByRole("heading", { name: "平台健康状态" }),
+    page.getByRole("heading", { name: "平台管理登录" }),
   ).toBeVisible();
-  await expect(page.getByText("运行正常")).toBeVisible();
-  await expect(page.getByText("tRPC-Agent 1.1.19")).toBeVisible();
+  await page.getByLabel("用户名").fill("emergency-admin");
+  await page.getByLabel("密码").fill("correct-horse");
+  await page.getByRole("button", { name: "应急登录" }).click();
+  await expect(
+    page.getByRole("heading", { name: "租户与权限管理" }),
+  ).toBeVisible();
+
+  const slug = `smoke-${Date.now()}`;
+  await page.getByLabel("租户标识").fill(slug);
+  await page.getByLabel("租户名称").fill("Smoke Tenant");
+  await page.getByRole("button", { name: "创建租户" }).click();
+  await expect(page.getByText(`Smoke Tenant (${slug})`)).toBeVisible();
 });
 
 test("开发 Fake 可编排外部限流并恢复默认状态", async ({ request }) => {

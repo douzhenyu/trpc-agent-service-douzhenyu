@@ -29,6 +29,13 @@ resourceQuota:
 migration:
   enabled: true
   component: admin-api
+  databaseSecretName: trpc-platform-database-admin
+  databaseSecretKey: url
+
+adminApi:
+  databaseSecretName: trpc-platform-database-app
+  databaseSecretKey: url
+  authSecretName: trpc-platform-admin-auth
 
 zeroTrust:
   enabled: true
@@ -61,8 +68,8 @@ components:
     authorization:
       allowedCalls:
         - serviceAccount: web-console
-          methods: [GET]
-          paths: [/api/v1/health]
+          methods: [GET, POST, PUT, PATCH, DELETE]
+          paths: [/api/v1/*]
   web-console:
     enabled: true
     workloadKind: Deployment

@@ -1,6 +1,8 @@
 """Public Admin API response models."""
 
-from typing import Literal
+from datetime import datetime
+from typing import Any, Literal
+from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict
 
@@ -14,3 +16,86 @@ class HealthResponse(BaseModel):
     service: Literal["admin-api"] = "admin-api"
     version: str
     trpc_agent_version: str
+
+
+class EmergencyLoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+class SessionResponse(BaseModel):
+    subject: str
+    auth_method: Literal["oidc", "emergency"]
+    roles: list[str]
+
+
+class TenantCreate(BaseModel):
+    slug: str
+    name: str
+
+
+class TenantResponse(BaseModel):
+    id: UUID
+    slug: str
+    name: str
+    status: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class TenantList(BaseModel):
+    items: list[TenantResponse]
+
+
+class TenantGroupCreate(BaseModel):
+    name: str
+    tenant_ids: list[UUID] = []
+
+
+class TenantGroupResponse(BaseModel):
+    id: UUID
+    name: str
+    version: int
+    tenant_ids: list[UUID]
+
+
+class TenantGroupList(BaseModel):
+    items: list[TenantGroupResponse]
+
+
+class PlatformUserCreate(BaseModel):
+    issuer: str
+    subject: str
+    email: str | None = None
+    display_name: str
+
+
+class PlatformUserResponse(BaseModel):
+    id: UUID
+    issuer: str
+    subject: str
+    email: str | None
+    display_name: str
+    roles: list[str]
+
+
+class PlatformUserList(BaseModel):
+    items: list[PlatformUserResponse]
+
+
+class AuditEventResponse(BaseModel):
+    id: UUID
+    occurred_at: datetime
+    tenant_id: UUID | None
+    actor: str
+    auth_method: str
+    action: str
+    decision: str
+    target_type: str | None
+    target_id: str | None
+    details: dict[str, Any]
+
+
+class AuditEventList(BaseModel):
+    items: list[AuditEventResponse]

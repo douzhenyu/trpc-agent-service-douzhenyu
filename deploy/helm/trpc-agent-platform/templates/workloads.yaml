@@ -81,6 +81,17 @@ spec:
         - name: {{ $name }}
           image: {{ include "trpc-agent-platform.image" (dict "root" $ "component" $component) | quote }}
           imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+{{- if eq $name "admin-api" }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.adminApi.databaseSecretName }}
+                  key: {{ $.Values.adminApi.databaseSecretKey }}
+          envFrom:
+            - secretRef:
+                name: {{ $.Values.adminApi.authSecretName }}
+{{- end }}
 {{- if and (ne $name "admin-api") (ne $name "web-console") }}
           command:
             - /app/.venv/bin/uvicorn

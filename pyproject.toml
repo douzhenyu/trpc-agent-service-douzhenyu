@@ -4,7 +4,11 @@ version = "0.1.0"
 description = "Multi-tenant tRPC-Agent platform"
 requires-python = "==3.12.*"
 dependencies = [
+  "asyncpg==0.31.0",
   "fastapi==0.116.1",
+  "httpx==0.28.1",
+  "pwdlib[argon2]==0.3.1",
+  "pyjwt[crypto]==2.13.0",
   "pydantic-settings==2.10.1",
   "trpc-agent-py==1.1.19",
   "uvicorn[standard]==0.35.0",
@@ -36,6 +40,7 @@ addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
 testpaths = ["tests"]
 markers = [
+  "integration: tests that require a real PostgreSQL instance",
   "smoke: black-box tests against a running platform",
 ]
 
@@ -50,3 +55,7 @@ select = ["E", "F", "I", "UP", "B", "SIM"]
 python_version = "3.12"
 strict = true
 packages = ["trpc_service", "dev.fake_external"]
+
+[[tool.mypy.overrides]]
+module = "asyncpg"
+ignore_missing_imports = true

@@ -102,6 +102,33 @@ def test_each_unit_has_production_health_scaling_and_scheduling_policy() -> None
         assert pdb["spec"]["maxUnavailable"] == 1
 
 
+def test_database_owner_and_application_credentials_are_separate_secrets() -> None:
+    manifests = render_chart()
+    migration = next(manifest for manifest in manifests if manifest["kind"] == "Job")
+    admin_api = next(
+        manifest
+        for manifest in manifests
+        if manifest["kind"] == "Deployment"
+        and manifest["metadata"]["labels"]["app.kubernetes.io/component"] == "admin-api"
+    )
+
+    migration_container = migration["spec"]["template"]["spec"]["containers"][0]
+    admin_container = admin_api["spec"]["template"]["spec"]["containers"][0]
+    assert migration_container["env"] == [
+        {
+            "name": "DATABASE_ADMIN_URL",
+            "valueFrom": {"secretKeyRef": {"name": "trpc-platform-database-admin", "key": "url"}},
+        }
+    ]
+    assert admin_container["env"] == [
+        {
+            "name": "DATABASE_URL",
+            "valueFrom": {"secretKeyRef": {"name": "trpc-platform-database-app", "key": "url"}},
+        }
+    ]
+    assert admin_container["envFrom"] == [{"secretRef": {"name": "trpc-platform-admin-auth"}}]
+
+
 def test_argo_cd_declares_each_unit_as_an_independent_helm_release() -> None:
     application_set = yaml.safe_load(APPLICATION_SET_PATH.read_text())
     elements = application_set["spec"]["generators"][0]["list"]["elements"]
