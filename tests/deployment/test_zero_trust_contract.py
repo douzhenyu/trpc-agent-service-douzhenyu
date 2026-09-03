@@ -171,9 +171,9 @@ def test_authorization_is_default_deny_and_only_allows_declared_l7_calls() -> No
             "from": [{"source": {"serviceAccounts": ["default/web-console"]}}],
             "to": [
                 {
-                        "operation": {
-                            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
-                            "paths": ["/api/v1/*"],
+                    "operation": {
+                        "methods": ["GET", "POST", "PUT", "PATCH", "DELETE"],
+                        "paths": ["/api/v1/*"],
                     }
                 }
             ],
