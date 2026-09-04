@@ -33,11 +33,15 @@ def assert_no_unsafe_local_execution(
     environment: str,
     docker_socket_mounted: bool = False,
 ) -> None:
-    """Production guard: only the sandboxed executor is acceptable."""
+    """Production guard: an allow-list, so unknown kinds fail closed.
+
+    A blacklist could be bypassed by the real SDK class name
+    (UnsafeLocalCodeExecutor); only the sandboxed executor is acceptable.
+    """
 
     if environment != "PRODUCTION":
         return
-    if executor_kind.upper() in {"UNSAFE_LOCAL", "DOCKER"}:
+    if executor_kind.upper() != "SANDBOX":
         raise SandboxError(SANDBOX_UNSAFE_EXECUTOR_FORBIDDEN)
     if docker_socket_mounted:
         raise SandboxError(SANDBOX_DOCKER_SOCKET_FORBIDDEN)
@@ -74,6 +78,10 @@ class SandboxedCodeExecutor(BaseCodeExecutor):  # type: ignore[misc]  # trpc_age
             outcome = await self._runtime.run(policy, code, input_files)
         except SandboxError as error:
             return create_code_execution_result(stderr=f"{error.code}\n")
+        except Exception:
+            # Any unexpected runtime failure fails closed; untrusted code is
+            # never retried somewhere less isolated.
+            return create_code_execution_result(stderr=f"{SANDBOX_UNAVAILABLE}\n")
         output = outcome.output or ""
         # Reserve headroom for the SDK result delimiters so the delivered
         # output stays within the declared limit.

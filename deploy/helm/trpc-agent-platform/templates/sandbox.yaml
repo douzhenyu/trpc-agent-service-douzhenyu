@@ -1,5 +1,38 @@
 {{- if .Values.sandbox.enabled }}
 {{- $root := . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-manager
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: code-sandbox
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-manager
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: code-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "trpc-agent-platform.fullname" $ }}-agent-worker
+    namespace: {{ $.Release.Namespace }}
+---
 apiVersion: node.k8s.io/v1
 kind: RuntimeClass
 metadata:

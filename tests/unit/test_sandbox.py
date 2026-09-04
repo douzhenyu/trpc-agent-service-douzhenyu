@@ -249,9 +249,7 @@ def test_kubernetes_runtime_creates_and_cleans_up_pods(monkeypatch: Any) -> None
                 json={
                     "status": {
                         "phase": "Succeeded",
-                        "containerStatuses": [
-                            {"state": {"terminated": {"exitCode": 0}}}
-                        ],
+                        "containerStatuses": [{"state": {"terminated": {"exitCode": 0}}}],
                     }
                 },
             )

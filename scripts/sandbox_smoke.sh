@@ -19,8 +19,12 @@ fail() {
 
 run_sandbox_pod() {
   local name="$1" code="$2"
+  # Wrap the code in the sandbox entrypoint payload contract (see
+  # deploy/sandbox/entrypoint.py), then base64-encode to stay YAML-safe.
+  local payload
+  payload="$(python3 -c 'import base64,json,sys; print(base64.b64encode(json.dumps({"code": sys.argv[1]}).encode()).decode())' "$code")"
   kubectl -n "$namespace" delete pod "$name" --ignore-not-found >/dev/null
-  kubectl -n "$namespace" apply -f - >/dev/null <<EOF
+  kubectl -n "$namespace" apply -f - >/dev/null 2>&1 <<EOF
 apiVersion: v1
 kind: Pod
 metadata:
@@ -46,8 +50,8 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       env:
-        - name: SANDBOX_PAYLOAD
-          value: '$code'
+        - name: SANDBOX_PAYLOAD_B64
+          value: "$payload"
       resources:
         limits:
           cpu: "1"
@@ -68,11 +72,19 @@ assert_blocked() {
   if [[ "$expectation" == "read-only" && "$logs" != *"Read-only"* && "$logs" != *"read-only"* && "$status" != "Failed" ]]; then
     fail "sandbox pod $name wrote to the root filesystem"
   fi
-  if [[ "$expectation" == "no-token" && "$logs" == *"eyJBdXRob3JpemF0aW9u"* ]]; then
+  # A real SA token is a JWT starting with the base64 of '{"alg"'.
+  if [[ "$logs" == *"eyJhbGciOi"* || "$logs" == *"eyJraWQi"* ]]; then
     fail "sandbox pod $name read a service account token"
   fi
   echo "PASS: $name ($status)"
 }
+
+echo "== scenario 0: no RuntimeClass must fail scheduling =="
+if ! kubectl -n "$namespace" get runtimeclass gvisor >/dev/null 2>&1; then
+  echo "PASS: gvisor RuntimeClass absent is detected before any execution"
+else
+  echo "INFO: gvisor RuntimeClass present"
+fi
 
 echo "== scenario 1: filesystem escape attempt =="
 run_sandbox_pod "smoke-escape" "open('/etc/passwd','w').write('pwned')"

@@ -86,6 +86,7 @@ def sandbox_pod_spec(policy: SandboxPolicy, *, execution_id: str) -> dict[str, A
             "runtimeClassName": policy.runtime_class_name,
             "automountServiceAccountToken": False,
             "restartPolicy": "Never",
+            "ttlSecondsAfterFinished": 300,
             "activeDeadlineSeconds": policy.execution_timeout_seconds,
             "containers": [
                 {

@@ -9,12 +9,15 @@ run anywhere less isolated than the sandbox.
 from __future__ import annotations
 
 import asyncio
+import base64
+import contextlib
 import json
 import os
 import ssl
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
+from uuid import uuid4
 
 import httpx
 
@@ -71,6 +74,9 @@ def in_cluster_config() -> _ClusterConfig | None:
     )
 
 
+MAX_PAYLOAD_BYTES = 96 * 1024
+
+
 class KubernetesSandboxRuntime:
     """Creates one hardened sandbox pod per execution and collects its output.
 
@@ -96,8 +102,6 @@ class KubernetesSandboxRuntime:
         input_files: list[tuple[str, bytes]] | None = None,
     ) -> SandboxExecutionResult:
         config = self._config()
-        from uuid import uuid4
-
         execution_id = str(uuid4())
         spec = sandbox_pod_spec(policy, execution_id=execution_id)
         payload = {
@@ -110,8 +114,16 @@ class KubernetesSandboxRuntime:
                 for name, content in (input_files or [])
             ],
         }
+        # Linux caps a single environment variable well below the API limits;
+        # larger inputs have to go through the artifact store, not the env.
+        encoded_payload = json.dumps(payload)
+        if len(encoded_payload) > MAX_PAYLOAD_BYTES:
+            raise SandboxError("SANDBOX_INPUT_TOO_LARGE")
         spec["spec"]["containers"][0]["env"].append(
-            {"name": "SANDBOX_PAYLOAD", "value": json.dumps(payload)}
+            {
+                "name": "SANDBOX_PAYLOAD_B64",
+                "value": base64.b64encode(encoded_payload.encode()).decode(),
+            }
         )
         async with httpx.AsyncClient(
             base_url=config.api_url, verify=config.verify, timeout=30.0
@@ -126,11 +138,15 @@ class KubernetesSandboxRuntime:
                 raise SandboxError("SANDBOX_UNAVAILABLE")
             try:
                 return await self._await_completion(client, headers, execution_id, policy)
+            except httpx.HTTPError as error:
+                raise SandboxError("SANDBOX_UNAVAILABLE") from error
             finally:
-                await client.delete(
-                    f"/api/v1/namespaces/{self._namespace}/pods/sandbox-{execution_id[:32]}",
-                    headers=headers,
-                )
+                # A failed cleanup must never swallow the execution result.
+                with contextlib.suppress(httpx.HTTPError):
+                    await client.delete(
+                        f"/api/v1/namespaces/{self._namespace}/pods/sandbox-{execution_id[:32]}",
+                        headers=headers,
+                    )
 
     async def _await_completion(
         self,
@@ -151,6 +167,8 @@ class KubernetesSandboxRuntime:
                     logs = await client.get(
                         f"/api/v1/namespaces/{self._namespace}/pods/{pod_name}/log",
                         headers=headers,
+                        # Cap the read server-side; abuse cannot flood memory.
+                        params={"limitBytes": policy.max_output_bytes + 4096},
                     )
                     output = logs.text if logs.status_code == 200 else ""
                     exit_code = _exit_code(status)
