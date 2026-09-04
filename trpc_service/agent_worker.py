@@ -28,6 +28,7 @@ from trpc_service.llm_gateway import (
     ModelProfile,
 )
 from trpc_service.runtime_health import RuntimeHealthResponse
+from trpc_service.sandbox.executor import assert_no_unsafe_local_execution
 from trpc_service.sessions import (
     LeaseGrant,
     SessionEvent,
@@ -379,6 +380,9 @@ class AgentWorkerSettings(BaseSettings):
 
     database_url: str = ""
     llm_gateway_url: str = ""
+    environment: str = "PRODUCTION"
+    code_executor_kind: str = "SANDBOX"
+    docker_socket_mounted: bool = False
 
     def validate_runtime(self) -> None:
         missing = [
@@ -391,6 +395,11 @@ class AgentWorkerSettings(BaseSettings):
         ]
         if missing:
             raise RuntimeError(f"Agent Worker configuration is incomplete: {', '.join(missing)}")
+        assert_no_unsafe_local_execution(
+            self.code_executor_kind,
+            environment=self.environment,
+            docker_socket_mounted=self.docker_socket_mounted,
+        )
 
 
 class HttpGatewayClient:
