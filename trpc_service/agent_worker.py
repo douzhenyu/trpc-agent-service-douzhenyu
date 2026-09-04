@@ -17,6 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
+from trpc_service.execution_bus import ExecutionEnvelope
 from trpc_service.llm_gateway import (
     DataClassification,
     GatewayCompletionClient,
@@ -27,6 +28,12 @@ from trpc_service.llm_gateway import (
     ModelProfile,
 )
 from trpc_service.runtime_health import RuntimeHealthResponse
+from trpc_service.sessions import (
+    LeaseGrant,
+    SessionEvent,
+    SessionLeaseManager,
+    commit_session_events,
+)
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
@@ -265,6 +272,82 @@ class AgentWorker:
             except Exception as error:
                 raise ModelGatewayError("FALLBACK_AUDIT_UNAVAILABLE") from error
         return result
+
+
+class SessionExecutionProcessor:
+    """At-least-once bus consumer committing one authoritative Session state per message.
+
+    Duplicates are collapsed twice: redelivered messages skip executions that
+    already succeeded, and concurrent consumers arbitrate at commit time through
+    the Session lease fencing token and the expected Session version.
+    """
+
+    def __init__(
+        self,
+        worker: AgentWorker,
+        database: Database,
+        leases: SessionLeaseManager,
+        owner_id: str,
+    ) -> None:
+        self._worker = worker
+        self._database = database
+        self._leases = leases
+        self._owner_id = owner_id
+
+    async def handle(self, envelope: ExecutionEnvelope) -> None:
+        data = envelope.data
+        tenant_id = UUID(str(data["tenant_id"]))
+        session_id = str(data["session_id"])
+        execution_id = UUID(str(data["execution_id"]))
+        release_id = str(data["release_id"])
+        messages = [dict(message) for message in data["messages"]]
+        if await self._execution_status(tenant_id, envelope.message_id) == "SUCCEEDED":
+            return
+        grant: LeaseGrant = await self._leases.acquire(tenant_id, session_id, self._owner_id)
+        result = await self._worker.complete(
+            AgentExecutionRequest(str(tenant_id), release_id, messages)
+        )
+        events = [
+            SessionEvent(
+                kind="USER_MESSAGE",
+                payload={"content": str(messages[-1].get("content", ""))},
+            ),
+            SessionEvent(
+                kind="AGENT_REPLY",
+                payload={
+                    "model_alias": result.model_alias,
+                    "fallback_used": result.fallback_used,
+                    "completion": result.completion,
+                },
+            ),
+        ]
+        async with self._database.tenant_transaction(tenant_id) as connection:
+            await commit_session_events(
+                connection,
+                tenant_id=tenant_id,
+                session_id=session_id,
+                owner_id=self._owner_id,
+                fencing_token=grant.fencing_token,
+                expected_version=grant.session_version,
+                execution_id=execution_id,
+                events=events,
+            )
+            await connection.execute(
+                """UPDATE tenant.agent_execution SET status='SUCCEEDED',updated_at=now()
+                WHERE tenant_id=$1 AND id=$2""",
+                tenant_id,
+                execution_id,
+            )
+
+    async def _execution_status(self, tenant_id: UUID, message_id: str) -> str | None:
+        async with self._database.tenant_transaction(tenant_id) as connection:
+            status: str | None = await connection.fetchval(
+                """SELECT status FROM tenant.agent_execution
+                WHERE tenant_id=$1 AND message_id=$2""",
+                tenant_id,
+                message_id,
+            )
+            return status
 
 
 class AgentWorkerSettings(BaseSettings):
