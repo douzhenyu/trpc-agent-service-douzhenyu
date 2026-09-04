@@ -28,6 +28,7 @@ from trpc_service.budgets import (
     BudgetReservationBundle,
     BudgetService,
     BudgetStateUnknown,
+    ModelPrice,
     estimate_cost_micros,
     estimate_tokens,
 )
@@ -312,19 +313,27 @@ class LLMGateway:
             # BUDGET_STATE_UNKNOWN; both fail closed before any provider call.
             bundle = await self._budget.reserve(request)
         try:
-            return await self._complete_with_guard(
+            result = await self._complete_with_guard(
                 request,
-                bundle,
+                bundle=None if bundle is None else bundle,
                 started_at=started_at,
                 request_content_hash=request_content_hash,
             )
         except ModelGatewayError as error:
+            # The call failed upstream: return the reservation. A settlement
+            # uncertainty cannot happen here because settle runs after success.
             if bundle is not None and self._budget is not None:
                 try:
                     await self._budget.release(bundle, reason=error.code)
                 except Exception as release_error:
                     raise ModelGatewayError("BUDGET_STATE_UNKNOWN") from release_error
             raise
+        if bundle is not None and self._budget is not None:
+            # Fail closed on settlement uncertainty: the bookkeeping must not
+            # silently diverge from actual spend. A successful call is never
+            # released.
+            await self._budget.settle(bundle)
+        return result
 
     async def _complete_with_guard(
         self,
@@ -392,10 +401,6 @@ class LLMGateway:
                 fallback_used=profile.alias != request.model_alias,
                 completion=completion,
             )
-            if bundle is not None and self._budget is not None:
-                # Fail closed on settlement uncertainty: the bookkeeping must
-                # not silently diverge from actual spend.
-                await self._budget.settle(bundle)
             self._record_event(
                 request,
                 result.model_alias,
@@ -595,13 +600,6 @@ class GatewayModel:
         )
 
 
-@dataclass(frozen=True)
-class ModelPrice:
-    model_alias: str
-    input_micros_per_1k: int
-    output_micros_per_1k: int
-
-
 class DatabaseBudgetGuard:
     """LLM Gateway BudgetGuard: estimates, reserves, settles and releases.
 
@@ -612,34 +610,21 @@ class DatabaseBudgetGuard:
     def __init__(self, service: BudgetService) -> None:
         self._service = service
 
-    async def latest_prices(self, tenant_id: str) -> dict[str, ModelPrice]:
-        async with self._service._database.tenant_transaction(UUID(tenant_id)) as connection:
-            rows = await connection.fetch(
-                """SELECT model_alias,input_micros_per_1k,output_micros_per_1k
-                FROM tenant.model_price
-                WHERE tenant_id=$1
-                  AND version=(SELECT max(version) FROM tenant.model_price
-                WHERE tenant_id=$1)""",
-                UUID(tenant_id),
-            )
-        return {
-            str(row["model_alias"]): ModelPrice(
-                model_alias=str(row["model_alias"]),
-                input_micros_per_1k=int(row["input_micros_per_1k"]),
-                output_micros_per_1k=int(row["output_micros_per_1k"]),
-            )
-            for row in rows
-        }
-
     async def reserve(self, request: GatewayRequest) -> BudgetReservationBundle:
-        prices = await self.latest_prices(request.tenant_id)
-        price = prices.get(request.model_alias, ModelPrice(request.model_alias, 0, 0))
+        prices, price_version = await self._service.latest_prices(request.tenant_id)
+        price = prices.get(request.model_alias)
+        if price is None and await self._service.has_active_budgets(request.tenant_id):
+            # An enforced budget without a price for this model cannot bound
+            # spend; fail closed instead of reserving zero.
+            raise ModelGatewayError("MODEL_UNPRICED")
+        unpriced = ModelPrice(request.model_alias, 0, 0)
+        effective = price or unpriced
         input_tokens, output_tokens = estimate_tokens(request.messages)
         estimated = estimate_cost_micros(
             input_tokens,
             output_tokens,
-            input_micros_per_1k=price.input_micros_per_1k,
-            output_micros_per_1k=price.output_micros_per_1k,
+            input_micros_per_1k=effective.input_micros_per_1k,
+            output_micros_per_1k=effective.output_micros_per_1k,
         )
         try:
             return await self._service.reserve(
@@ -648,6 +633,7 @@ class DatabaseBudgetGuard:
                     application_id=request.application_id,
                     execution_id=request.execution_id,
                     estimated_micros=estimated,
+                    price_version=price_version,
                 )
             )
         except BudgetExceeded as error:

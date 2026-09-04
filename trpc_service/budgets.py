@@ -17,7 +17,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
-from uuid import UUID, uuid4
+from uuid import UUID
 
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -60,17 +60,15 @@ def daily_period_key(moment: datetime) -> str:
 
 
 def period_key_for(scope: str, moment: datetime, execution_id: str | None) -> str:
-    match scope:
-        case "TENANT_MONTHLY":
-            return monthly_period_key(moment)
-        case "AGENT_DAILY":
-            return daily_period_key(moment)
-        case "EXECUTION":
-            if not execution_id:
-                raise ValueError("execution budgets require an execution id")
-            return execution_id
-        case _:
-            raise ValueError(f"unknown budget scope: {scope}")
+    if scope == TENANT_MONTHLY:
+        return monthly_period_key(moment)
+    if scope == AGENT_DAILY:
+        return daily_period_key(moment)
+    if scope == EXECUTION:
+        if not execution_id:
+            raise ValueError("execution budgets require an execution id")
+        return execution_id
+    raise ValueError(f"unknown budget scope: {scope}")
 
 
 def estimate_tokens(
@@ -126,6 +124,16 @@ class BudgetCommand:
     application_id: str | None
     execution_id: str | None
     estimated_micros: int
+    price_version: int | None = None
+
+
+@dataclass(frozen=True)
+class ModelPrice:
+    """One versioned tenant price row (micros per 1k tokens)."""
+
+    model_alias: str
+    input_micros_per_1k: int
+    output_micros_per_1k: int
 
 
 @dataclass(frozen=True)
@@ -167,6 +175,40 @@ class BudgetService:
         self._database = database
         self._clock = clock or (lambda: datetime.now(UTC))
 
+    async def latest_prices(self, tenant_id: str) -> tuple[dict[str, ModelPrice], int | None]:
+        """The newest price table version of a tenant with its rows."""
+
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            version = await connection.fetchval(
+                "SELECT max(version) FROM tenant.model_price WHERE tenant_id=$1",
+                UUID(tenant_id),
+            )
+            rows = await connection.fetch(
+                """SELECT model_alias,input_micros_per_1k,output_micros_per_1k
+                FROM tenant.model_price
+                WHERE tenant_id=$1
+                  AND version=(SELECT max(version) FROM tenant.model_price
+                WHERE tenant_id=$1)""",
+                UUID(tenant_id),
+            )
+        prices = {
+            str(row["model_alias"]): ModelPrice(
+                model_alias=str(row["model_alias"]),
+                input_micros_per_1k=int(row["input_micros_per_1k"]),
+                output_micros_per_1k=int(row["output_micros_per_1k"]),
+            )
+            for row in rows
+        }
+        return prices, (int(version) if version is not None else None)
+
+    async def has_active_budgets(self, tenant_id: str) -> bool:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            configured = await connection.fetchval(
+                "SELECT EXISTS(SELECT 1 FROM tenant.budget WHERE tenant_id=$1)",
+                UUID(tenant_id),
+            )
+        return configured is True
+
     async def reserve(self, command: BudgetCommand) -> BudgetReservationBundle:
         """Reserve the estimated cost on every applicable level, or fail closed.
 
@@ -203,7 +245,7 @@ class BudgetService:
                         levels[len(secured)].period_key,
                         "REJECT",
                         command.estimated_micros,
-                        reserve_id=uuid4(),
+                        reserve_id=uuid7(),
                         reason="limit exhausted",
                     )
                     bundle = BudgetReservationBundle(command=command)
@@ -214,10 +256,10 @@ class BudgetService:
                         alerts=tuple(alerts),
                     )
         except SQLAlchemyError as error:
-            outcome = await self._apply_unknown_policy(tenant_id, command, error)
-            if isinstance(outcome, BudgetReservationBundle):
-                return outcome
-            raise outcome from error
+            recovery = await self._apply_unknown_policy(tenant_id, command, error)
+            if recovery is not None:
+                return recovery
+            raise BudgetStateUnknown() from error
         if rejected:
             # Raise only after the rejection evidence has committed.
             raise BudgetExceeded()
@@ -226,12 +268,28 @@ class BudgetService:
     async def settle(
         self, bundle: BudgetReservationBundle, *, actual_micros: int | None = None
     ) -> None:
-        """Charge the actual cost; the estimate leaves the reserved bucket."""
+        """Charge the actual cost; the estimate leaves the reserved bucket.
+
+        Idempotent: a replayed settle finds its ledger row already present and
+        leaves the period state untouched.
+        """
 
         actual = actual_micros
         async with self._database.tenant_transaction(UUID(bundle.command.tenant_id)) as connection:
             for entry in bundle.entries:
                 charged = actual if actual is not None else entry.amount_micros
+                inserted = await self._append_ledger(
+                    connection,
+                    bundle.command,
+                    entry.budget_id,
+                    entry.period_key,
+                    "SETTLE",
+                    charged,
+                    reserve_id=UUID(entry.ledger_entry_id),
+                    contingency=entry.contingency,
+                )
+                if not inserted:
+                    continue
                 await connection.execute(
                     """UPDATE tenant.budget_period_state
                     SET reserved_micros=reserved_micros-$4,
@@ -244,32 +302,16 @@ class BudgetService:
                     entry.amount_micros,
                     charged,
                 )
-                await self._append_ledger(
-                    connection,
-                    bundle.command,
-                    entry.budget_id,
-                    entry.period_key,
-                    "SETTLE",
-                    charged,
-                    reserve_id=UUID(entry.ledger_entry_id),
-                    contingency=entry.contingency,
-                )
 
     async def release(self, bundle: BudgetReservationBundle, *, reason: str) -> None:
-        """Return a failed execution's reservation; nothing is consumed."""
+        """Return a failed execution's reservation; nothing is consumed.
+
+        Idempotent on replay, like settle.
+        """
 
         async with self._database.tenant_transaction(UUID(bundle.command.tenant_id)) as connection:
             for entry in bundle.entries:
-                await connection.execute(
-                    """UPDATE tenant.budget_period_state
-                    SET reserved_micros=reserved_micros-$4,version=version+1
-                    WHERE tenant_id=$1 AND budget_id=$2 AND period_key=$3""",
-                    UUID(bundle.command.tenant_id),
-                    UUID(entry.budget_id),
-                    entry.period_key,
-                    entry.amount_micros,
-                )
-                await self._append_ledger(
+                inserted = await self._append_ledger(
                     connection,
                     bundle.command,
                     entry.budget_id,
@@ -279,6 +321,17 @@ class BudgetService:
                     reserve_id=UUID(entry.ledger_entry_id),
                     contingency=entry.contingency,
                     reason=reason,
+                )
+                if not inserted:
+                    continue
+                await connection.execute(
+                    """UPDATE tenant.budget_period_state
+                    SET reserved_micros=reserved_micros-$4,version=version+1
+                    WHERE tenant_id=$1 AND budget_id=$2 AND period_key=$3""",
+                    UUID(bundle.command.tenant_id),
+                    UUID(entry.budget_id),
+                    entry.period_key,
+                    entry.amount_micros,
                 )
 
     async def adjust(
@@ -302,11 +355,10 @@ class BudgetService:
             )
             if budget is None:
                 raise LookupError("budget not found")
-            period_key = period_key_for(
-                str(budget["scope"]),
-                moment,
-                None if budget["application_id"] is None else str(budget["application_id"]),
-            )
+            scope = str(budget["scope"])
+            if scope == EXECUTION:
+                raise ValueError("execution budgets are adjusted by reconfiguring the limit")
+            period_key = period_key_for(scope, moment, None)
             await self._ensure_state_row(connection, tenant_id, budget_id, period_key)
             await connection.execute(
                 """UPDATE tenant.budget_period_state
@@ -333,7 +385,7 @@ class BudgetService:
                 period_key,
                 "ADJUST",
                 max(delta_micros, 0),
-                reserve_id=uuid4(),
+                reserve_id=uuid7(),
                 reason=f"{reason} (delta {delta_micros})",
                 actor=actor,
             )
@@ -355,11 +407,13 @@ class BudgetService:
             )
             if scope == AGENT_DAILY and application_id != command.application_id:
                 continue
-            if scope == EXECUTION and (
-                command.execution_id is None
-                or (application_id is not None and application_id != command.application_id)
-            ):
-                continue
+            if scope == EXECUTION:
+                if command.execution_id is None:
+                    # An execution budget exists but the caller did not identify
+                    # the execution: the tier cannot be evaluated, fail closed.
+                    raise BudgetStateUnknown("EXECUTION_BUDGET_UNEVALUABLE")
+                if application_id is not None and application_id != command.application_id:
+                    continue
             levels.append(
                 _Level(
                     budget_id=str(row["id"]),
@@ -474,8 +528,12 @@ class BudgetService:
 
     async def _apply_unknown_policy(
         self, tenant_id: UUID, command: BudgetCommand, error: SQLAlchemyError
-    ) -> Exception | BudgetReservationBundle:
-        """Resolve an unknowable reservation outcome: fail closed or contingency."""
+    ) -> BudgetReservationBundle | None:
+        """Resolve an unknowable reservation outcome: contingency draw or None.
+
+        None means fail closed — either no contingency is configured or the
+        allowance cannot cover the estimate.
+        """
 
         try:
             async with self._database.tenant_transaction(tenant_id) as connection:
@@ -486,7 +544,7 @@ class BudgetService:
                     if level.unknown_policy == CONTINGENCY and level.contingency_micros > 0
                 ]
                 if not contingent:
-                    return BudgetStateUnknown()
+                    return None
                 entries: list[BudgetReservation] = []
                 for level in contingent:
                     amount = min(command.estimated_micros, level.contingency_micros)
@@ -504,7 +562,7 @@ class BudgetService:
                         level.contingency_micros,
                     )
                     if reserved is None:
-                        return BudgetStateUnknown()
+                        return None
                     entry_id = str(uuid7())
                     await self._append_ledger(
                         connection,
@@ -529,7 +587,8 @@ class BudgetService:
                     )
                 return BudgetReservationBundle(command=command, entries=tuple(entries))
         except SQLAlchemyError:
-            return BudgetStateUnknown()
+            # Even the recovery path is uncertain: fail closed.
+            return None
 
     async def _ensure_state_row(
         self, connection: Connection, tenant_id: str, budget_id: str, period_key: str
@@ -556,14 +615,16 @@ class BudgetService:
         contingency: bool = False,
         reason: str = "",
         actor: str = "system",
-        price_version: int | None = None,
-    ) -> None:
-        await connection.execute(
+    ) -> bool:
+        """Append one immutable ledger row; True when newly inserted."""
+
+        inserted = await connection.fetchval(
             """INSERT INTO tenant.cost_ledger
             (tenant_id,id,budget_id,period_key,application_id,execution_id,entry_type,
             amount_micros,reserve_id,contingency,reason,actor,price_version)
             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
-            ON CONFLICT (tenant_id,budget_id,period_key,reserve_id,entry_type) DO NOTHING""",
+            ON CONFLICT (tenant_id,budget_id,period_key,reserve_id,entry_type)
+            DO NOTHING RETURNING id""",
             UUID(command.tenant_id),
             uuid7(),
             UUID(budget_id),
@@ -576,5 +637,6 @@ class BudgetService:
             contingency,
             reason,
             actor,
-            price_version,
+            command.price_version,
         )
+        return inserted is not None

@@ -163,7 +163,7 @@ async def _ledger_entries(tenant_id: str, entry_type: str | None = None) -> list
             dict(row)
             for row in await connection.fetch(
                 """SELECT id,budget_id,period_key,entry_type,amount_micros,reserve_id,
-                contingency,reason,actor
+                contingency,reason,actor,price_version
                 FROM tenant.cost_ledger WHERE tenant_id=$1
                 AND ($2::text IS NULL OR entry_type=$2) ORDER BY created_at,id""",
                 tenant_id,
@@ -218,6 +218,11 @@ def test_reserve_settle_round_trip_writes_append_only_ledger() -> None:
             entries = await _ledger_entries(tenant_id)
             assert [entry["entry_type"] for entry in entries] == ["RESERVE", "SETTLE"]
             assert entries[1]["amount_micros"] == 250_000
+            # A replayed settle is a no-op: the ledger row already exists.
+            await service.settle(bundle, actual_micros=250_000)
+            state = await _state_row(tenant_id, budget_id)
+            assert state["consumed"] == 250_000
+            assert len(await _ledger_entries(tenant_id)) == 2
         finally:
             await database.close()
 
@@ -446,6 +451,52 @@ def test_multi_level_reserves_roll_back_on_higher_level_rejection() -> None:
     asyncio.run(scenario())
 
 
+def test_execution_budget_without_execution_id_fails_closed() -> None:
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = Database(APP_URL)
+        await database.open()
+        try:
+            tenant_id, application_id = await _seed_tenant_with_application()
+            await _create_budget(
+                tenant_id, scope=EXECUTION, application_id=application_id, limit_micros=100_000
+            )
+            service = _service(database)
+            with pytest.raises(BudgetStateUnknown, match="EXECUTION_BUDGET_UNEVALUABLE"):
+                await service.reserve(BudgetCommand(tenant_id, application_id, None, 50_000))
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_adjust_rejects_execution_scope_budgets() -> None:
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = Database(APP_URL)
+        await database.open()
+        try:
+            tenant_id, application_id = await _seed_tenant_with_application()
+            budget_id = await _create_budget(
+                tenant_id, scope=EXECUTION, application_id=application_id, limit_micros=100_000
+            )
+            service = _service(database)
+            with pytest.raises(ValueError, match="reconfiguring the limit"):
+                await service.adjust(
+                    tenant_id=tenant_id,
+                    budget_id=budget_id,
+                    delta_micros=50_000,
+                    reason="not applicable",
+                    actor="finance-admin",
+                )
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
 def test_execution_scope_budget_applies_per_execution() -> None:
     asyncio.run(_prepare_database())
 
@@ -555,6 +606,8 @@ def test_llm_gateway_guard_reserves_and_settles() -> None:
             state = await _state_row(tenant_id, budget_id)
             # tokens: input ceil(5/4)=2, output 512 → cost = ceil(2*1000/1000) + ceil(512*2000/1000)
             assert state["consumed"] == 2 + 1024
+            entries = await _ledger_entries(tenant_id)
+            assert {entry["price_version"] for entry in entries} == {1}
         finally:
             await database.close()
 
@@ -571,6 +624,57 @@ async def _tenant_budget_id(tenant_id: str) -> str:
         return str(budget_id)
     finally:
         await connection.close()
+
+
+def test_llm_gateway_guard_fails_closed_for_unpriced_models() -> None:
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = Database(APP_URL)
+        await database.open()
+        try:
+            tenant_id, _application_id = await _seed_tenant_with_application()
+            await _create_budget(
+                tenant_id, scope=TENANT_MONTHLY, application_id=None, limit_micros=10_000_000
+            )
+            profile = ModelProfile(
+                tenant_id=tenant_id,
+                alias="primary-alias",
+                provider_model="gpt-test",
+                endpoint_url="https://provider.test/v1/chat/completions",
+                secret_ref=f"vault://tenant/{tenant_id}/llm#primary",
+                data_classification=DataClassification.CONFIDENTIAL,
+                region="cn-test",
+                fallback_aliases=(),
+                requests_per_minute=60,
+            )
+            gateway = LLMGateway(
+                InMemoryModelProfileResolver([profile]),
+                _FixedSecrets(),
+                httpx.AsyncClient(
+                    transport=_StubProvider(
+                        lambda request: httpx.Response(200, json=_openai_response())
+                    ).transport()
+                ),
+                policy=_AllowAllPolicy(),
+                budget=DatabaseBudgetGuard(_service(database)),
+            )
+            from trpc_service.llm_gateway import ModelGatewayError
+
+            with pytest.raises(ModelGatewayError, match="MODEL_UNPRICED"):
+                await gateway.complete(
+                    GatewayRequest(
+                        tenant_id=tenant_id,
+                        model_alias="primary-alias",
+                        messages=[{"role": "user", "content": "hello"}],
+                        data_classification=DataClassification.CONFIDENTIAL,
+                        region="cn-test",
+                    )
+                )
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
 
 
 def test_llm_gateway_guard_rejects_exhausted_budget() -> None:
