@@ -35,6 +35,14 @@ from trpc_service.governance import (
     GovernanceRules,
     evaluate_outbound,
 )
+from trpc_service.tool.executor import ToolInvocationService
+from trpc_service.tool.registry import ToolDefinition
+from trpc_service.tool.sdk_bridge import (
+    GovernedTool,
+    ToolInvocationContext,
+    reset_invocation_context,
+    set_invocation_context,
+)
 from trpc_service.version import __version__, require_pinned_trpc_agent_version
 
 OPENAI_COMPLETIONS_SUFFIX = "/chat/completions"
@@ -114,6 +122,12 @@ class PolicyRulesResolver(Protocol):
     async def resolve_rules(self, tenant_id: str, decision_key: str) -> GovernanceRules | None: ...
 
 
+class ReleaseToolResolver(Protocol):
+    """Resolves the governed tools bound to one release route."""
+
+    async def resolve_tools(self, route: ReleaseRoute) -> tuple[ToolDefinition, ...]: ...
+
+
 def _request_messages(llm_request: LlmRequest) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     for content in llm_request.contents or []:
@@ -131,6 +145,12 @@ def _apply_masked_contents(llm_request: LlmRequest, masked: list[dict[str, Any]]
 
 def _blocked(code: str) -> LlmResponse:
     return LlmResponse(error_code=code, error_message=code)
+
+
+def _agent_cache_key(release_id: str, tools: tuple[ToolDefinition, ...]) -> str:
+    if not tools:
+        return release_id
+    return f"{release_id}:{sorted(d.name + '@' + str(d.version) for d in tools)}"
 
 
 def governance_model_callback(
@@ -191,6 +211,8 @@ class ReleasePinnedRunnerRuntime:
         app_name: str = "agent-gateway",
         installed_version: str | None = None,
         policies: PolicyRulesResolver | None = None,
+        tool_invoker: ToolInvocationService | None = None,
+        tool_resolver: ReleaseToolResolver | None = None,
     ) -> None:
         self.sdk_version = require_pinned_trpc_agent_version(
             installed_version if installed_version is not None else version("trpc-agent-py")
@@ -198,6 +220,8 @@ class ReleasePinnedRunnerRuntime:
         self.platform_version = __version__
         self._releases = releases
         self._policies = policies
+        self._tool_invoker = tool_invoker
+        self._tool_resolver = tool_resolver
         # Dev/test: a dummy key for the Fake LLM. Production: the platform
         # access token the gateway presents to the LLM Gateway's OpenAI-
         # compatible surface, which resolves tenant secret_refs internally.
@@ -206,6 +230,8 @@ class ReleasePinnedRunnerRuntime:
         self._app_name = app_name
         self._agents: dict[str, LlmAgent] = {}
         self._runners: dict[str, Runner] = {}
+        self._release_tools: dict[str, tuple[ToolDefinition, ...]] = {}
+        self._session_services: dict[str, InMemorySessionService] = {}
 
     @property
     def app_name(self) -> str:
@@ -214,10 +240,22 @@ class ReleasePinnedRunnerRuntime:
     async def resolve(self, tenant_id: str, release_id: str) -> ReleaseRoute | None:
         return await self._releases.resolve(tenant_id, release_id)
 
-    def agent_for(self, route: ReleaseRoute) -> LlmAgent:
+    async def tools_for(self, route: ReleaseRoute) -> tuple[ToolDefinition, ...]:
+        """The governed tools bound to one release, resolved once per release."""
+
+        if self._tool_resolver is None or self._tool_invoker is None:
+            return ()
+        cached = self._release_tools.get(route.release_id)
+        if cached is None:
+            cached = await self._tool_resolver.resolve_tools(route)
+            self._release_tools[route.release_id] = cached
+        return cached
+
+    def agent_for(self, route: ReleaseRoute, tools: tuple[ToolDefinition, ...] = ()) -> LlmAgent:
         """Build (once) the release-pinned LlmAgent for a resolved route."""
 
-        cached = self._agents.get(route.release_id)
+        cache_key = _agent_cache_key(route.release_id, tools)
+        cached = self._agents.get(cache_key)
         if cached is not None:
             return cached
         profile = route.profile_snapshots[0]
@@ -239,28 +277,43 @@ class ReleasePinnedRunnerRuntime:
                 if self._policies is not None
                 else None
             ),
+            tools=[
+                GovernedTool(definition, invoker)
+                for definition in tools
+                if (invoker := self._tool_invoker) is not None
+            ],
         )
-        self._agents[route.release_id] = agent
+        self._agents[cache_key] = agent
         return agent
 
-    def runner_for(self, route: ReleaseRoute) -> Runner:
+    def runner_for(self, route: ReleaseRoute, tools: tuple[ToolDefinition, ...] = ()) -> Runner:
         """Build (once) the Runner around the release agent; SDK state stays in memory."""
 
-        cached = self._runners.get(route.release_id)
+        cache_key = _agent_cache_key(route.release_id, tools)
+        cached = self._runners.get(cache_key)
         if cached is not None:
             return cached
         runner = Runner(
             app_name=self._app_name,
-            agent=self.agent_for(route),
-            session_service=InMemorySessionService(),
+            agent=self.agent_for(route, tools),
+            # All runners of one release share one SDK session cache so session
+            # state is continuous across the Runner and protocol surfaces.
+            session_service=self._release_session_service(route.release_id),
         )
-        self._runners[route.release_id] = runner
+        self._runners[cache_key] = runner
         return runner
 
     def session_service_for(self, route: ReleaseRoute) -> InMemorySessionService:
         """The shared SDK session cache for a release, reused by all protocol surfaces."""
 
-        return cast(InMemorySessionService, self.runner_for(route).session_service)
+        return self._release_session_service(route.release_id)
+
+    def _release_session_service(self, release_id: str) -> InMemorySessionService:
+        service = self._session_services.get(release_id)
+        if service is None:
+            service = InMemorySessionService()
+            self._session_services[release_id] = service
+        return service
 
     async def complete(self, command: RunnerExecutionCommand) -> RunnerExecutionReply:
         """Execute one release-pinned run and return the full reply."""
@@ -278,7 +331,31 @@ class ReleasePinnedRunnerRuntime:
         route = await self._releases.resolve(command.tenant_id, command.release_id)
         if route is None:
             raise AgentRunnerError("RELEASE_NOT_FOUND")
-        runner = self.runner_for(route)
+        tools = await self.tools_for(route)
+        runner = self.runner_for(route, tools)
+        context_token = set_invocation_context(
+            ToolInvocationContext(
+                tenant_id=route.tenant_id,
+                requested_by=command.user_id,
+                execution_id=command.execution_id,
+                session_id=command.session_id,
+                release_id=route.release_id,
+            )
+        )
+        try:
+            async for chunk in self._run_stream(runner, route, command, streaming=streaming):
+                yield chunk
+        finally:
+            reset_invocation_context(context_token)
+
+    async def _run_stream(
+        self,
+        runner: Runner,
+        route: ReleaseRoute,
+        command: RunnerExecutionCommand,
+        *,
+        streaming: bool,
+    ) -> AsyncIterator[RunnerStreamChunk]:
         await self._ensure_sdk_session(runner, command.user_id, command.session_id)
         new_message = Content(role="user", parts=[Part(text=command.message)])
         emitted = ""
@@ -321,6 +398,8 @@ class ReleasePinnedRunnerRuntime:
             await runner.close()
         self._runners.clear()
         self._agents.clear()
+        self._release_tools.clear()
+        self._session_services.clear()
 
     def _reply(
         self,

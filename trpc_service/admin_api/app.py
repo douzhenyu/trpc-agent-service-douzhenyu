@@ -59,6 +59,7 @@ from trpc_service.admin_api.schemas import (
     TenantResponse,
 )
 from trpc_service.admin_api.settings import AdminSettings
+from trpc_service.admin_api.tools import create_tool_router
 from trpc_service.ids import uuid7
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
@@ -107,6 +108,7 @@ def create_app(
             create_policy_router(db, signing_key=configured.policy_signing_key)
         )
     application.include_router(create_model_profile_router(db))
+    application.include_router(create_tool_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
