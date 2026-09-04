@@ -172,3 +172,27 @@ def test_alembic_environment_rejects_offline_migrations(
     monkeypatch.setattr(context, "is_offline_mode", lambda: True)
     with pytest.raises(RuntimeError, match="offline migrations are not supported"):
         runpy.run_module("trpc_service.migrations.env", run_name="__offline_test__")
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "trpc_service.migrations.versions.0005_agent_releases",
+        "trpc_service.migrations.versions.0006_release_profile_snapshot",
+        "trpc_service.migrations.versions.0007_immutable_releases",
+        "trpc_service.migrations.versions.0008_release_content_snapshots",
+        "trpc_service.migrations.versions.0009_agent_deployments",
+    ],
+)
+def test_release_revisions_execute_their_immutable_upgrade_plan(
+    monkeypatch: pytest.MonkeyPatch, module_name: str
+) -> None:
+    revision = importlib.import_module(module_name)
+    executed: list[str] = []
+    monkeypatch.setattr(revision.op, "execute", executed.append)
+
+    revision.upgrade()
+
+    assert executed
+    with pytest.raises(RuntimeError, match="immutable|unsupported|retained"):
+        revision.downgrade()

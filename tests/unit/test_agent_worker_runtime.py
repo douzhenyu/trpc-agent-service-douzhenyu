@@ -14,6 +14,7 @@ from trpc_service.admin_api.schemas import AgentReleaseSource
 from trpc_service.agent_worker import (
     AgentExecutionRequest,
     AgentWorker,
+    AgentWorkerSettings,
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
     HttpGatewayClient,
@@ -50,6 +51,19 @@ class FakeWorker:
         assert request.messages == [{"role": "user", "content": "hello"}]
         return GatewayResult("economy", True, {"choices": [{"message": {"content": "reply"}}]})
 
+    async def complete_for_deployment(
+        self,
+        _tenant_id: str,
+        _application_id: str,
+        environment: str,
+        session_id: str,
+        messages: list[dict[str, str]],
+    ) -> GatewayResult:
+        assert environment == "STAGING"
+        assert session_id == "stable-session"
+        assert messages == [{"role": "user", "content": "hello"}]
+        return GatewayResult("balanced", False, {"choices": []})
+
 
 class MutableDeploymentResolver:
     def __init__(self, release_id: str) -> None:
@@ -75,7 +89,7 @@ class BlockingGateway:
 
 
 class CachedRouteDatabase:
-    def __init__(self, row: dict[str, object]) -> None:
+    def __init__(self, row: dict[str, object] | None) -> None:
         self.row = row
         self.unavailable = False
 
@@ -115,6 +129,49 @@ def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fal
     assert response.status_code == 200
     assert response.json()["model_alias"] == "economy"
     assert response.json()["fallback_used"] is True
+
+
+def test_worker_deployment_execution_api_and_health_endpoints_are_publicly_available() -> None:
+    tenant_id, application_id = str(uuid4()), str(uuid4())
+    with TestClient(create_app(worker=FakeWorker())) as client:
+        response = client.post(
+            "/internal/v1/deployment-executions",
+            json={
+                "tenant_id": tenant_id,
+                "application_id": application_id,
+                "environment": "STAGING",
+                "session_id": "stable-session",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["model_alias"] == "balanced"
+        assert client.get("/health/live").status_code == 200
+        assert client.get("/health/ready").status_code == 200
+
+
+def test_worker_rejects_unknown_release_and_unavailable_deployment_routing() -> None:
+    tenant_id, application_id, release_id = str(uuid4()), str(uuid4()), str(uuid4())
+    worker = AgentWorker(FakeWorker(), InMemoryReleaseRouteResolver([]))
+
+    with pytest.raises(ModelGatewayError, match="RELEASE_NOT_FOUND"):
+        asyncio.run(worker.complete(AgentExecutionRequest(tenant_id, release_id, [])))
+    with pytest.raises(ModelGatewayError, match="DEPLOYMENT_ROUTING_UNAVAILABLE"):
+        asyncio.run(
+            worker.complete_for_deployment(
+                tenant_id, application_id, "STAGING", "session", [{"role": "user", "content": "x"}]
+            )
+        )
+
+
+def test_worker_runtime_settings_require_both_runtime_dependencies() -> None:
+    with pytest.raises(RuntimeError, match="DATABASE_URL, LLM_GATEWAY_URL"):
+        AgentWorkerSettings().validate_runtime()
+
+    AgentWorkerSettings(
+        database_url="postgresql://test", llm_gateway_url="https://gateway.test"
+    ).validate_runtime()
 
 
 def test_worker_gateway_client_sends_only_release_identity_and_messages() -> None:
