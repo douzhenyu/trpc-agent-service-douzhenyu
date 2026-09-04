@@ -288,9 +288,7 @@ def test_gateway_uses_the_release_profile_snapshot_instead_of_mutable_profile_lo
     )
 
     result = asyncio.run(
-        gateway.complete(
-            replace(request(tenant_id), profile_snapshots=(released,))
-        )
+        gateway.complete(replace(request(tenant_id), profile_snapshots=(released,)))
     )
 
     assert result.model_alias == "balanced"

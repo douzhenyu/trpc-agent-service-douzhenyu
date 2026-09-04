@@ -151,7 +151,9 @@ def test_vault_provider_rejects_secret_reference_for_another_tenant_before_netwo
     )
 
     with pytest.raises(ModelGatewayError, match="SECRET_REFERENCE_INVALID"):
-        asyncio.run(provider.resolve(tenant_id, f"vault://tenant/{other_tenant_id}/llm/openai#api_key"))
+        asyncio.run(
+            provider.resolve(tenant_id, f"vault://tenant/{other_tenant_id}/llm/openai#api_key")
+        )
 
 
 def test_opa_policy_fails_closed_and_never_calls_provider_when_denied() -> None:

@@ -663,14 +663,15 @@ def test_published_agent_release_is_the_runtime_source_of_allowed_model_fallback
             headers={"Idempotency-Key": str(uuid4())},
             json={"slug": "support", "name": "Support"},
         ).json()
-        draft_url = (
-            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/draft"
+        draft_url = f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/draft"
+        assert (
+            client.put(
+                draft_url,
+                headers={"Idempotency-Key": str(uuid4())},
+                json={"model_alias": "balanced"},
+            ).status_code
+            == 201
         )
-        assert client.put(
-            draft_url,
-            headers={"Idempotency-Key": str(uuid4())},
-            json={"model_alias": "balanced"},
-        ).status_code == 201
 
         released = client.post(
             f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/releases",

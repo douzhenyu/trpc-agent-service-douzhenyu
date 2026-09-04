@@ -676,8 +676,10 @@ async def _released_request(
         raise ModelGatewayError("RELEASE_NOT_FOUND")
     snapshots = tuple(
         ModelProfile(
-            tenant_id=str(item["tenant_id"]), alias=str(item["alias"]),
-            provider_model=str(item["provider_model"]), endpoint_url=str(item["endpoint_url"]),
+            tenant_id=str(item["tenant_id"]),
+            alias=str(item["alias"]),
+            provider_model=str(item["provider_model"]),
+            endpoint_url=str(item["endpoint_url"]),
             secret_ref=str(item["secret_ref"]),
             data_classification=DataClassification(str(item["data_classification"])),
             region=str(item["region"]),
