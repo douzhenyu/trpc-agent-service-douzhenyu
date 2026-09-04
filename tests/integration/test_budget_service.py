@@ -522,7 +522,9 @@ def test_execution_scope_budget_applies_per_execution() -> None:
 
 
 class _AllowAllPolicy:
-    async def allows(self, request: GatewayRequest, profile: ModelProfile) -> bool:
+    async def allows(
+        self, request: GatewayRequest, profile: ModelProfile, effective: DataClassification
+    ) -> bool:
         return True
 
 

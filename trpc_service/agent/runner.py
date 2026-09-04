@@ -19,16 +19,21 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from importlib.metadata import version
-from typing import Any, Literal, cast
+from typing import Any, Literal, Protocol, cast
 
 from trpc_agent_sdk.agents import LlmAgent
 from trpc_agent_sdk.configs import RunConfig
-from trpc_agent_sdk.models import OpenAIModel
+from trpc_agent_sdk.models import LlmRequest, LlmResponse, OpenAIModel
 from trpc_agent_sdk.runners import Runner
 from trpc_agent_sdk.sessions import InMemorySessionService
 from trpc_agent_sdk.types import Content, Part
 
 from trpc_service.agent_worker import ReleaseRoute, ReleaseRouteResolver
+from trpc_service.governance import (
+    GovernanceRules,
+    evaluate_outbound,
+    highest_classification,
+)
 from trpc_service.version import __version__, require_pinned_trpc_agent_version
 
 OPENAI_COMPLETIONS_SUFFIX = "/chat/completions"
@@ -102,6 +107,66 @@ def _event_text(event: Any) -> str:
     return "".join(str(part.text or "") for part in content.parts)
 
 
+class PolicyRulesResolver(Protocol):
+    """Resolves the governing rules bundle for one tenant decision scope."""
+
+    async def resolve_rules(self, tenant_id: str, decision_key: str) -> GovernanceRules | None: ...
+
+
+def governance_model_callback(
+    policies: PolicyRulesResolver, tenant_id: str, release_id: str
+) -> Any:
+    """Build the fail-closed before-model governance callback for one release."""
+
+    decision_key = f"{tenant_id}:{release_id}"
+
+    async def callback(_context: Any, llm_request: LlmRequest) -> LlmResponse | None:
+        rules = await policies.resolve_rules(tenant_id, decision_key)
+        if rules is None:
+            return None
+        messages = _request_messages(llm_request)
+        decision = evaluate_outbound(
+            rules,
+            messages,
+            declared_classification=highest_classification(*(rules.max_outbound_classification,)),
+            target_is_private_endpoint=False,
+        )
+        if decision.decision == "MASK" and decision.masked_messages is not None:
+            try:
+                _apply_masked_contents(llm_request, decision.masked_messages)
+            except Exception:
+                return _blocked("GOVERNANCE_MASK_FAILED")
+            return None
+        if decision.decision in {"DENY", "NEEDS_APPROVAL"}:
+            return _blocked(
+                "GOVERNANCE_DENIED"
+                if decision.decision == "DENY"
+                else "GOVERNANCE_APPROVAL_REQUIRED"
+            )
+        return None
+
+    return callback
+
+
+def _request_messages(llm_request: LlmRequest) -> list[dict[str, str]]:
+    messages: list[dict[str, str]] = []
+    for content in llm_request.contents or []:
+        text = "".join(str(part.text or "") for part in (content.parts or []))
+        messages.append({"role": str(getattr(content, "role", "user")), "content": text})
+    return messages
+
+
+def _apply_masked_contents(llm_request: LlmRequest, masked: list[dict[str, Any]]) -> None:
+    for content, message in zip(llm_request.contents or [], masked, strict=False):
+        for part in content.parts or []:
+            if part.text is not None:
+                part.text = str(message.get("content", ""))
+
+
+def _blocked(code: str) -> LlmResponse:
+    return LlmResponse(error_code=code, error_message=code)
+
+
 class ReleasePinnedRunnerRuntime:
     """Build and drive tRPC-Agent Runners from immutable Release snapshots."""
 
@@ -112,12 +177,14 @@ class ReleasePinnedRunnerRuntime:
         llm_gateway_access_key: str = "",
         app_name: str = "agent-gateway",
         installed_version: str | None = None,
+        policies: PolicyRulesResolver | None = None,
     ) -> None:
         self.sdk_version = require_pinned_trpc_agent_version(
             installed_version if installed_version is not None else version("trpc-agent-py")
         )
         self.platform_version = __version__
         self._releases = releases
+        self._policies = policies
         # Dev/test: a dummy key for the Fake LLM. Production: the platform
         # access token the gateway presents to the LLM Gateway's OpenAI-
         # compatible surface, which resolves tenant secret_refs internally.
@@ -149,6 +216,11 @@ class ReleasePinnedRunnerRuntime:
                 base_url=openai_base_url(profile.endpoint_url),
             ),
             instruction=route.instructions,
+            before_model_callback=(
+                governance_model_callback(self._policies, route.tenant_id, route.release_id)
+                if self._policies is not None
+                else None
+            ),
         )
         self._agents[route.release_id] = agent
         return agent

@@ -7,7 +7,6 @@ from collections import defaultdict, deque
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from enum import StrEnum
 from hashlib import sha256
 from pathlib import Path
 from time import monotonic
@@ -21,6 +20,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.exc import SQLAlchemyError
 
+from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
 from trpc_service.budgets import (
     BudgetCommand,
@@ -32,15 +32,15 @@ from trpc_service.budgets import (
     estimate_cost_micros,
     estimate_tokens,
 )
+from trpc_service.governance import (
+    DataClassification,
+    highest_classification,
+    scan_messages,
+)
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
-
-class DataClassification(StrEnum):
-    PUBLIC = "PUBLIC"
-    INTERNAL = "INTERNAL"
-    CONFIDENTIAL = "CONFIDENTIAL"
-    RESTRICTED = "RESTRICTED"
+__all__ = ["DataClassification"]
 
 
 _CLASSIFICATION_RANK = {
@@ -122,7 +122,23 @@ class SecretProvider(Protocol):
 
 
 class OutboundPolicy(Protocol):
-    async def allows(self, request: GatewayRequest, profile: ModelProfile) -> bool: ...
+    async def allows(
+        self,
+        request: GatewayRequest,
+        profile: ModelProfile,
+        effective_classification: DataClassification,
+    ) -> bool: ...
+
+
+class PolicyAudit(Protocol):
+    """Immutable evidence trail for governance outbound denials."""
+
+    async def record_denied(
+        self,
+        request: GatewayRequest,
+        effective_classification: DataClassification,
+        reason: str,
+    ) -> None: ...
 
 
 class BudgetGuard(Protocol):
@@ -185,7 +201,12 @@ class OpaOutboundPolicy:
     def __init__(self, client: httpx.AsyncClient) -> None:
         self._client = client
 
-    async def allows(self, request: GatewayRequest, profile: ModelProfile) -> bool:
+    async def allows(
+        self,
+        request: GatewayRequest,
+        profile: ModelProfile,
+        effective_classification: DataClassification,
+    ) -> bool:
         try:
             response = await self._client.post(
                 "/v1/data/platform/llm/allow",
@@ -195,20 +216,24 @@ class OpaOutboundPolicy:
                         "model_alias": profile.alias,
                         "endpoint_url": profile.endpoint_url,
                         "data_classification": request.data_classification,
+                        "effective_classification": effective_classification.value,
                         "region": request.region,
-                        "messages": request.messages,
                     }
                 },
             )
             response.raise_for_status()
             result = response.json().get("result")
             if result is True:
-                return request.data_classification is not DataClassification.CONFIDENTIAL
+                return effective_classification is not DataClassification.RESTRICTED
             if not isinstance(result, Mapping) or result.get("allow") is not True:
                 return False
-            return (
-                request.data_classification is not DataClassification.CONFIDENTIAL
-                or result.get("private_endpoint") is True
+            if effective_classification is DataClassification.RESTRICTED:
+                return (
+                    result.get("allow_restricted") is True
+                    and result.get("private_endpoint") is True
+                )
+            return effective_classification is not DataClassification.CONFIDENTIAL or (
+                result.get("private_endpoint") is True
             )
         except (httpx.HTTPError, ValueError, AttributeError):
             return False
@@ -291,6 +316,7 @@ class LLMGateway:
         observer: GatewayObserver | None = None,
         policy: OutboundPolicy,
         budget: BudgetGuard | None = None,
+        policy_audit: PolicyAudit | None = None,
     ) -> None:
         self._profiles = profiles
         self._secrets = secrets
@@ -300,6 +326,7 @@ class LLMGateway:
         self._observer = observer or LoggingGatewayObserver()
         self._policy = policy
         self._budget = budget
+        self._policy_audit = policy_audit
         self._failures: dict[tuple[str, str], int] = defaultdict(int)
         self._opened_at: dict[tuple[str, str], float] = {}
         self._requests: dict[tuple[str, str], deque[float]] = defaultdict(deque)
@@ -307,6 +334,14 @@ class LLMGateway:
     async def complete(self, request: GatewayRequest) -> GatewayResult:
         started_at = monotonic()
         request_content_hash = _content_hash(request.messages)
+        # Governance runs before anything billable: detected secrets block
+        # outright and the DLP-raised classification rides the policy checks.
+        scan = scan_messages(request.messages)
+        if scan.blocked:
+            raise ModelGatewayError("SECRET_DETECTED")
+        effective = highest_classification(
+            request.data_classification, scan.detected_classification
+        )
         bundle = None
         if self._budget is not None:
             # The guard maps its domain failures to BUDGET_EXCEEDED and
@@ -318,6 +353,7 @@ class LLMGateway:
                 bundle=None if bundle is None else bundle,
                 started_at=started_at,
                 request_content_hash=request_content_hash,
+                effective_classification=effective,
             )
         except ModelGatewayError as error:
             # The call failed upstream: return the reservation. A settlement
@@ -327,6 +363,12 @@ class LLMGateway:
                     await self._budget.release(bundle, reason=error.code)
                 except Exception as release_error:
                     raise ModelGatewayError("BUDGET_STATE_UNKNOWN") from release_error
+            if (
+                self._policy_audit is not None
+                and effective == DataClassification.RESTRICTED
+                and error.code == "MODEL_POLICY_DENIED"
+            ):
+                await self._policy_audit.record_denied(request, effective, error.code)
             raise
         if bundle is not None and self._budget is not None:
             # Fail closed on settlement uncertainty: the bookkeeping must not
@@ -342,6 +384,7 @@ class LLMGateway:
         *,
         started_at: float,
         request_content_hash: str,
+        effective_classification: DataClassification,
     ) -> GatewayResult:
         attempted = False
         rate_limited = False
@@ -349,7 +392,7 @@ class LLMGateway:
         last_failure_code: str | None = None
         failure_recorded = False
         for profile in await self._candidate_profiles(request):
-            if not await self._allows(request, profile):
+            if not await self._allows(request, profile, effective_classification):
                 continue
             attempted = True
             key = (profile.tenant_id, profile.alias)
@@ -462,14 +505,20 @@ class LLMGateway:
             )
         return profiles
 
-    async def _allows(self, request: GatewayRequest, profile: ModelProfile) -> bool:
+    async def _allows(
+        self,
+        request: GatewayRequest,
+        profile: ModelProfile,
+        effective_classification: DataClassification,
+    ) -> bool:
         allowed = (
             request.data_classification is not DataClassification.RESTRICTED
+            and effective_classification is not DataClassification.RESTRICTED
             and request.region == profile.region
             and _CLASSIFICATION_RANK[request.data_classification]
             <= _CLASSIFICATION_RANK[profile.data_classification]
         )
-        return allowed and await self._policy.allows(request, profile)
+        return allowed and await self._policy.allows(request, profile, effective_classification)
 
     def _record_event(
         self,
@@ -654,6 +703,35 @@ class DatabaseBudgetGuard:
             raise ModelGatewayError("BUDGET_STATE_UNKNOWN") from error
 
 
+class DatabasePolicyAuditor:
+    """Writes governance outbound denials into the immutable audit chain."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def record_denied(
+        self,
+        request: GatewayRequest,
+        effective_classification: DataClassification,
+        reason: str,
+    ) -> None:
+        async with self._database.tenant_transaction(UUID(request.tenant_id)) as connection:
+            await insert_audit(
+                connection,
+                None,
+                "governance.outbound_denied",
+                "DENY",
+                target_type="model_call",
+                target_id=request.release_id or request.model_alias,
+                tenant_id=UUID(request.tenant_id),
+                details={
+                    "effective_classification": effective_classification.value,
+                    "model_alias": request.model_alias,
+                    "reason": reason,
+                },
+            )
+
+
 def _content_hash(content: object) -> str:
     return sha256(repr(content).encode()).hexdigest()
 
@@ -736,6 +814,7 @@ def create_app(
             provider_client,
             policy=OpaOutboundPolicy(opa_client),
             budget=budget or DatabaseBudgetGuard(BudgetService(database)),
+            policy_audit=DatabasePolicyAuditor(database),
         )
         application.state.database = database
         try:

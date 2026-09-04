@@ -29,7 +29,9 @@ class FakeSecretProvider:
 
 
 class AllowOutboundPolicy:
-    async def allows(self, _request: GatewayRequest, _profile: ModelProfile) -> bool:
+    async def allows(
+        self, request: GatewayRequest, profile: ModelProfile, effective: DataClassification
+    ) -> bool:
         return True
 
 

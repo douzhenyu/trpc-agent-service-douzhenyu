@@ -451,3 +451,34 @@ class ModelPriceVersionResponse(BaseModel):
     tenant_id: UUID
     version: int
     prices: list[ModelPriceEntry]
+
+
+class PolicyBundleRulesUpsert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    rules: dict[str, Any] = Field(min_length=1)
+
+
+class PolicyBundleActivate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    canary_percentage: int = Field(default=0, ge=0, le=100)
+
+
+class PolicyBundleResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID
+    version: int
+    rules: dict[str, Any]
+    signature: str
+    status: str
+    canary_percentage: int
+    created_by: str
+    created_at: datetime
+    activated_at: datetime | None
+
+
+class PolicyBundleList(BaseModel):
+    items: list[PolicyBundleResponse]
+    next_cursor: str | None = None
