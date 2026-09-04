@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from uuid import uuid4
 
 import httpx
@@ -10,12 +11,14 @@ from fastapi.testclient import TestClient
 from trpc_service.agent_worker import (
     AgentExecutionRequest,
     AgentWorker,
+    HttpGatewayClient,
     InMemoryReleaseRouteResolver,
     ReleaseRoute,
     create_app,
 )
 from trpc_service.llm_gateway import (
     DataClassification,
+    GatewayRequest,
     GatewayResult,
     InMemoryModelProfileResolver,
     LLMGateway,
@@ -69,6 +72,46 @@ def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fal
     assert response.status_code == 200
     assert response.json()["model_alias"] == "economy"
     assert response.json()["fallback_used"] is True
+
+
+def test_worker_gateway_client_sends_routing_data_but_never_provider_credentials() -> None:
+    tenant_id = str(uuid4())
+
+    async def gateway(request: httpx.Request) -> httpx.Response:
+        assert request.url.path == "/internal/v1/llm-completions"
+        assert "authorization" not in request.headers
+        payload = json.loads(request.content)
+        assert set(payload) == {
+            "tenant_id",
+            "model_alias",
+            "messages",
+            "data_classification",
+            "region",
+            "allowed_fallback_aliases",
+        }
+        return httpx.Response(
+            200,
+            json={"model_alias": "balanced", "fallback_used": False, "completion": {"choices": []}},
+        )
+
+    client = HttpGatewayClient(
+        httpx.AsyncClient(
+            base_url="https://agent-gateway.test", transport=httpx.MockTransport(gateway)
+        )
+    )
+    result = asyncio.run(
+        client.complete(
+            GatewayRequest(
+                tenant_id=tenant_id,
+                model_alias="balanced",
+                messages=[{"role": "user", "content": "hello"}],
+                data_classification=DataClassification.INTERNAL,
+                region="cn-north-1",
+            )
+        )
+    )
+
+    assert result.model_alias == "balanced"
 
 
 def test_vault_provider_uses_kubernetes_auth_and_returns_only_requested_field() -> None:

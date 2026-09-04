@@ -55,7 +55,7 @@ spec:
         trpc-agent-platform.io/network-profile: {{ $name }}
     spec:
       serviceAccountName: {{ $name }}
-      automountServiceAccountToken: {{ eq $name "agent-worker" }}
+      automountServiceAccountToken: {{ or (eq $name "agent-worker") (eq $name "agent-gateway") }}
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -107,12 +107,29 @@ spec:
                 secretKeyRef:
                   name: {{ $.Values.agentWorker.databaseSecretName }}
                   key: {{ $.Values.agentWorker.databaseSecretKey }}
+            - name: LLM_GATEWAY_URL
+              value: {{ $.Values.agentWorker.llmGatewayUrl | quote }}
+{{- else if eq $name "agent-gateway" }}
+          command:
+            - /app/.venv/bin/uvicorn
+          args:
+            - trpc_service.llm_gateway:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ $component.port | quote }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.agentGateway.databaseSecretName }}
+                  key: {{ $.Values.agentGateway.databaseSecretKey }}
             - name: VAULT_URL
-              value: {{ $.Values.agentWorker.vaultUrl | quote }}
+              value: {{ $.Values.agentGateway.vaultUrl | quote }}
             - name: VAULT_KUBERNETES_ROLE
-              value: {{ $.Values.agentWorker.vaultKubernetesRole | quote }}
+              value: {{ $.Values.agentGateway.vaultKubernetesRole | quote }}
             - name: OPA_URL
-              value: {{ $.Values.agentWorker.opaUrl | quote }}
+              value: {{ $.Values.agentGateway.opaUrl | quote }}
 {{- else if and (ne $name "admin-api") (ne $name "web-console") }}
           command:
             - /app/.venv/bin/uvicorn

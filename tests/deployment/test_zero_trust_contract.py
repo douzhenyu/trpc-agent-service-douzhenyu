@@ -292,7 +292,7 @@ def test_network_policy_only_opens_ambient_health_dns_declared_and_gateway_paths
         ],
         "ports": [{"port": 15008, "protocol": "TCP"}],
     }
-    for unit in EXPECTED_UNITS - {"web-console", "agent-worker"}:
+    for unit in EXPECTED_UNITS - {"web-console", "agent-worker", "agent-gateway"}:
         assert len(policies[unit]["egress"]) == 2
     assert policies["agent-worker"]["egress"][1] == {
         "to": [
@@ -305,6 +305,7 @@ def test_network_policy_only_opens_ambient_health_dns_declared_and_gateway_paths
         "ports": [{"port": 15008, "protocol": "TCP"}],
     }
     assert len(policies["agent-worker"]["egress"]) == 3
+    assert len(policies["agent-gateway"]["egress"]) == 3
 
 
 def test_independent_releases_have_one_shared_mesh_owner_and_unit_scoped_policy() -> None:

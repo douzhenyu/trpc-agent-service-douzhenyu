@@ -4,18 +4,25 @@ from __future__ import annotations
 
 import logging
 from collections import defaultdict, deque
-from collections.abc import Mapping, Sequence
+from collections.abc import AsyncIterator, Mapping, Sequence
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from enum import StrEnum
 from hashlib import sha256
+from pathlib import Path
 from time import monotonic
 from typing import Any, Protocol
 from urllib.parse import urlsplit
 from uuid import UUID
 
 import httpx
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, ConfigDict, Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trpc_service.admin_api.database import Database
+from trpc_service.runtime_health import RuntimeHealthResponse
+from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
 class DataClassification(StrEnum):
@@ -62,6 +69,10 @@ class GatewayResult:
     model_alias: str
     fallback_used: bool
     completion: dict[str, Any]
+
+
+class GatewayCompletionClient(Protocol):
+    async def complete(self, request: GatewayRequest) -> GatewayResult: ...
 
 
 @dataclass(frozen=True)
@@ -474,7 +485,7 @@ class GatewayModel:
     def __init__(
         self,
         *,
-        gateway: LLMGateway,
+        gateway: GatewayCompletionClient,
         tenant_id: str,
         model_alias: str,
         data_classification: DataClassification,
@@ -511,3 +522,127 @@ def _token_count(usage: Mapping[str, Any], *keys: str) -> int | None:
         if isinstance(value, int):
             return value
     return None
+
+
+class GatewayRuntimeSettings(BaseSettings):
+    """Gateway-only settings; this is the sole provider credential injection process."""
+
+    model_config = SettingsConfigDict(env_prefix="", extra="ignore")
+
+    database_url: str = ""
+    vault_url: str = ""
+    vault_kubernetes_role: str = "agent-gateway"
+    opa_url: str = ""
+    kubernetes_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+    def validate_runtime(self) -> None:
+        missing = [
+            name
+            for name, value in {
+                "DATABASE_URL": self.database_url,
+                "VAULT_URL": self.vault_url,
+                "OPA_URL": self.opa_url,
+            }.items()
+            if not value
+        ]
+        if missing:
+            raise RuntimeError(f"LLM Gateway configuration is incomplete: {', '.join(missing)}")
+
+
+class GatewayCompletionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: str = Field(min_length=36, max_length=36)
+    model_alias: str = Field(min_length=1, max_length=63)
+    messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
+    data_classification: DataClassification
+    region: str = Field(min_length=2, max_length=63)
+    allowed_fallback_aliases: list[str] = Field(default_factory=list, max_length=10)
+
+
+class GatewayCompletionResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    model_alias: str
+    fallback_used: bool
+    completion: dict[str, Any]
+
+
+def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
+    """Create the sole in-cluster process allowed to resolve provider credentials."""
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        configured = settings or GatewayRuntimeSettings()
+        configured.validate_runtime()
+        jwt = Path(configured.kubernetes_jwt_path).read_text().strip()
+        if not jwt:
+            raise RuntimeError("Kubernetes service account token is empty")
+        database = Database(configured.database_url)
+        vault_client = httpx.AsyncClient(base_url=configured.vault_url)
+        opa_client = httpx.AsyncClient(base_url=configured.opa_url)
+        provider_client = httpx.AsyncClient()
+        await database.open()
+        application.state.gateway = LLMGateway(
+            DatabaseModelProfileResolver(database),
+            VaultSecretProvider(
+                vault_client, kubernetes_jwt=jwt, role=configured.vault_kubernetes_role
+            ),
+            provider_client,
+            policy=OpaOutboundPolicy(opa_client),
+        )
+        try:
+            yield
+        finally:
+            await provider_client.aclose()
+            await opa_client.aclose()
+            await vault_client.aclose()
+            await database.close()
+
+    application = FastAPI(
+        title="tRPC-Agent Platform LLM Gateway",
+        version=__version__,
+        docs_url=None,
+        redoc_url=None,
+        openapi_url=None,
+        lifespan=lifespan,
+    )
+
+    def health() -> RuntimeHealthResponse:
+        return RuntimeHealthResponse(
+            service="agent-gateway", version=__version__, trpc_agent_version=TRPC_AGENT_VERSION
+        )
+
+    @application.get("/health/live", response_model=RuntimeHealthResponse)
+    async def live() -> RuntimeHealthResponse:
+        return health()
+
+    @application.get("/health/ready", response_model=RuntimeHealthResponse)
+    async def ready() -> RuntimeHealthResponse:
+        return health()
+
+    @application.post("/internal/v1/llm-completions", response_model=GatewayCompletionResponse)
+    async def complete(payload: GatewayCompletionPayload) -> GatewayCompletionResponse:
+        try:
+            result = await application.state.gateway.complete(
+                GatewayRequest(
+                    tenant_id=payload.tenant_id,
+                    model_alias=payload.model_alias,
+                    messages=payload.messages,
+                    data_classification=payload.data_classification,
+                    region=payload.region,
+                    allowed_fallback_aliases=frozenset(payload.allowed_fallback_aliases),
+                )
+            )
+        except ModelGatewayError as error:
+            raise HTTPException(status_code=409, detail=error.code) from error
+        return GatewayCompletionResponse(
+            model_alias=result.model_alias,
+            fallback_used=result.fallback_used,
+            completion=result.completion,
+        )
+
+    return application
+
+
+app = create_app()

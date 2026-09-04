@@ -5,7 +5,6 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Any, Protocol
 from uuid import UUID
 
@@ -17,14 +16,12 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
 from trpc_service.llm_gateway import (
-    DatabaseModelProfileResolver,
     DataClassification,
+    GatewayCompletionClient,
     GatewayModel,
+    GatewayRequest,
     GatewayResult,
-    LLMGateway,
     ModelGatewayError,
-    OpaOutboundPolicy,
-    VaultSecretProvider,
 )
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
@@ -122,7 +119,7 @@ class AgentWorker:
 
     def __init__(
         self,
-        gateway: LLMGateway,
+        gateway: GatewayCompletionClient,
         releases: ReleaseRouteResolver,
         fallback_auditor: FallbackAuditor | None = None,
     ) -> None:
@@ -154,23 +151,52 @@ class AgentWorkerSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
 
     database_url: str = ""
-    vault_url: str = ""
-    vault_kubernetes_role: str = "agent-worker"
-    opa_url: str = ""
-    kubernetes_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    llm_gateway_url: str = ""
 
     def validate_runtime(self) -> None:
         missing = [
             name
             for name, value in {
                 "DATABASE_URL": self.database_url,
-                "VAULT_URL": self.vault_url,
-                "OPA_URL": self.opa_url,
+                "LLM_GATEWAY_URL": self.llm_gateway_url,
             }.items()
             if not value
         ]
         if missing:
             raise RuntimeError(f"Agent Worker configuration is incomplete: {', '.join(missing)}")
+
+
+class HttpGatewayClient:
+    """The Worker can submit routing metadata and content, but never resolves credentials."""
+
+    def __init__(self, client: httpx.AsyncClient) -> None:
+        self._client = client
+
+    async def complete(self, request: GatewayRequest) -> GatewayResult:
+        try:
+            response = await self._client.post(
+                "/internal/v1/llm-completions",
+                json={
+                    "tenant_id": request.tenant_id,
+                    "model_alias": request.model_alias,
+                    "messages": request.messages,
+                    "data_classification": request.data_classification,
+                    "region": request.region,
+                    "allowed_fallback_aliases": sorted(request.allowed_fallback_aliases),
+                },
+            )
+            if response.status_code >= 400:
+                raise ModelGatewayError("MODEL_GATEWAY_UNAVAILABLE")
+            payload = response.json()
+            if not isinstance(payload, dict):
+                raise ModelGatewayError("MODEL_GATEWAY_UNAVAILABLE")
+            return GatewayResult(
+                model_alias=str(payload["model_alias"]),
+                fallback_used=bool(payload["fallback_used"]),
+                completion=dict(payload["completion"]),
+            )
+        except (httpx.HTTPError, KeyError, TypeError, ValueError) as error:
+            raise ModelGatewayError("MODEL_GATEWAY_UNAVAILABLE") from error
 
 
 class WorkerExecutionPayload(BaseModel):
@@ -202,34 +228,18 @@ def create_app(
             return
         configured = settings or AgentWorkerSettings()
         configured.validate_runtime()
-        jwt = Path(configured.kubernetes_jwt_path).read_text().strip()
-        if not jwt:
-            raise RuntimeError("Kubernetes service account token is empty")
         database = Database(configured.database_url)
-        vault_client = httpx.AsyncClient(base_url=configured.vault_url)
-        opa_client = httpx.AsyncClient(base_url=configured.opa_url)
-        provider_client = httpx.AsyncClient()
+        gateway_client = httpx.AsyncClient(base_url=configured.llm_gateway_url)
         await database.open()
         application.state.worker = AgentWorker(
-            LLMGateway(
-                DatabaseModelProfileResolver(database),
-                VaultSecretProvider(
-                    vault_client,
-                    kubernetes_jwt=jwt,
-                    role=configured.vault_kubernetes_role,
-                ),
-                provider_client,
-                policy=OpaOutboundPolicy(opa_client),
-            ),
+            HttpGatewayClient(gateway_client),
             DatabaseReleaseRouteResolver(database),
             DatabaseFallbackAuditor(database),
         )
         try:
             yield
         finally:
-            await provider_client.aclose()
-            await opa_client.aclose()
-            await vault_client.aclose()
+            await gateway_client.aclose()
             await database.close()
 
     application = FastAPI(
