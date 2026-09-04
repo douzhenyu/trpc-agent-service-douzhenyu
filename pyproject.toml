@@ -14,6 +14,10 @@ dependencies = [
   "sqlalchemy[asyncio]==2.0.52",
   "trpc-agent-py==1.1.19",
   "uvicorn[standard]==0.35.0",
+  "ag-ui-protocol==0.1.22",
+  "a2a-sdk==0.3.22",
+  "protobuf==6.33.0",
+  "langgraph==1.2.11",
 ]
 
 [project.scripts]
@@ -40,6 +44,10 @@ packages = ["trpc_service"]
 [tool.pytest.ini_options]
 addopts = "--strict-config --strict-markers"
 asyncio_mode = "auto"
+filterwarnings = [
+  "ignore::Warning:pydantic._internal._generate_schema",
+  "ignore::pydantic.warnings.PydanticDeprecatedSince20:trpc_agent_sdk\\..*",
+]
 testpaths = ["tests"]
 markers = [
   "integration: tests that require a real PostgreSQL instance",
@@ -60,4 +68,8 @@ packages = ["trpc_service", "dev.fake_external"]
 
 [[tool.mypy.overrides]]
 module = "asyncpg"
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = "trpc_agent_sdk.*"
 ignore_missing_imports = true

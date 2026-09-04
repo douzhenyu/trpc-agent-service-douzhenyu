@@ -94,17 +94,61 @@ class FakeExternalHandler(BaseHTTPRequestHandler):
         if plan.status != HTTPStatus.OK:
             self._json(plan.status, {"error": SCENARIOS["llm"].value})
             return
+        if payload.get("stream"):
+            self._serve_llm_stream(payload)
+            return
         self._json(
             HTTPStatus.OK,
             {
                 "id": "fake-completion-1",
+                "object": "chat.completion",
                 "model": payload.get("model", "fake-model"),
                 "choices": [
-                    {"index": 0, "message": {"role": "assistant", "content": "fake reply"}}
+                    {
+                        "index": 0,
+                        "message": {"role": "assistant", "content": "fake reply"},
+                        "finish_reason": "stop",
+                    }
                 ],
                 "scenario": SCENARIOS["llm"].value,
             },
         )
+
+    def _serve_llm_stream(self, payload: dict[str, Any]) -> None:
+        """Answer OpenAI chat completions with deterministic SSE deltas."""
+        completion_id = "fake-completion-stream-1"
+        model = payload.get("model", "fake-model")
+        chunks = [
+            {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
+            },
+            {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [
+                    {"index": 0, "delta": {"content": "fake reply"}, "finish_reason": None}
+                ],
+            },
+            {
+                "id": completion_id,
+                "object": "chat.completion.chunk",
+                "model": model,
+                "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+            },
+        ]
+        self.send_response(HTTPStatus.OK)
+        self.send_header("Content-Type", "text/event-stream")
+        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Connection", "close")
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(f"data: {json.dumps(chunk)}\n\n".encode())
+        self.wfile.write(b"data: [DONE]\n\n")
+        self.wfile.flush()
 
     def _serve_im(self, payload: dict[str, Any]) -> None:
         plan = plan_scenario(SCENARIOS["im"])

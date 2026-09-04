@@ -23,7 +23,12 @@ from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trpc_service.admin_api.database import Database
-from trpc_service.agent_worker import DatabaseDeploymentRouteResolver
+from trpc_service.agent.protocols import ReleaseProtocolRegistry
+from trpc_service.agent.runner import ReleasePinnedRunnerRuntime
+from trpc_service.agent_worker import (
+    DatabaseDeploymentRouteResolver,
+    DatabaseReleaseRouteResolver,
+)
 from trpc_service.execution_bus import (
     EXECUTION_REQUESTED_EVENT,
     GATEWAY_SOURCE,
@@ -54,6 +59,8 @@ class AgentGatewaySettings(BaseSettings):
     database_url: str = ""
     dispatch_interval_seconds: float = 1.0
     partition_count: int = 8
+    llm_api_key: str = ""
+    public_base_url: str = ""
 
     def validate_runtime(self) -> None:
         missing = [
@@ -213,6 +220,16 @@ def create_app(
             database,
             DatabaseDeploymentRouteResolver(database),
         )
+        runner_runtime = ReleasePinnedRunnerRuntime(
+            releases=DatabaseReleaseRouteResolver(database),
+            llm_api_key=configured.llm_api_key,
+        )
+        ReleaseProtocolRegistry(
+            app=application,
+            runtime=runner_runtime,
+            deployments=DatabaseDeploymentRouteResolver(database),
+            public_base_url=configured.public_base_url,
+        )
         active_bus = bus or InMemoryExecutionBus(partition_count=configured.partition_count)
         dispatcher = OutboxDispatcher(database, active_bus)
         dispatch_task: asyncio.Task[None] | None = None
@@ -229,6 +246,7 @@ def create_app(
         finally:
             if dispatch_task is not None:
                 dispatch_task.cancel()
+            await runner_runtime.close()
             await database.close()
 
     application = FastAPI(

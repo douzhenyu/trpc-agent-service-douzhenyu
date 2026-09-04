@@ -46,6 +46,7 @@ class ReleaseRoute:
     region: str
     allowed_fallback_aliases: frozenset[str]
     profile_snapshots: tuple[ModelProfile, ...] = ()
+    instructions: str = ""
 
 
 @dataclass(frozen=True)
@@ -126,9 +127,9 @@ class DatabaseReleaseRouteResolver:
         try:
             async with self._database.tenant_transaction(parsed_tenant_id) as connection:
                 row = await connection.fetchrow(
-                    """SELECT id,tenant_id,model_alias,data_classification,region,fallback_aliases,
-                    model_profiles
-                    FROM tenant.agent_release WHERE tenant_id=$1 AND id=$2""",
+                    """SELECT id,tenant_id,model_alias,data_classification,region,
+                        fallback_aliases,model_profiles,draft_snapshot
+                        FROM tenant.agent_release WHERE tenant_id=$1 AND id=$2""",
                     parsed_tenant_id,
                     parsed_release_id,
                 )
@@ -136,6 +137,7 @@ class DatabaseReleaseRouteResolver:
             return self._routes.get(cache_key)
         if row is None:
             return None
+        snapshot = row["draft_snapshot"] if isinstance(row["draft_snapshot"], dict) else {}
         snapshots = tuple(
             ModelProfile(
                 tenant_id=str(profile["tenant_id"]),
@@ -160,6 +162,7 @@ class DatabaseReleaseRouteResolver:
             region=str(row["region"]),
             allowed_fallback_aliases=frozenset(str(alias) for alias in row["fallback_aliases"]),
             profile_snapshots=snapshots,
+            instructions=str(snapshot.get("instructions") or ""),
         )
         self._routes[cache_key] = route
         return route
