@@ -16,6 +16,9 @@ export type AgentDraft = components["schemas"]["AgentDraftResponse"];
 export type AgentDraftCreate = components["schemas"]["AgentDraftCreate"];
 export type AgentDraftUpdate = components["schemas"]["AgentDraftUpdate"];
 export type DraftValidation = components["schemas"]["DraftValidationResponse"];
+export type ModelProfile = components["schemas"]["ModelProfileResponse"];
+export type ModelProfileCreate = components["schemas"]["ModelProfileCreate"];
+export type ModelProfileUpdate = components["schemas"]["ModelProfileUpdate"];
 
 const client = createClient<paths>({
   baseUrl: globalThis.location.origin,
@@ -77,6 +80,37 @@ export async function getTenants(): Promise<Tenant[]> {
   const { data, response } = await client.GET("/api/v1/tenants");
   if (!response.ok || !data) throw new Error("无法读取租户");
   return data.items;
+}
+
+export async function getModelProfiles(
+  tenantId: string,
+): Promise<ModelProfile[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/model-profiles",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取模型配置档", error);
+  return data.items;
+}
+
+export async function createModelProfile(
+  tenantId: string,
+  payload: ModelProfileCreate,
+): Promise<ModelProfile> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/model-profiles",
+    {
+      params: {
+        path: { tenant_id: tenantId },
+        header: { "Idempotency-Key": idempotencyKey() },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法保存模型配置档", error);
+  return data;
 }
 
 export async function createTenant(

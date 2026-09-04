@@ -32,6 +32,7 @@ from trpc_service.admin_api.idempotency import (
     remember,
     replay_for,
 )
+from trpc_service.admin_api.model_profiles import create_model_profile_router
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.preconditions import parse_if_match
 from trpc_service.admin_api.roles import (
@@ -98,6 +99,7 @@ def create_app(
     )
     application.state.settings = configured
     application.include_router(create_agent_router(db))
+    application.include_router(create_model_profile_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:

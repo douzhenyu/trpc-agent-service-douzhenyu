@@ -338,8 +338,9 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         network_policy = resources[("NetworkPolicy", unit)]
 
         assert pod_spec["serviceAccountName"] == service_account["metadata"]["name"]
-        assert service_account["automountServiceAccountToken"] is False
-        assert pod_spec["automountServiceAccountToken"] is False
+        expects_kubernetes_auth = unit in {"agent-worker", "agent-gateway"}
+        assert service_account["automountServiceAccountToken"] is expects_kubernetes_auth
+        assert pod_spec["automountServiceAccountToken"] is expects_kubernetes_auth
         assert pod_spec["securityContext"] == {
             "runAsNonRoot": True,
             "seccompProfile": {"type": "RuntimeDefault"},
@@ -366,6 +367,23 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
             for rule in policy_spec["egress"]
             for port in rule.get("ports", [])
         )
+
+    agent_worker = resources[("Rollout", "agent-worker")]
+    container = agent_worker["spec"]["template"]["spec"]["containers"][0]
+    assert container["args"][0] == "trpc_service.agent_worker:app"
+    assert {item["name"] for item in container["env"]} >= {
+        "DATABASE_URL",
+        "LLM_GATEWAY_URL",
+    }
+    agent_gateway = resources[("Rollout", "agent-gateway")]
+    gateway_container = agent_gateway["spec"]["template"]["spec"]["containers"][0]
+    assert gateway_container["args"][0] == "trpc_service.llm_gateway:app"
+    assert {item["name"] for item in gateway_container["env"]} >= {
+        "DATABASE_URL",
+        "VAULT_URL",
+        "VAULT_KUBERNETES_ROLE",
+        "OPA_URL",
+    }
 
 
 def test_chart_owns_namespace_resource_governance_and_a_sync_migration_job() -> None:

@@ -60,8 +60,10 @@ async def _exercise_isolation() -> None:
         assert [row["relname"] for row in tenant_tables] == [
             "agent_application",
             "agent_draft",
+            "agent_release",
             "member",
             "member_role",
+            "model_profile",
         ]
         assert all(row["relrowsecurity"] and row["relforcerowsecurity"] for row in tenant_tables)
         assert all(row["owner"] != "trpc_platform_app" for row in tenant_tables)
@@ -107,6 +109,23 @@ async def _exercise_isolation() -> None:
                 tenant_a,
                 application_id,
             )
+            await app.execute(
+                """INSERT INTO tenant.model_profile
+                (tenant_id,id,alias,provider_model,endpoint_url,secret_ref,data_classification,region)
+                VALUES ($1,$2,'balanced','fake-balanced','https://fake-llm.test/v1',
+                $3,'INTERNAL','cn-north-1')""",
+                tenant_a,
+                uuid4(),
+                f"vault://tenant/{tenant_a}/llm/balanced#api_key",
+            )
+            await app.execute(
+                """INSERT INTO tenant.agent_release
+                (tenant_id,id,application_id,model_alias,data_classification,region)
+                VALUES ($1,$2,$3,'balanced','INTERNAL','cn-north-1')""",
+                tenant_a,
+                uuid4(),
+                application_id,
+            )
 
         with pytest.raises(asyncpg.InsufficientPrivilegeError):
             async with app.transaction():
@@ -124,6 +143,8 @@ async def _exercise_isolation() -> None:
             assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.agent_application") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.agent_draft") == 0
+            assert await app.fetchval("SELECT count(*) FROM tenant.agent_release") == 0
+            assert await app.fetchval("SELECT count(*) FROM tenant.model_profile") == 0
             with pytest.raises(asyncpg.InsufficientPrivilegeError):
                 await app.execute(
                     "INSERT INTO tenant.member_role (tenant_id,id,member_id,role) "
@@ -197,10 +218,24 @@ async def _exercise_isolation() -> None:
                     application_id,
                 )
 
+        async with app.transaction():
+            await app.execute("SELECT set_config('app.tenant_id',$1,true)", str(tenant_b))
+            with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                await app.execute(
+                    """INSERT INTO tenant.model_profile
+                    (tenant_id,id,alias,provider_model,endpoint_url,secret_ref,data_classification,region)
+                    VALUES ($1,$2,'cross-tenant','fake-cross','https://fake-llm.test/v1',
+                    $3,'INTERNAL','cn-north-1')""",
+                    tenant_a,
+                    uuid4(),
+                    f"vault://tenant/{tenant_a}/llm/cross#api_key",
+                )
+
         assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.agent_application") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.agent_draft") == 0
+        assert await app.fetchval("SELECT count(*) FROM tenant.model_profile") == 0
     finally:
         await app.close()
 

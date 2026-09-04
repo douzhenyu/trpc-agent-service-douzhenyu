@@ -15,6 +15,7 @@ import {
   type TenantGroup,
 } from "./api";
 import { AgentWorkspace } from "./AgentWorkspace";
+import { ModelProfilesWorkspace } from "./ModelProfilesWorkspace";
 import "./styles.css";
 
 type State =
@@ -273,6 +274,7 @@ export default function App() {
           </>
         )}
         <AgentWorkspace tenants={state.tenants} />
+        <ModelProfilesWorkspace tenants={state.tenants} />
       </div>
     </main>
   );

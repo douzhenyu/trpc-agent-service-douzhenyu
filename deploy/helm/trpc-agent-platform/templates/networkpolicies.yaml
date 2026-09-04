@@ -190,7 +190,7 @@ spec:
         - port: 53
           protocol: TCP
 {{- if $.Values.zeroTrust.enabled }}
-{{- if and (eq $name "admin-api") $.Values.database.direct.enabled }}
+{{- if and (or (eq $name "admin-api") (eq $name "agent-worker") (eq $name "agent-gateway")) $.Values.database.direct.enabled }}
     - to:
         - podSelector:
             matchLabels:

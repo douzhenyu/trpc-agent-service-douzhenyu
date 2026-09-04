@@ -25,6 +25,8 @@ from trpc_service.admin_api.schemas import (
     AgentDraftCreate,
     AgentDraftResponse,
     AgentDraftUpdate,
+    AgentReleaseCreate,
+    AgentReleaseResponse,
     DraftValidationResponse,
 )
 from trpc_service.admin_api.tenant_access import require_tenant_access
@@ -286,6 +288,136 @@ def create_agent_router(database: Database) -> APIRouter:
             raise HTTPException(status_code=404, detail="Agent Draft not found")
         result = record_to_dict(row)
         response.headers["ETag"] = f'"{result["version"]}"'
+        return result
+
+    @router.post(
+        "/{application_id}/releases",
+        response_model=AgentReleaseResponse,
+        status_code=201,
+        responses=error_responses(401, 403, 404, 409, 422),
+    )
+    async def publish_release(
+        tenant_id: UUID,
+        application_id: UUID,
+        payload: AgentReleaseCreate,
+        principal: Annotated[Principal, Depends(principal_from_request)],
+        key: Annotated[str, Header(alias="Idempotency-Key")],
+    ) -> dict[str, Any]:
+        await require_tenant_access(
+            database,
+            principal,
+            tenant_id,
+            "write",
+            "agent_release.publish",
+            target_type="agent_application",
+            target_id=str(application_id),
+        )
+        request_payload = {
+            "tenant_id": str(tenant_id),
+            "application_id": str(application_id),
+            **payload.model_dump(mode="json"),
+        }
+        release_id = uuid7()
+        async with database.tenant_transaction(tenant_id) as connection:
+            replayed = await replay_for(
+                connection,
+                actor=principal.subject,
+                key=key,
+                operation="agent_release.publish",
+                payload=request_payload,
+            )
+            if replayed is not None:
+                return replayed
+            draft = await connection.fetchrow(
+                "SELECT model_alias FROM tenant.agent_draft "
+                "WHERE tenant_id=$1 AND application_id=$2",
+                tenant_id,
+                application_id,
+            )
+            if draft is None or not str(draft["model_alias"]):
+                raise HTTPException(
+                    status_code=409, detail="Agent Draft with model alias is required"
+                )
+            profile = await connection.fetchrow(
+                """SELECT tenant_id,alias,provider_model,endpoint_url,secret_ref,
+                data_classification,region,fallback_aliases,requests_per_minute
+                FROM tenant.model_profile
+                WHERE tenant_id=$1 AND alias=$2""",
+                tenant_id,
+                draft["model_alias"],
+            )
+            if profile is None:
+                raise HTTPException(status_code=409, detail="Draft model profile does not exist")
+            available_fallbacks = {str(alias) for alias in profile["fallback_aliases"]}
+            if not set(payload.fallback_aliases).issubset(available_fallbacks):
+                raise HTTPException(
+                    status_code=422, detail="Release fallback is not configured on model profile"
+                )
+            profiles = [profile]
+            for fallback_alias in payload.fallback_aliases:
+                fallback = await connection.fetchrow(
+                    """SELECT tenant_id,alias,provider_model,endpoint_url,secret_ref,
+                    data_classification,region,fallback_aliases,requests_per_minute
+                    FROM tenant.model_profile
+                    WHERE tenant_id=$1 AND alias=$2""",
+                    tenant_id,
+                    fallback_alias,
+                )
+                if fallback is None:
+                    raise HTTPException(
+                        status_code=409, detail="Fallback model profile does not exist"
+                    )
+                profiles.append(fallback)
+            profile_snapshots = [
+                {
+                    "tenant_id": str(item["tenant_id"]),
+                    "alias": str(item["alias"]),
+                    "provider_model": str(item["provider_model"]),
+                    "endpoint_url": str(item["endpoint_url"]),
+                    "secret_ref": str(item["secret_ref"]),
+                    "data_classification": str(item["data_classification"]),
+                    "region": str(item["region"]),
+                    "fallback_aliases": [str(alias) for alias in item["fallback_aliases"]],
+                    "requests_per_minute": int(item["requests_per_minute"]),
+                }
+                for item in profiles
+            ]
+            row = await connection.fetchrow(
+                """INSERT INTO tenant.agent_release
+                (tenant_id,id,application_id,model_alias,data_classification,region,fallback_aliases,
+                model_profiles)
+                VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS jsonb),CAST($8 AS jsonb))
+                RETURNING id,tenant_id,application_id,model_alias,data_classification,region,
+                fallback_aliases,created_at""",
+                tenant_id,
+                release_id,
+                application_id,
+                draft["model_alias"],
+                payload.data_classification,
+                payload.region,
+                json.dumps(payload.fallback_aliases),
+                json.dumps(profile_snapshots),
+            )
+            assert row is not None
+            result = record_to_dict(row)
+            await insert_audit(
+                connection,
+                principal,
+                "agent_release.publish",
+                "ALLOW",
+                target_type="agent_release",
+                target_id=str(release_id),
+                tenant_id=tenant_id,
+                details={"application_id": str(application_id), "fallback_used": False},
+            )
+            await remember(
+                connection,
+                actor=principal.subject,
+                key=key,
+                operation="agent_release.publish",
+                payload=request_payload,
+                response=result,
+            )
         return result
 
     @router.post(

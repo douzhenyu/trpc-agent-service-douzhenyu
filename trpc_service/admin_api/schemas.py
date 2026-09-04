@@ -2,9 +2,10 @@
 
 from datetime import datetime
 from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 
 class HealthResponse(BaseModel):
@@ -78,6 +79,75 @@ class AgentApplicationList(BaseModel):
 
 
 DraftReference = Annotated[str, Field(max_length=128)]
+ModelAlias = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+ModelFallbackAlias = Annotated[str, Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")]
+SecretReference = Annotated[
+    str,
+    Field(
+        pattern=r"^vault://tenant/[0-9a-f-]{36}/[a-z0-9][a-z0-9/_-]{0,255}#[A-Za-z0-9_.-]{1,64}$",
+        max_length=384,
+    ),
+]
+
+
+def _endpoint_without_credentials(value: str) -> str:
+    parsed = urlsplit(value)
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("endpoint_url must not contain credentials")
+    if parsed.query or parsed.fragment:
+        raise ValueError("endpoint_url must not contain query or fragment data")
+    return value
+
+
+ModelEndpoint = Annotated[
+    str,
+    Field(pattern=r"^https?://[^\s]{1,480}$", max_length=512),
+    AfterValidator(_endpoint_without_credentials),
+]
+ModelRegion = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{1,62}$", max_length=63)]
+DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+
+
+class ModelProfileCreate(BaseModel):
+    alias: ModelAlias
+    provider_model: str = Field(min_length=1, max_length=256)
+    endpoint_url: ModelEndpoint
+    secret_ref: SecretReference
+    data_classification: DataClassification
+    region: ModelRegion
+    fallback_aliases: list[ModelFallbackAlias] = Field(default_factory=list, max_length=10)
+    requests_per_minute: int = Field(default=60, ge=1, le=100_000)
+
+
+class ModelProfileUpdate(BaseModel):
+    provider_model: str | None = Field(default=None, min_length=1, max_length=256)
+    endpoint_url: ModelEndpoint | None = None
+    secret_ref: SecretReference | None = None
+    data_classification: DataClassification | None = None
+    region: ModelRegion | None = None
+    fallback_aliases: list[ModelFallbackAlias] | None = Field(default=None, max_length=10)
+    requests_per_minute: int | None = Field(default=None, ge=1, le=100_000)
+
+
+class ModelProfileResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    alias: str
+    provider_model: str
+    endpoint_url: str
+    secret_ref: str
+    data_classification: DataClassification
+    region: str
+    fallback_aliases: list[str]
+    requests_per_minute: int
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ModelProfileList(BaseModel):
+    items: list[ModelProfileResponse]
+    next_cursor: str | None = None
 
 
 class AgentDraftCreate(BaseModel):
@@ -109,6 +179,23 @@ class AgentDraftResponse(BaseModel):
     version: int
     created_at: datetime
     updated_at: datetime
+
+
+class AgentReleaseCreate(BaseModel):
+    data_classification: DataClassification
+    region: ModelRegion
+    fallback_aliases: list[ModelFallbackAlias] = Field(default_factory=list, max_length=10)
+
+
+class AgentReleaseResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    model_alias: str
+    data_classification: DataClassification
+    region: str
+    fallback_aliases: list[str]
+    created_at: datetime
 
 
 DraftIssueCode = Literal[

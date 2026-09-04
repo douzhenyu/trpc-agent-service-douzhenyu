@@ -147,6 +147,7 @@ def test_revision_executes_every_statement_and_is_irreversible(
     [
         "trpc_service.migrations.versions.0002_agent_drafts",
         "trpc_service.migrations.versions.0003_visible_tenant_memberships",
+        "trpc_service.migrations.versions.0004_model_profiles",
     ],
 )
 def test_tenant_revisions_execute_frozen_sql_and_are_irreversible(
