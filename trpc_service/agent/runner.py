@@ -30,9 +30,10 @@ from trpc_agent_sdk.types import Content, Part
 
 from trpc_service.agent_worker import ReleaseRoute, ReleaseRouteResolver
 from trpc_service.governance import (
+    DataClassification,
+    DecisionType,
     GovernanceRules,
     evaluate_outbound,
-    highest_classification,
 )
 from trpc_service.version import __version__, require_pinned_trpc_agent_version
 
@@ -113,41 +114,6 @@ class PolicyRulesResolver(Protocol):
     async def resolve_rules(self, tenant_id: str, decision_key: str) -> GovernanceRules | None: ...
 
 
-def governance_model_callback(
-    policies: PolicyRulesResolver, tenant_id: str, release_id: str
-) -> Any:
-    """Build the fail-closed before-model governance callback for one release."""
-
-    decision_key = f"{tenant_id}:{release_id}"
-
-    async def callback(_context: Any, llm_request: LlmRequest) -> LlmResponse | None:
-        rules = await policies.resolve_rules(tenant_id, decision_key)
-        if rules is None:
-            return None
-        messages = _request_messages(llm_request)
-        decision = evaluate_outbound(
-            rules,
-            messages,
-            declared_classification=highest_classification(*(rules.max_outbound_classification,)),
-            target_is_private_endpoint=False,
-        )
-        if decision.decision == "MASK" and decision.masked_messages is not None:
-            try:
-                _apply_masked_contents(llm_request, decision.masked_messages)
-            except Exception:
-                return _blocked("GOVERNANCE_MASK_FAILED")
-            return None
-        if decision.decision in {"DENY", "NEEDS_APPROVAL"}:
-            return _blocked(
-                "GOVERNANCE_DENIED"
-                if decision.decision == "DENY"
-                else "GOVERNANCE_APPROVAL_REQUIRED"
-            )
-        return None
-
-    return callback
-
-
 def _request_messages(llm_request: LlmRequest) -> list[dict[str, str]]:
     messages: list[dict[str, str]] = []
     for content in llm_request.contents or []:
@@ -165,6 +131,53 @@ def _apply_masked_contents(llm_request: LlmRequest, masked: list[dict[str, Any]]
 
 def _blocked(code: str) -> LlmResponse:
     return LlmResponse(error_code=code, error_message=code)
+
+
+def governance_model_callback(
+    policies: PolicyRulesResolver,
+    *,
+    tenant_id: str,
+    release_id: str,
+    declared_classification: DataClassification,
+) -> Any:
+    """Build the before-model governance callback for one release.
+
+    The release's declared classification is the floor; DLP may raise it.
+    Absent bundles fall through to the platform defaults (the LLM Gateway
+    backstop and OPA still gate egress — the Filter is not the only
+    boundary); resolution errors block the request.
+    """
+
+    async def callback(context: Any, llm_request: LlmRequest) -> LlmResponse | None:
+        session_id = str(getattr(context, "session_id", "") or release_id)
+        try:
+            rules = await policies.resolve_rules(tenant_id, f"{tenant_id}:{session_id}")
+        except Exception:
+            return _blocked("GOVERNANCE_UNAVAILABLE")
+        if rules is None:
+            return None
+        messages = _request_messages(llm_request)
+        decision = evaluate_outbound(
+            rules,
+            messages,
+            declared_classification=declared_classification,
+            target_is_private_endpoint=False,
+        )
+        if decision.decision == DecisionType.MASK and decision.masked_messages is not None:
+            try:
+                _apply_masked_contents(llm_request, decision.masked_messages)
+            except Exception:
+                return _blocked("GOVERNANCE_MASK_FAILED")
+            return None
+        if decision.decision in {DecisionType.DENY, DecisionType.NEEDS_APPROVAL}:
+            return _blocked(
+                "GOVERNANCE_DENIED"
+                if decision.decision == DecisionType.DENY
+                else "GOVERNANCE_APPROVAL_REQUIRED"
+            )
+        return None
+
+    return callback
 
 
 class ReleasePinnedRunnerRuntime:
@@ -217,7 +230,12 @@ class ReleasePinnedRunnerRuntime:
             ),
             instruction=route.instructions,
             before_model_callback=(
-                governance_model_callback(self._policies, route.tenant_id, route.release_id)
+                governance_model_callback(
+                    self._policies,
+                    tenant_id=route.tenant_id,
+                    release_id=route.release_id,
+                    declared_classification=route.data_classification,
+                )
                 if self._policies is not None
                 else None
             ),

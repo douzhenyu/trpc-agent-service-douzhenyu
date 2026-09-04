@@ -13,7 +13,7 @@ from trpc_service.admin_api.app import create_app
 from trpc_service.admin_api.database import Database
 from trpc_service.admin_api.settings import AdminSettings
 from trpc_service.database_migrations import apply_migrations
-from trpc_service.governance import GovernanceRules, scan_messages
+from trpc_service.governance import DataClassification, GovernanceRules, scan_messages
 
 ADMIN_URL = os.environ.get(
     "TEST_DATABASE_ADMIN_URL", "postgresql://postgres:postgres@127.0.0.1:55432/trpc_platform"
@@ -215,6 +215,32 @@ def test_policy_bundle_service_resolves_active_or_canary_rules() -> None:
     asyncio.run(scenario())
 
 
+def test_canary_without_a_stable_version_fails_closed() -> None:
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        from trpc_service.policy_bundles import (
+            PolicyBundleError,
+            PolicyBundleService,
+        )
+
+        tenant_id = await _seed_tenant()
+        database = Database(APP_URL)
+        await database.open()
+        try:
+            service = PolicyBundleService(database, signing_key=SIGNING_KEY)
+            await service.create_version(tenant_id, GovernanceRules(), actor="governance-admin")
+            # First-ever activation as a pure canary: non-bucket decisions
+            # would run without any stable bundle, so resolution fails closed.
+            await service.activate(tenant_id, 1, canary_percentage=100)
+            with pytest.raises(PolicyBundleError, match="POLICY_BUNDLE_UNAVAILABLE"):
+                await service.resolve(tenant_id, "outside-the-bucket")
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
 def test_restricted_outbound_denials_leave_audit_evidence() -> None:
     asyncio.run(_prepare_database())
 
@@ -255,16 +281,26 @@ def test_runner_governance_callback_blocks_secrets() -> None:
         async def resolve_rules(self, tenant_id: str, decision_key: str) -> GovernanceRules | None:
             return self._rules
 
-    callback = governance_model_callback(StaticResolver(GovernanceRules()), "tenant-1", "release-1")
+    callback = governance_model_callback(
+        StaticResolver(GovernanceRules()),
+        tenant_id="tenant-1",
+        release_id="release-1",
+        declared_classification=DataClassification.INTERNAL,
+    )
     request = LlmRequest(
         contents=[Content(role="user", parts=[Part(text="my key is sk-abcdefghijklmnopqrst1234")])]
     )
-    blocked = asyncio.run(callback(None, request))
+    blocked = asyncio.run(callback({"session_id": "session-1"}, request))
     assert blocked is not None
     assert blocked.error_code == "GOVERNANCE_DENIED"
 
-    permissive = governance_model_callback(StaticResolver(None), "tenant-1", "release-1")
-    assert asyncio.run(permissive(None, request)) is None
+    permissive = governance_model_callback(
+        StaticResolver(None),
+        tenant_id="tenant-1",
+        release_id="release-1",
+        declared_classification=DataClassification.INTERNAL,
+    )
+    assert asyncio.run(permissive({"session_id": "session-1"}, request)) is None
 
     allowed_request = LlmRequest(contents=[Content(role="user", parts=[Part(text="hello")])])
-    assert asyncio.run(callback(None, allowed_request)) is None
+    assert asyncio.run(callback({"session_id": "session-1"}, allowed_request)) is None

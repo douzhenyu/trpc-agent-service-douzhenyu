@@ -84,24 +84,6 @@ def test_evaluate_outbound_blocks_secrets_before_anything_else() -> None:
     assert relaxed.effective_classification is DataClassification.CONFIDENTIAL
 
 
-def test_evaluate_outbound_denies_restricted_for_external_models() -> None:
-    decision = evaluate_outbound(
-        _rules(allow_restricted_to_private_endpoints=True),
-        [{"role": "user", "content": "highest secret"}],
-        declared_classification=DataClassification.RESTRICTED,
-        target_is_private_endpoint=False,
-    )
-    assert decision.decision == "DENY"
-    assert decision.reason == "restricted data cannot enter external models"
-    allowed = evaluate_outbound(
-        _rules(allow_restricted_to_private_endpoints=True),
-        [{"role": "user", "content": "highest secret"}],
-        declared_classification=DataClassification.RESTRICTED,
-        target_is_private_endpoint=True,
-    )
-    assert allowed.decision == "ALLOW"
-
-
 def test_evaluate_outbound_requires_approval_above_ceiling() -> None:
     decision = evaluate_outbound(
         _rules(require_approval_above="INTERNAL"),
@@ -130,6 +112,55 @@ def test_evaluate_outbound_masks_configured_patterns() -> None:
         target_is_private_endpoint=False,
     )
     assert untouched.decision == "ALLOW"
+
+
+def test_evaluate_outbound_enforces_the_policy_ceiling() -> None:
+    decision = evaluate_outbound(
+        _rules(max_outbound_classification="INTERNAL"),
+        [{"role": "user", "content": "身份证 11010519491231002X"}],
+        declared_classification=DataClassification.INTERNAL,
+        target_is_private_endpoint=False,
+    )
+    assert decision.decision == "DENY"
+    assert "exceeds the policy ceiling INTERNAL" in decision.reason
+
+
+def test_evaluate_outbound_denies_restricted_for_external_models() -> None:
+    decision = evaluate_outbound(
+        _rules(allow_restricted_to_private_endpoints=True),
+        [{"role": "user", "content": "highest secret"}],
+        declared_classification=DataClassification.RESTRICTED,
+        target_is_private_endpoint=False,
+    )
+    assert decision.decision == "DENY"
+    assert decision.reason == "restricted data cannot enter external models"
+    allowed = evaluate_outbound(
+        _rules(allow_restricted_to_private_endpoints=True),
+        [{"role": "user", "content": "highest secret"}],
+        declared_classification=DataClassification.RESTRICTED,
+        target_is_private_endpoint=True,
+    )
+    assert allowed.decision == "ALLOW"
+
+
+def test_scan_covers_structured_tool_call_fields() -> None:
+    scan = scan_messages(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "http",
+                            "arguments": '{"api_key": "sk-abcdefghijklmnopqrst1234"}',
+                        }
+                    }
+                ],
+            }
+        ]
+    )
+    assert scan.blocked
+    assert "assigned-api-key" in scan.detected_secrets
 
 
 def test_rules_reject_unknown_fields_and_bad_levels() -> None:

@@ -17,12 +17,10 @@ package platform.llm
 
 default allow := false
 
+# Only scheme-pinned internal hosts count as private; substring matches on
+# tenant-supplied URLs are spoofable and are intentionally not accepted.
 private_endpoint if {
     startswith(input.endpoint_url, "https://internal.")
-}
-
-private_endpoint if {
-    contains(input.endpoint_url, ".internal:")
 }
 
 allow if {
@@ -36,6 +34,6 @@ allow if {
 
 allow if {
     input.effective_classification == "RESTRICTED"
-    data.platform.governance.allow_restricted_to_private_endpoints == true
+    input.allow_restricted_to_private_endpoints == true
     private_endpoint
 }

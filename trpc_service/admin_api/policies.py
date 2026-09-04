@@ -202,7 +202,9 @@ def create_policy_router(database: Database, *, signing_key: str) -> APIRouter:
             cursor_version = int(cursor) if cursor is not None else 0
         except ValueError as error:
             raise HTTPException(status_code=400, detail="invalid cursor") from error
-        versions = await _service().list_versions(str(tenant_id))
+        versions = sorted(
+            await _service().list_versions(str(tenant_id)), key=lambda row: int(row["version"])
+        )
         page = [row for row in versions if int(row["version"]) > cursor_version][:limit]
         items = [_bundle_response(str(tenant_id), row) for row in page]
         return PolicyBundleList(

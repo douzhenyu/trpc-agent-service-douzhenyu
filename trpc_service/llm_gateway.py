@@ -43,12 +43,6 @@ from trpc_service.version import TRPC_AGENT_VERSION, __version__
 __all__ = ["DataClassification"]
 
 
-_CLASSIFICATION_RANK = {
-    DataClassification.PUBLIC: 0,
-    DataClassification.INTERNAL: 1,
-    DataClassification.CONFIDENTIAL: 2,
-    DataClassification.RESTRICTED: 3,
-}
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -195,11 +189,23 @@ class VaultSecretProvider:
         return value
 
 
+class GovernanceFlagsResolver(Protocol):
+    """Resolves the active Policy Bundle flags for one tenant."""
+
+    async def flags(self, tenant_id: str) -> dict[str, Any]: ...
+
+
 class OpaOutboundPolicy:
     """Fail-closed OPA adapter evaluated before any provider request."""
 
-    def __init__(self, client: httpx.AsyncClient) -> None:
+    def __init__(
+        self,
+        client: httpx.AsyncClient,
+        *,
+        governance_flags: GovernanceFlagsResolver | None = None,
+    ) -> None:
         self._client = client
+        self._governance_flags = governance_flags
 
     async def allows(
         self,
@@ -218,6 +224,9 @@ class OpaOutboundPolicy:
                         "data_classification": request.data_classification,
                         "effective_classification": effective_classification.value,
                         "region": request.region,
+                        "allow_restricted_to_private_endpoints": await self._restricted_flag(
+                            request.tenant_id
+                        ),
                     }
                 },
             )
@@ -237,6 +246,15 @@ class OpaOutboundPolicy:
             )
         except (httpx.HTTPError, ValueError, AttributeError):
             return False
+
+    async def _restricted_flag(self, tenant_id: str) -> bool:
+        if self._governance_flags is None:
+            return False
+        try:
+            flags = await self._governance_flags.flags(tenant_id)
+        except Exception:
+            return False
+        return flags.get("allow_restricted_to_private_endpoints") is True
 
 
 class GatewayObserver(Protocol):
@@ -338,6 +356,17 @@ class LLMGateway:
         # outright and the DLP-raised classification rides the policy checks.
         scan = scan_messages(request.messages)
         if scan.blocked:
+            if self._policy_audit is not None:
+                try:
+                    await self._policy_audit.record_denied(
+                        request,
+                        highest_classification(
+                            request.data_classification, scan.detected_classification
+                        ),
+                        f"secret detected: {', '.join(scan.detected_secrets)}",
+                    )
+                except Exception as audit_error:
+                    raise ModelGatewayError("AUDIT_UNAVAILABLE") from audit_error
             raise ModelGatewayError("SECRET_DETECTED")
         effective = highest_classification(
             request.data_classification, scan.detected_classification
@@ -515,8 +544,7 @@ class LLMGateway:
             request.data_classification is not DataClassification.RESTRICTED
             and effective_classification is not DataClassification.RESTRICTED
             and request.region == profile.region
-            and _CLASSIFICATION_RANK[request.data_classification]
-            <= _CLASSIFICATION_RANK[profile.data_classification]
+            and request.data_classification.rank <= profile.data_classification.rank
         )
         return allowed and await self._policy.allows(request, profile, effective_classification)
 

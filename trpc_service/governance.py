@@ -115,7 +115,9 @@ def scan_messages(messages: Sequence[dict[str, Any]]) -> ContentScanResult:
     detected_secrets: list[str] = []
     detected = DataClassification.PUBLIC
     for message in messages:
-        content = str(message.get("content", ""))
+        # Serialize the entire payload: tool-call arguments and other
+        # structured fields are screened exactly like free text.
+        content = json.dumps(message, ensure_ascii=False, default=str)
         for rule in SECRET_DETECTION_RULES:
             if rule.pattern.search(content):
                 detected_secrets.append(rule.name)
@@ -149,11 +151,18 @@ class GovernanceRules(BaseModel):
     mask_patterns: tuple[MaskPattern, ...] = ()
 
 
+class DecisionType(StrEnum):
+    ALLOW = "ALLOW"
+    DENY = "DENY"
+    MASK = "MASK"
+    NEEDS_APPROVAL = "NEEDS_APPROVAL"
+
+
 @dataclass(frozen=True)
 class GovernanceDecision:
     """The governance verdict for one outbound request."""
 
-    decision: str  # ALLOW | DENY | MASK | NEEDS_APPROVAL
+    decision: DecisionType
     effective_classification: DataClassification
     reason: str
     masked_messages: list[dict[str, Any]] | None = None
@@ -172,37 +181,45 @@ def evaluate_outbound(
     effective = highest_classification(declared_classification, scan.detected_classification)
     if rules.secret_detection_enabled and scan.blocked:
         return GovernanceDecision(
-            decision="DENY",
+            decision=DecisionType.DENY,
             effective_classification=effective,
             reason=f"secret detected: {', '.join(scan.detected_secrets)}",
         )
-    if effective == DataClassification.RESTRICTED and not (
-        rules.allow_restricted_to_private_endpoints and target_is_private_endpoint
-    ):
+    if effective == DataClassification.RESTRICTED:
+        # RESTRICTED has its dedicated gate: it never reaches external
+        # models, and the private-endpoint exception is explicit.
+        if not (rules.allow_restricted_to_private_endpoints and target_is_private_endpoint):
+            return GovernanceDecision(
+                decision=DecisionType.DENY,
+                effective_classification=effective,
+                reason="restricted data cannot enter external models",
+            )
+    elif effective.rank > rules.max_outbound_classification.rank:
         return GovernanceDecision(
-            decision="DENY",
+            decision=DecisionType.DENY,
             effective_classification=effective,
-            reason="restricted data cannot enter external models",
+            reason=f"{effective.value} exceeds the policy ceiling "
+            f"{rules.max_outbound_classification.value}",
         )
     if (
         rules.require_approval_above is not None
         and effective.rank > DataClassification(rules.require_approval_above.value).rank
     ):
         return GovernanceDecision(
-            decision="NEEDS_APPROVAL",
+            decision=DecisionType.NEEDS_APPROVAL,
             effective_classification=effective,
             reason=f"{effective.value} exceeds the approval-free ceiling",
         )
     masked = _apply_masks(rules, messages)
     if masked is not None:
         return GovernanceDecision(
-            decision="MASK",
+            decision=DecisionType.MASK,
             effective_classification=effective,
             reason="mask patterns applied",
             masked_messages=masked,
         )
     return GovernanceDecision(
-        decision="ALLOW",
+        decision=DecisionType.ALLOW,
         effective_classification=effective,
         reason="within policy",
     )
@@ -247,12 +264,16 @@ def compile_bundle(rules: GovernanceRules, version: int) -> dict[str, Any]:
 
 
 def sign_bundle(rules: GovernanceRules, version: int, signing_key: str) -> str:
-    """HMAC-SHA256 signature over the canonical rules document and version."""
+    """HMAC-SHA256 signature over the rules, the version and the compiled doc."""
 
     if not signing_key:
         raise ValueError("policy signing key is required")
     canonical = json.dumps(
-        {"rules": rules.model_dump(mode="json"), "version": version},
+        {
+            "rules": rules.model_dump(mode="json"),
+            "version": version,
+            "bundle": compile_bundle(rules, version),
+        },
         ensure_ascii=False,
         separators=(",", ":"),
         sort_keys=True,

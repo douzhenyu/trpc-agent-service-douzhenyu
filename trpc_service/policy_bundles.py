@@ -127,11 +127,14 @@ class PolicyBundleService:
             return dict(updated)
 
     async def resolve(self, tenant_id: str, decision_key: str) -> ResolvedPolicy | None:
-        """Resolve the governing rules for one decision; fails closed.
+        """Resolve the governing rules for one decision.
 
-        A canary version receives the deterministic share of decisions; every
-        candidate bundle is signature-verified before use, and tampered or
-        missing bundles deny instead of silently degrading.
+        Returns None only when the tenant has no bundles at all — callers
+        treat that as allow-under-platform-defaults (the LLM Gateway backstop
+        and OPA still gate egress). A canary version receives the
+        deterministic Session-bucket share of decisions; every candidate is
+        signature-verified before use, tampered bundles and inconsistent
+        activation states fail closed.
         """
 
         async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
@@ -145,6 +148,10 @@ class PolicyBundleService:
             return None
         stable = next((row for row in rows if row["status"] == "ACTIVE"), None)
         canary = next((row for row in rows if row["status"] == "CANARY"), None)
+        if canary is not None and stable is None:
+            # A canary without a stable version cannot govern consistently:
+            # non-bucket decisions would run ungoverned, so fail closed.
+            raise PolicyBundleError("POLICY_BUNDLE_UNAVAILABLE")
         chosen = stable
         canary_used = False
         if (
