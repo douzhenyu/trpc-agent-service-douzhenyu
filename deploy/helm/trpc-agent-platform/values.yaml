@@ -45,6 +45,13 @@ adminApi:
   databaseSecretKey: url
   authSecretName: trpc-platform-admin-auth
 
+agentWorker:
+  databaseSecretName: trpc-platform-database-app
+  databaseSecretKey: url
+  vaultUrl: https://openbao.platform.svc
+  vaultKubernetesRole: agent-worker
+  opaUrl: http://opa.platform.svc
+
 zeroTrust:
   enabled: true
   sharedResources: true
@@ -161,6 +168,11 @@ components:
           serviceAccount: argo-rollouts
           methods: [GET]
           paths: [/health/ready]
+    outboundDependencies:
+      - component: openbao
+        port: 8200
+      - component: opa
+        port: 8181
   job-worker:
     enabled: true
     workloadKind: Rollout

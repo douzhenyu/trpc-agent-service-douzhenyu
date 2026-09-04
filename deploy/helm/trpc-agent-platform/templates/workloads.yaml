@@ -55,7 +55,7 @@ spec:
         trpc-agent-platform.io/network-profile: {{ $name }}
     spec:
       serviceAccountName: {{ $name }}
-      automountServiceAccountToken: false
+      automountServiceAccountToken: {{ eq $name "agent-worker" }}
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -92,7 +92,28 @@ spec:
             - secretRef:
                 name: {{ $.Values.adminApi.authSecretName }}
 {{- end }}
-{{- if and (ne $name "admin-api") (ne $name "web-console") }}
+{{- if eq $name "agent-worker" }}
+          command:
+            - /app/.venv/bin/uvicorn
+          args:
+            - trpc_service.agent_worker:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ $component.port | quote }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.agentWorker.databaseSecretName }}
+                  key: {{ $.Values.agentWorker.databaseSecretKey }}
+            - name: VAULT_URL
+              value: {{ $.Values.agentWorker.vaultUrl | quote }}
+            - name: VAULT_KUBERNETES_ROLE
+              value: {{ $.Values.agentWorker.vaultKubernetesRole | quote }}
+            - name: OPA_URL
+              value: {{ $.Values.agentWorker.opaUrl | quote }}
+{{- else if and (ne $name "admin-api") (ne $name "web-console") }}
           command:
             - /app/.venv/bin/uvicorn
           args:

@@ -92,7 +92,7 @@ class ModelProfileResolver(Protocol):
 
 
 class SecretProvider(Protocol):
-    async def resolve(self, secret_ref: str) -> str: ...
+    async def resolve(self, tenant_id: str, secret_ref: str) -> str: ...
 
 
 class OutboundPolicy(Protocol):
@@ -106,7 +106,7 @@ class VaultSecretProvider:
         self._client, self._kubernetes_jwt, self._role = client, kubernetes_jwt, role
         self._token: str | None = None
 
-    async def resolve(self, secret_ref: str) -> str:
+    async def resolve(self, tenant_id: str, secret_ref: str) -> str:
         parsed = urlsplit(secret_ref)
         path = parsed.path.lstrip("/")
         if (
@@ -114,6 +114,7 @@ class VaultSecretProvider:
             or parsed.netloc != "tenant"
             or not parsed.fragment
             or "/" not in path
+            or path.split("/", maxsplit=1)[0] != tenant_id
         ):
             raise ModelGatewayError("SECRET_REFERENCE_INVALID")
         if self._token is None:
@@ -244,7 +245,7 @@ class LLMGateway:
         circuit_failure_threshold: int = 3,
         circuit_reset_seconds: float = 30,
         observer: GatewayObserver | None = None,
-        policy: OutboundPolicy | None = None,
+        policy: OutboundPolicy,
     ) -> None:
         self._profiles = profiles
         self._secrets = secrets
@@ -277,7 +278,7 @@ class LLMGateway:
                 rate_limited = True
                 continue
             try:
-                credential = await self._secrets.resolve(profile.secret_ref)
+                credential = await self._secrets.resolve(profile.tenant_id, profile.secret_ref)
             except Exception:  # Secret backends must never leak implementation errors to callers.
                 last_failure_code = "SECRET_RESOLUTION_FAILED"
                 self._record_failure(key)
@@ -381,7 +382,7 @@ class LLMGateway:
             and _CLASSIFICATION_RANK[request.data_classification]
             <= _CLASSIFICATION_RANK[profile.data_classification]
         )
-        return allowed and (self._policy is None or await self._policy.allows(request, profile))
+        return allowed and await self._policy.allows(request, profile)
 
     def _record_event(
         self,

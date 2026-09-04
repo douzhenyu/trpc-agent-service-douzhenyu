@@ -21,9 +21,15 @@ from trpc_service.llm_gateway import (
 
 
 class FakeSecretProvider:
-    async def resolve(self, secret_ref: str) -> str:
+    async def resolve(self, tenant_id: str, secret_ref: str) -> str:
+        assert tenant_id in secret_ref
         assert secret_ref.startswith("vault://tenant/")
         return "provider-secret-that-must-not-leak"
+
+
+class AllowOutboundPolicy:
+    async def allows(self, _request: GatewayRequest, _profile: ModelProfile) -> bool:
+        return True
 
 
 def profile(
@@ -82,6 +88,7 @@ def test_gateway_injects_a_resolved_secret_and_returns_a_successful_fake_complet
         InMemoryModelProfileResolver([profile(tenant_id, "balanced")]),
         FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
+        policy=AllowOutboundPolicy(),
     )
 
     result = asyncio.run(gateway.complete(request(tenant_id)))
@@ -115,6 +122,7 @@ def test_gateway_uses_fallback_and_opens_the_primary_circuit_without_leaking_pro
         FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
         circuit_failure_threshold=1,
+        policy=AllowOutboundPolicy(),
     )
 
     first = asyncio.run(
@@ -144,6 +152,7 @@ def test_gateway_rate_limits_the_profile_before_calling_the_fake_llm_again() -> 
         InMemoryModelProfileResolver([profile(tenant_id, "balanced", requests_per_minute=1)]),
         FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
+        policy=AllowOutboundPolicy(),
     )
 
     asyncio.run(gateway.complete(request(tenant_id)))
@@ -174,6 +183,7 @@ def test_gateway_rejects_restricted_content_for_an_external_endpoint() -> None:
         ),
         FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
+        policy=AllowOutboundPolicy(),
     )
 
     with pytest.raises(ModelGatewayError, match="MODEL_POLICY_DENIED"):
@@ -202,6 +212,7 @@ def test_gateway_does_not_fallback_without_runtime_authorization() -> None:
         ),
         FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
+        policy=AllowOutboundPolicy(),
     )
 
     with pytest.raises(ModelGatewayError, match="MODEL_UNAVAILABLE"):
@@ -213,7 +224,7 @@ def test_gateway_sanitizes_secret_resolution_failures_and_records_safe_metadata(
     observer = InMemoryGatewayObserver()
 
     class FailingSecretProvider:
-        async def resolve(self, _secret_ref: str) -> str:
+        async def resolve(self, _tenant_id: str, _secret_ref: str) -> str:
             raise RuntimeError("provider-secret-that-must-not-leak prompt that must not leak")
 
     gateway = LLMGateway(
@@ -221,6 +232,7 @@ def test_gateway_sanitizes_secret_resolution_failures_and_records_safe_metadata(
         FailingSecretProvider(),
         httpx.AsyncClient(),
         observer=observer,
+        policy=AllowOutboundPolicy(),
     )
 
     with pytest.raises(ModelGatewayError, match="SECRET_RESOLUTION_FAILED") as error:
@@ -246,6 +258,7 @@ def test_gateway_model_adapter_does_not_accept_provider_credentials() -> None:
             InMemoryModelProfileResolver([profile(tenant_id, "balanced")]),
             FakeSecretProvider(),
             httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
+            policy=AllowOutboundPolicy(),
         ),
         tenant_id=tenant_id,
         model_alias="balanced",

@@ -12,6 +12,7 @@ from trpc_service.admin_api.app import create_app
 from trpc_service.admin_api.auth import Principal, encode_session
 from trpc_service.admin_api.database import Database
 from trpc_service.admin_api.settings import AdminSettings
+from trpc_service.agent_worker import DatabaseReleaseRouteResolver
 from trpc_service.database_migrations import apply_migrations
 from trpc_service.llm_gateway import (
     DatabaseModelProfileResolver,
@@ -39,7 +40,8 @@ async def _prepare_database() -> None:
     connection = await asyncpg.connect(ADMIN_URL)
     try:
         await connection.execute(
-            "TRUNCATE tenant.model_profile, tenant.agent_draft, tenant.agent_application, "
+            "TRUNCATE tenant.model_profile, tenant.agent_release, tenant.agent_draft, "
+            "tenant.agent_application, "
             "platform.idempotency_record, platform.audit_event, "
             "platform.platform_role_assignment, platform.platform_user, "
             "platform.tenant_group_member, platform.tenant_group, "
@@ -634,3 +636,69 @@ def test_model_profile_rejects_endpoint_credentials() -> None:
 
         assert response.status_code == 422
         assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_published_agent_release_is_the_runtime_source_of_allowed_model_fallbacks() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        tenant_id = _login_and_create_tenant(client)
+        profiles = f"/api/v1/tenants/{tenant_id}/model-profiles"
+        for alias, fallbacks in (("balanced", ["economy"]), ("economy", [])):
+            response = client.post(
+                profiles,
+                headers={"Idempotency-Key": str(uuid4())},
+                json={
+                    "alias": alias,
+                    "provider_model": f"fake-{alias}",
+                    "endpoint_url": "https://fake-llm.internal/v1/chat/completions",
+                    "secret_ref": f"vault://tenant/{tenant_id}/llm/{alias}#api_key",
+                    "data_classification": "CONFIDENTIAL",
+                    "region": "cn-north-1",
+                    "fallback_aliases": fallbacks,
+                },
+            )
+            assert response.status_code == 201
+        application = client.post(
+            f"/api/v1/tenants/{tenant_id}/agent-applications",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"slug": "support", "name": "Support"},
+        ).json()
+        draft_url = (
+            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/draft"
+        )
+        assert client.put(
+            draft_url,
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"model_alias": "balanced"},
+        ).status_code == 201
+
+        released = client.post(
+            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/releases",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "data_classification": "INTERNAL",
+                "region": "cn-north-1",
+                "fallback_aliases": ["economy"],
+            },
+        )
+
+        assert released.status_code == 201
+        assert released.json()["model_alias"] == "balanced"
+        assert released.json()["fallback_aliases"] == ["economy"]
+
+        async def resolve_route() -> object:
+            database = Database(APP_URL)
+            await database.open()
+            try:
+                return await DatabaseReleaseRouteResolver(database).resolve(
+                    tenant_id, released.json()["id"]
+                )
+            finally:
+                await database.close()
+
+        route = asyncio.run(resolve_route())
+        assert route is not None
+        assert route.model_alias == "balanced"
+        assert route.allowed_fallback_aliases == frozenset({"economy"})
+        audit = client.get("/api/v1/audit-events", params={"tenant_id": tenant_id})
+        assert any(event["action"] == "agent_release.publish" for event in audit.json()["items"])

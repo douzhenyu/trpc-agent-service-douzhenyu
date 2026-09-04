@@ -5,15 +5,18 @@ from uuid import uuid4
 
 import httpx
 import pytest
+from fastapi.testclient import TestClient
 
 from trpc_service.agent_worker import (
     AgentExecutionRequest,
     AgentWorker,
     InMemoryReleaseRouteResolver,
     ReleaseRoute,
+    create_app,
 )
 from trpc_service.llm_gateway import (
     DataClassification,
+    GatewayResult,
     InMemoryModelProfileResolver,
     LLMGateway,
     ModelGatewayError,
@@ -21,6 +24,51 @@ from trpc_service.llm_gateway import (
     OpaOutboundPolicy,
     VaultSecretProvider,
 )
+
+
+class AllowOutboundPolicy:
+    async def allows(self, _request: object, _profile: object) -> bool:
+        return True
+
+
+class FakeSecretProvider:
+    async def resolve(self, tenant_id: str, secret_ref: str) -> str:
+        assert tenant_id in secret_ref
+        return "secret"
+
+
+class FakeWorker:
+    async def complete(self, request: AgentExecutionRequest) -> GatewayResult:
+        assert request.messages == [{"role": "user", "content": "hello"}]
+        return GatewayResult("economy", True, {"choices": [{"message": {"content": "reply"}}]})
+
+
+def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fallback() -> None:
+    tenant_id, release_id = str(uuid4()), str(uuid4())
+    with TestClient(create_app(worker=FakeWorker())) as client:
+        response = client.post(
+            "/internal/v1/agent-executions",
+            json={
+                "tenant_id": tenant_id,
+                "release_id": release_id,
+                "messages": [{"role": "user", "content": "hello"}],
+                "api_key": "provider-secret-that-must-not-be-accepted",
+            },
+        )
+        assert response.status_code == 422
+
+        response = client.post(
+            "/internal/v1/agent-executions",
+            json={
+                "tenant_id": tenant_id,
+                "release_id": release_id,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["model_alias"] == "economy"
+    assert response.json()["fallback_used"] is True
 
 
 def test_vault_provider_uses_kubernetes_auth_and_returns_only_requested_field() -> None:
@@ -41,10 +89,27 @@ def test_vault_provider_uses_kubernetes_auth_and_returns_only_requested_field() 
         role="agent-worker",
     )
 
-    secret = asyncio.run(provider.resolve(f"vault://tenant/{tenant_id}/llm/openai#api_key"))
+    secret = asyncio.run(
+        provider.resolve(tenant_id, f"vault://tenant/{tenant_id}/llm/openai#api_key")
+    )
 
     assert secret == "provider-secret"
     assert calls == ["/v1/auth/kubernetes/login", f"/v1/tenant/data/{tenant_id}/llm/openai"]
+
+
+def test_vault_provider_rejects_secret_reference_for_another_tenant_before_network_access() -> None:
+    tenant_id, other_tenant_id = str(uuid4()), str(uuid4())
+    provider = VaultSecretProvider(
+        httpx.AsyncClient(
+            base_url="https://vault.test",
+            transport=httpx.MockTransport(lambda _request: pytest.fail("Vault must not be called")),
+        ),
+        kubernetes_jwt="workload-jwt",
+        role="agent-worker",
+    )
+
+    with pytest.raises(ModelGatewayError, match="SECRET_REFERENCE_INVALID"):
+        asyncio.run(provider.resolve(tenant_id, f"vault://tenant/{other_tenant_id}/llm/openai#api_key"))
 
 
 def test_opa_policy_fails_closed_and_never_calls_provider_when_denied() -> None:
@@ -72,7 +137,7 @@ def test_opa_policy_fails_closed_and_never_calls_provider_when_denied() -> None:
     )
     gateway = LLMGateway(
         InMemoryModelProfileResolver([profile]),
-        type("Secret", (), {"resolve": lambda _self, _ref: asyncio.sleep(0, result="secret")})(),
+        FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(provider)),
         policy=OpaOutboundPolicy(
             httpx.AsyncClient(base_url="https://opa.test", transport=httpx.MockTransport(opa))
@@ -132,8 +197,9 @@ def test_agent_worker_uses_release_route_and_rejects_unreleased_fallbacks() -> N
     ]
     gateway = LLMGateway(
         InMemoryModelProfileResolver(profiles),
-        type("Secret", (), {"resolve": lambda _self, _ref: asyncio.sleep(0, result="secret")})(),
+        FakeSecretProvider(),
         httpx.AsyncClient(transport=httpx.MockTransport(provider)),
+        policy=AllowOutboundPolicy(),
     )
     worker = AgentWorker(
         gateway,

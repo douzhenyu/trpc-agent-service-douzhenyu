@@ -181,6 +181,23 @@ class AgentDraftResponse(BaseModel):
     updated_at: datetime
 
 
+class AgentReleaseCreate(BaseModel):
+    data_classification: DataClassification
+    region: ModelRegion
+    fallback_aliases: list[ModelFallbackAlias] = Field(default_factory=list, max_length=10)
+
+
+class AgentReleaseResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    model_alias: str
+    data_classification: DataClassification
+    region: str
+    fallback_aliases: list[str]
+    created_at: datetime
+
+
 DraftIssueCode = Literal[
     "DRAFT_INSTRUCTIONS_REQUIRED",
     "DRAFT_MODEL_ALIAS_INVALID",
