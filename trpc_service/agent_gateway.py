@@ -59,7 +59,7 @@ class AgentGatewaySettings(BaseSettings):
     database_url: str = ""
     dispatch_interval_seconds: float = 1.0
     partition_count: int = 8
-    llm_api_key: str = ""
+    llm_gateway_access_key: str = ""
     public_base_url: str = ""
 
     def validate_runtime(self) -> None:
@@ -222,7 +222,7 @@ def create_app(
         )
         runner_runtime = ReleasePinnedRunnerRuntime(
             releases=DatabaseReleaseRouteResolver(database),
-            llm_api_key=configured.llm_api_key,
+            llm_gateway_access_key=configured.llm_gateway_access_key,
         )
         ReleaseProtocolRegistry(
             app=application,

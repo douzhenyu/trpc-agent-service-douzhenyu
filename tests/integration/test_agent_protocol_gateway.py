@@ -139,7 +139,7 @@ async def _scenario() -> None:
             AgentGatewaySettings(
                 database_url=APP_URL,
                 dispatch_interval_seconds=0.0,
-                llm_api_key="fake-key",
+                llm_gateway_access_key="fake-key",
                 public_base_url=BASE_URL,
             ),
             bus=InMemoryExecutionBus(partition_count=2),
@@ -147,14 +147,13 @@ async def _scenario() -> None:
         async with app.router.lifespan_context(app):
             transport = httpx.ASGITransport(app=app)  # type: ignore[arg-type]
             async with httpx.AsyncClient(
-                transport=transport,
-                base_url=BASE_URL,
-                timeout=30.0,
-                follow_redirects=True,
+                transport=transport, base_url=BASE_URL, timeout=30.0
             ) as client:
+                # AG-UI and A2A run first: direct protocol clients must work
+                # without any HTTP/SSE warm-up of the release surfaces.
+                await _execute_ag_ui(client, tenant_id, release_id)
+                await _execute_a2a(client, tenant_id, release_id)
                 await _execute_http_and_sse(client, tenant_id, application_id, release_id)
-                await _execute_ag_ui(client, release_id)
-                await _execute_a2a(client, release_id)
     finally:
         server.shutdown()
         server.server_close()
@@ -178,6 +177,13 @@ async def _execute_http_and_sse(
     assert reply["sdk_version"] == PINNED_TRPC_AGENT_VERSION
     assert reply["platform_version"]
 
+    status = await client.get(f"/internal/v1/agent-runner/statuses/{reply['execution_id']}")
+    assert status.status_code == 200
+    assert status.json()["status"] == "SUCCEEDED"
+    assert status.json()["content"] == "fake reply"
+    missing = await client.get(f"/internal/v1/agent-runner/statuses/{uuid4()}")
+    assert missing.status_code == 404
+
     streamed = await client.post(
         "/internal/v1/agent-runner/stream",
         json=_runner_request(tenant_id, application_id, "protocol-sse-1"),
@@ -196,12 +202,12 @@ async def _execute_http_and_sse(
     assert result["sdk_version"] == PINNED_TRPC_AGENT_VERSION
 
 
-async def _execute_ag_ui(client: httpx.AsyncClient, release_id: str) -> None:
+async def _execute_ag_ui(client: httpx.AsyncClient, tenant_id: str, release_id: str) -> None:
     from ag_ui.core import RunFinishedEvent, TextMessageContentEvent
     from ag_ui.core.types import RunAgentInput
 
     response = await client.post(
-        f"/internal/v1/agent-runner/ag-ui/{release_id}",
+        f"/internal/v1/agent-runner/ag-ui/{tenant_id}/{release_id}",
         json=RunAgentInput(
             thread_id="agui-thread-1",
             run_id="agui-run-1",
@@ -231,13 +237,13 @@ async def _execute_ag_ui(client: httpx.AsyncClient, release_id: str) -> None:
             RunFinishedEvent.model_validate(event)
 
 
-async def _execute_a2a(client: httpx.AsyncClient, release_id: str) -> None:
+async def _execute_a2a(client: httpx.AsyncClient, tenant_id: str, release_id: str) -> None:
     from a2a.client import A2ACardResolver, ClientConfig, ClientFactory
     from a2a.client.helpers import create_text_message_object
 
     resolver = A2ACardResolver(
         httpx_client=client,
-        base_url=f"{BASE_URL}/internal/v1/agent-runner/a2a/{release_id}",
+        base_url=f"{BASE_URL}/internal/v1/agent-runner/a2a/{tenant_id}/{release_id}",
     )
     card = await resolver.get_agent_card()
     assert card.capabilities.streaming is True

@@ -14,9 +14,11 @@ dependencies = [
   "sqlalchemy[asyncio]==2.0.52",
   "trpc-agent-py==1.1.19",
   "uvicorn[standard]==0.35.0",
+  # Standard Agent protocol surfaces (AG-UI / A2A) and the SDK extras they pull in.
   "ag-ui-protocol==0.1.22",
   "a2a-sdk==0.3.22",
   "protobuf==6.33.0",
+  # Required by the trpc-agent-sdk AG-UI server import chain (graph DSL).
   "langgraph==1.2.11",
 ]
 
