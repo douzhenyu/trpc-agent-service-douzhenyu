@@ -13,7 +13,10 @@ from uuid import UUID
 
 from trpc_service.admin_api.database import Connection, Database
 from trpc_service.governance import DataClassification
+from trpc_service.tool.approvals import ApprovalRequest, ApprovalStatus
+from trpc_service.tool.checkpoints import CheckpointStatus, ExecutionCheckpoint
 from trpc_service.tool.executor import ToolInvocationRecord, ToolInvocationStatus
+from trpc_service.tool.reconciliation import Reconciliation, ReconciliationDecision
 from trpc_service.tool.registry import (
     ToolDefinition,
     ToolDefinitionConflict,
@@ -212,6 +215,21 @@ class DatabaseToolCallStore:
             )
         return _record_from_row(row) if row is not None else None
 
+    async def list_unknown(self, tenant_id: str) -> list[ToolInvocationRecord]:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            rows = await connection.fetch(
+                "SELECT * FROM tenant.tool_call WHERE tenant_id=$1 AND status='OUTCOME_UNKNOWN'",
+                UUID(tenant_id),
+            )
+        return [_record_from_row(row) for row in rows]
+
+    async def get_call(self, tenant_id: str, call_id: str) -> ToolInvocationRecord | None:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM tenant.tool_call WHERE call_id=$1", call_id
+            )
+        return _record_from_row(row) if row is not None else None
+
     async def record(self, record: ToolInvocationRecord) -> None:
         async with self._database.tenant_transaction(UUID(record.tenant_id)) as connection:
             await connection.execute(
@@ -241,3 +259,235 @@ class DatabaseToolCallStore:
                 record.requested_by,
                 str(record.data_classification) if record.data_classification else None,
             )
+
+
+def _approval_from_row(row: Any) -> ApprovalRequest:
+    return ApprovalRequest(
+        approval_id=str(row["approval_id"]),
+        tenant_id=str(row["tenant_id"]),
+        release_id=str(row["release_id"]),
+        tool_name=str(row["tool_name"]),
+        tool_version=int(row["tool_version"]),
+        params_hash=str(row["params_hash"]),
+        params=row["params"] or {},
+        side_effect=ToolSideEffect(str(row["side_effect"])),
+        requested_by=str(row["requested_by"]),
+        requester_role=str(row["requester_role"]),
+        policy_version=str(row["policy_version"]),
+        status=ApprovalStatus(str(row["status"])),
+        requested_at=row["requested_at"],
+        expires_at=row["expires_at"],
+        decided_by=row["decided_by"],
+        decided_at=row["decided_at"],
+    )
+
+
+class DatabaseApprovalStore:
+    """`tenant.tool_approval` persistence for the approval service."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def upsert(self, request: ApprovalRequest) -> None:
+        async with self._database.tenant_transaction(UUID(request.tenant_id)) as connection:
+            await connection.execute(
+                """INSERT INTO tenant.tool_approval
+                    (tenant_id,approval_id,release_id,tool_name,tool_version,params_hash,
+                     params,side_effect,requested_by,requester_role,policy_version,status,
+                     requested_at,expires_at,decided_by,decided_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS jsonb),$8,$9,$10,$11,$12,$13,$14,$15,$16)
+                    ON CONFLICT (tenant_id,approval_id) DO UPDATE SET
+                      status=EXCLUDED.status,
+                      decided_by=EXCLUDED.decided_by,
+                      decided_at=EXCLUDED.decided_at""",
+                request.tenant_id,
+                request.approval_id,
+                request.release_id,
+                request.tool_name,
+                request.tool_version,
+                request.params_hash,
+                json.dumps(request.params, ensure_ascii=False),
+                str(request.side_effect),
+                request.requested_by,
+                request.requester_role,
+                request.policy_version,
+                str(request.status),
+                request.requested_at,
+                request.expires_at,
+                request.decided_by,
+                request.decided_at,
+            )
+
+    async def get(self, tenant_id: str, approval_id: str) -> ApprovalRequest | None:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM tenant.tool_approval WHERE approval_id=$1", approval_id
+            )
+        return _approval_from_row(row) if row is not None else None
+
+    async def list(
+        self, tenant_id: str, *, status: str | None = None, limit: int = 100
+    ) -> list[ApprovalRequest]:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            if status is None:
+                rows = await connection.fetch(
+                    """SELECT * FROM tenant.tool_approval WHERE tenant_id=$1
+                    ORDER BY requested_at DESC LIMIT $2""",
+                    UUID(tenant_id),
+                    limit,
+                )
+            else:
+                rows = await connection.fetch(
+                    """SELECT * FROM tenant.tool_approval WHERE tenant_id=$1 AND status=$2
+                    ORDER BY requested_at DESC LIMIT $3""",
+                    UUID(tenant_id),
+                    status,
+                    limit,
+                )
+        return [_approval_from_row(row) for row in rows]
+
+    async def find_open(
+        self,
+        tenant_id: str,
+        *,
+        tool_name: str,
+        tool_version: int,
+        params_hash: str,
+        requested_by: str,
+        statuses: tuple[ApprovalStatus, ...],
+    ) -> ApprovalRequest | None:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            row = await connection.fetchrow(
+                """SELECT * FROM tenant.tool_approval
+                WHERE tool_name=$1 AND tool_version=$2 AND params_hash=$3
+                  AND requested_by=$4 AND status=ANY($5)
+                ORDER BY requested_at DESC LIMIT 1""",
+                tool_name,
+                tool_version,
+                params_hash,
+                requested_by,
+                list(statuses),
+            )
+        return _approval_from_row(row) if row is not None else None
+
+
+def _checkpoint_from_row(row: Any) -> ExecutionCheckpoint:
+    return ExecutionCheckpoint(
+        checkpoint_id=str(row["checkpoint_id"]),
+        tenant_id=str(row["tenant_id"]),
+        execution_id=str(row["execution_id"]),
+        session_id=str(row["session_id"]),
+        release_id=str(row["release_id"]),
+        approval_id=str(row["approval_id"]),
+        tool_name=str(row["tool_name"]),
+        tool_version=int(row["tool_version"]),
+        params_hash=str(row["params_hash"]),
+        requested_by=str(row["requested_by"]),
+        parked_by=str(row["parked_by"]),
+        status=CheckpointStatus(str(row["status"])),
+        created_at=row["created_at"],
+        resumed_by=row["resumed_by"],
+        resumed_at=row["resumed_at"],
+    )
+
+
+class DatabaseCheckpointStore:
+    """`tenant.execution_checkpoint` persistence for parked executions."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def upsert(self, checkpoint: ExecutionCheckpoint) -> None:
+        async with self._database.tenant_transaction(UUID(checkpoint.tenant_id)) as connection:
+            await connection.execute(
+                """INSERT INTO tenant.execution_checkpoint
+                    (tenant_id,checkpoint_id,execution_id,session_id,release_id,approval_id,
+                     tool_name,tool_version,params_hash,requested_by,parked_by,status,
+                     created_at,resumed_by,resumed_at)
+                    VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
+                    ON CONFLICT (tenant_id,checkpoint_id) DO UPDATE SET
+                      status=EXCLUDED.status,
+                      resumed_by=EXCLUDED.resumed_by,
+                      resumed_at=EXCLUDED.resumed_at""",
+                checkpoint.tenant_id,
+                checkpoint.checkpoint_id,
+                checkpoint.execution_id,
+                checkpoint.session_id,
+                checkpoint.release_id,
+                checkpoint.approval_id,
+                checkpoint.tool_name,
+                checkpoint.tool_version,
+                checkpoint.params_hash,
+                checkpoint.requested_by,
+                checkpoint.parked_by,
+                str(checkpoint.status),
+                checkpoint.created_at,
+                checkpoint.resumed_by,
+                checkpoint.resumed_at,
+            )
+
+    async def get(self, tenant_id: str, checkpoint_id: str) -> ExecutionCheckpoint | None:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM tenant.execution_checkpoint WHERE checkpoint_id=$1",
+                checkpoint_id,
+            )
+        return _checkpoint_from_row(row) if row is not None else None
+
+
+class DatabaseReconciliationStore:
+    """Append-only `tenant.tool_call_reconciliation` persistence."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def upsert(self, reconciliation: Reconciliation) -> None:
+        async with self._database.tenant_transaction(UUID(reconciliation.tenant_id)) as connection:
+            await connection.execute(
+                """INSERT INTO tenant.tool_call_reconciliation
+                    (tenant_id,call_id,decision,resolved_by,note,resolved_at)
+                    VALUES ($1,$2,$3,$4,$5,$6)
+                    ON CONFLICT (tenant_id,call_id) DO NOTHING""",
+                reconciliation.tenant_id,
+                reconciliation.call_id,
+                str(reconciliation.decision),
+                reconciliation.resolved_by,
+                reconciliation.note,
+                reconciliation.resolved_at,
+            )
+
+    async def get(self, tenant_id: str, call_id: str) -> Reconciliation | None:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            row = await connection.fetchrow(
+                "SELECT * FROM tenant.tool_call_reconciliation WHERE call_id=$1", call_id
+            )
+        return (
+            Reconciliation(
+                call_id=str(row["call_id"]),
+                tenant_id=str(row["tenant_id"]),
+                decision=ReconciliationDecision(str(row["decision"])),
+                resolved_by=str(row["resolved_by"]),
+                resolved_at=row["resolved_at"],
+                note=row["note"],
+            )
+            if row is not None
+            else None
+        )
+
+    async def all_for(self, tenant_id: str) -> list[Reconciliation]:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            rows = await connection.fetch(
+                "SELECT * FROM tenant.tool_call_reconciliation WHERE tenant_id=$1",
+                UUID(tenant_id),
+            )
+        return [
+            Reconciliation(
+                call_id=str(row["call_id"]),
+                tenant_id=str(row["tenant_id"]),
+                decision=ReconciliationDecision(str(row["decision"])),
+                resolved_by=str(row["resolved_by"]),
+                resolved_at=row["resolved_at"],
+                note=row["note"],
+            )
+            for row in rows
+        ]

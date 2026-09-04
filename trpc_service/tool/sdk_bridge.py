@@ -102,7 +102,10 @@ class GovernedTool(BaseTool):  # type: ignore[misc]  # trpc_agent_sdk ships no s
                 release_id=context.release_id if context else None,
             )
         except ToolInvocationError as error:
-            return {"status": "BLOCKED", "error": error.code}
+            response: dict[str, Any] = {"status": "BLOCKED", "error": error.code}
+            if error.details:
+                response["details"] = error.details
+            return response
         return {
             "status": str(result.status),
             "result": result.record.result or {},

@@ -17,6 +17,7 @@ from enum import StrEnum
 from typing import Any, Protocol
 
 from trpc_service.governance import DataClassification
+from trpc_service.tool.approvals import ApprovalService
 from trpc_service.tool.registry import (
     AUTO_EXECUTABLE_SIDE_EFFECTS,
     ToolDefinition,
@@ -108,12 +109,14 @@ class ToolInvocationService:
         *,
         max_read_attempts: int = 3,
         retry_backoff_seconds: float = 0.2,
+        approvals: ApprovalService | None = None,
     ) -> None:
         self._registry = registry
         self._backend = backend
         self._store = store
         self._max_read_attempts = max(1, max_read_attempts)
         self._retry_backoff_seconds = retry_backoff_seconds
+        self._approvals = approvals
 
     async def invoke(
         self,
@@ -129,6 +132,7 @@ class ToolInvocationService:
         execution_id: str | None = None,
         session_id: str | None = None,
         release_id: str | None = None,
+        policy_version: str | None = None,
     ) -> ToolInvocationResult:
         definition = self._registry.resolve(tenant_id, tool_name, version=version)
         if inspect.isawaitable(definition):
@@ -152,22 +156,6 @@ class ToolInvocationService:
                 release_id=release_id,
             )
             raise ToolInvocationError(blocked.error_code or "TOOL_NOT_FOUND")
-
-        if mode == _CONVERSATION and definition.side_effect not in AUTO_EXECUTABLE_SIDE_EFFECTS:
-            await self._record_blocked(
-                tenant_id=tenant_id,
-                tool_name=tool_name,
-                params=params,
-                idempotency_key=None,
-                requested_by=requested_by,
-                error_code="TOOL_AUTO_EXECUTION_BLOCKED",
-                tool_version=definition.version,
-                side_effect=definition.side_effect,
-                execution_id=execution_id,
-                session_id=session_id,
-                release_id=release_id,
-            )
-            raise ToolInvocationError("TOOL_AUTO_EXECUTION_BLOCKED")
 
         effective_scopes = frozenset(definition.scopes if scopes is None else scopes)
         if not frozenset(definition.scopes).issubset(effective_scopes):
@@ -205,6 +193,33 @@ class ToolInvocationService:
             raise
 
         params_hash = canonical_params_hash(normalized)
+        if definition.side_effect not in AUTO_EXECUTABLE_SIDE_EFFECTS:
+            approval_id = await self._gate_write_side_effect(
+                definition,
+                params=normalized,
+                params_hash=params_hash,
+                mode=mode,
+                requested_by=requested_by,
+                release_id=release_id,
+                policy_version=policy_version,
+            )
+            if approval_id is not None:
+                await self._record_blocked(
+                    tenant_id=tenant_id,
+                    tool_name=tool_name,
+                    params=normalized,
+                    idempotency_key=None,
+                    requested_by=requested_by,
+                    error_code="TOOL_APPROVAL_REQUIRED",
+                    tool_version=definition.version,
+                    side_effect=definition.side_effect,
+                    execution_id=execution_id,
+                    session_id=session_id,
+                    release_id=release_id,
+                )
+                raise ToolInvocationError(
+                    "TOOL_APPROVAL_REQUIRED", details={"approval_id": approval_id}
+                )
         if idempotency_key is not None:
             replayed = await self._store.find_replay(tenant_id, idempotency_key)
             if replayed is not None:
@@ -255,6 +270,78 @@ class ToolInvocationService:
         )
         await self._store.record(record)
         return ToolInvocationResult(status=status, record=record, error_code=error_code)
+
+    async def _gate_write_side_effect(
+        self,
+        definition: ToolDefinition,
+        *,
+        params: dict[str, Any],
+        params_hash: str,
+        mode: str,
+        requested_by: str,
+        release_id: str | None,
+        policy_version: str | None,
+    ) -> str | None:
+        """Approval gate for NON_IDEMPOTENT_WRITE and HIGH_RISK calls.
+
+        Returns None when the call may proceed; otherwise the id of the pending
+        approval request the intent is waiting on. Without an approval service,
+        conversations fail closed and direct invocations stay explicit.
+        """
+
+        if self._approvals is None:
+            if mode != _CONVERSATION:
+                return None
+            await self._record_blocked(
+                tenant_id=definition.tenant_id,
+                tool_name=definition.name,
+                params=params,
+                idempotency_key=None,
+                requested_by=requested_by,
+                error_code="TOOL_AUTO_EXECUTION_BLOCKED",
+                tool_version=definition.version,
+                side_effect=definition.side_effect,
+            )
+            raise ToolInvocationError("TOOL_AUTO_EXECUTION_BLOCKED")
+        approved = await self._approvals.find_approved(
+            definition.tenant_id,
+            tool_name=definition.name,
+            tool_version=definition.version,
+            params_hash=params_hash,
+            requested_by=requested_by,
+        )
+        if approved is not None:  # consume the grant and run the call now
+            await self._approvals.consume(
+                definition.tenant_id,
+                approved.approval_id,
+                tool_name=definition.name,
+                tool_version=definition.version,
+                params_hash=params_hash,
+                requested_by=requested_by,
+            )
+            return None
+        pending = await self._approvals.find_pending(
+            definition.tenant_id,
+            tool_name=definition.name,
+            tool_version=definition.version,
+            params_hash=params_hash,
+            requested_by=requested_by,
+        )
+        if pending is None:
+            created = await self._approvals.create(
+                tenant_id=definition.tenant_id,
+                release_id=release_id or "unknown",
+                tool_name=definition.name,
+                tool_version=definition.version,
+                params_hash=params_hash,
+                params={},
+                side_effect=definition.side_effect,
+                requested_by=requested_by,
+                requester_role="AGENT_RUNNER",
+                policy_version=policy_version or "unspecified",
+            )
+            return created.approval_id
+        return pending.approval_id
 
     async def _execute_with_contract(
         self,
