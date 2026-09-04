@@ -494,6 +494,7 @@ def test_database_route_resolvers_use_immutable_snapshots_during_control_plane_o
             "region": "cn-north-1",
             "fallback_aliases": [],
             "model_profiles": [profile],
+            "draft_snapshot": {"instructions": "Answer in one sentence."},
         }
     )
     deployment_database = CachedRouteDatabase(
@@ -524,6 +525,8 @@ def test_database_route_resolvers_use_immutable_snapshots_during_control_plane_o
 
     assert cached_release == first_release
     assert cached_deployment == first_deployment == release_id
+    assert first_release is not None
+    assert first_release.instructions == "Answer in one sentence."
 
 
 def test_release_source_can_distinguish_a_legacy_snapshot_from_a_draft_release() -> None:
