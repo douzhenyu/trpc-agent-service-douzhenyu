@@ -359,6 +359,102 @@
         "title": "AgentDraftUpdate",
         "type": "object"
       },
+      "AgentReleaseCreate": {
+        "properties": {
+          "data_classification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED"
+            ],
+            "title": "Data Classification",
+            "type": "string"
+          },
+          "fallback_aliases": {
+            "items": {
+              "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+              "type": "string"
+            },
+            "maxItems": 10,
+            "title": "Fallback Aliases",
+            "type": "array"
+          },
+          "region": {
+            "maxLength": 63,
+            "pattern": "^[a-z][a-z0-9-]{1,62}$",
+            "title": "Region",
+            "type": "string"
+          }
+        },
+        "required": [
+          "data_classification",
+          "region"
+        ],
+        "title": "AgentReleaseCreate",
+        "type": "object"
+      },
+      "AgentReleaseResponse": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "data_classification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED"
+            ],
+            "title": "Data Classification",
+            "type": "string"
+          },
+          "fallback_aliases": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Fallback Aliases",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "model_alias": {
+            "title": "Model Alias",
+            "type": "string"
+          },
+          "region": {
+            "title": "Region",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "application_id",
+          "model_alias",
+          "data_classification",
+          "region",
+          "fallback_aliases",
+          "created_at"
+        ],
+        "title": "AgentReleaseResponse",
+        "type": "object"
+      },
       "AuditEventList": {
         "properties": {
           "items": {
@@ -3614,6 +3710,128 @@
           }
         },
         "summary": "Validate Draft",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/releases": {
+      "post": {
+        "operationId": "publish_release_api_v1_tenants__tenant_id__agent_applications__application_id__releases_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AgentReleaseCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentReleaseResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Publish Release",
         "tags": [
           "agents"
         ]
