@@ -70,6 +70,19 @@ class ApprovalRequest(BaseModel):
 
 class ApprovalStore(Protocol):
     async def upsert(self, request: ApprovalRequest) -> None: ...
+    async def transition(
+        self,
+        tenant_id: str,
+        approval_id: str,
+        *,
+        from_statuses: tuple[ApprovalStatus, ...],
+        to_status: ApprovalStatus,
+        decided_by: str | None = None,
+        decided_at: object | None = None,
+    ) -> ApprovalRequest | None:
+        """Compare-and-swap one status transition; None when the state moved."""
+        ...
+
     async def get(self, tenant_id: str, approval_id: str) -> ApprovalRequest | None: ...
     async def find_open(
         self,
@@ -89,6 +102,30 @@ class MemoryApprovalStore:
 
     async def upsert(self, request: ApprovalRequest) -> None:
         self._requests[request.approval_id] = request
+
+    async def transition(
+        self,
+        tenant_id: str,
+        approval_id: str,
+        *,
+        from_statuses: tuple[ApprovalStatus, ...],
+        to_status: ApprovalStatus,
+        decided_by: str | None = None,
+        decided_at: object | None = None,
+    ) -> ApprovalRequest | None:
+        request = self._requests.get(approval_id)
+        if request is None or request.tenant_id != tenant_id:
+            return None
+        if request.status not in from_statuses:
+            return None
+        updates: dict[str, object] = {"status": to_status}
+        if decided_by is not None:
+            updates["decided_by"] = decided_by
+        if decided_at is not None:
+            updates["decided_at"] = decided_at
+        transitioned = request.model_copy(update=updates)
+        self._requests[approval_id] = transitioned
+        return transitioned
 
     async def get(self, tenant_id: str, approval_id: str) -> ApprovalRequest | None:
         request = self._requests.get(approval_id)
@@ -173,8 +210,14 @@ class ApprovalService:
             ApprovalStatus.PENDING,
             ApprovalStatus.APPROVED,
         ) and request.expires_at <= datetime.now(UTC):
-            request = request.model_copy(update={"status": ApprovalStatus.EXPIRED})
-            await self.store.upsert(request)
+            expired = await self.store.transition(
+                tenant_id,
+                approval_id,
+                from_statuses=(ApprovalStatus.PENDING, ApprovalStatus.APPROVED),
+                to_status=ApprovalStatus.EXPIRED,
+            )
+            if expired is not None:
+                return expired
         return request
 
     async def decide(
@@ -189,6 +232,8 @@ class ApprovalService:
         """Grant or deny one pending request, enforcing separation of duties."""
 
         request = await self.get(tenant_id, approval_id)
+        if request.status == ApprovalStatus.EXPIRED:
+            raise ApprovalError("APPROVAL_EXPIRED")
         if request.status != ApprovalStatus.PENDING:
             raise ApprovalError("APPROVAL_ALREADY_DECIDED")
         if request.side_effect == ToolSideEffect.HIGH_RISK:
@@ -198,18 +243,20 @@ class ApprovalService:
                 raise ApprovalError("APPROVER_ROLE_REQUIRED")
         elif decided_by_role not in SELF_SERVICE_ROLES | APPROVER_ROLES:
             raise ApprovalError("APPROVER_ROLE_REQUIRED")
-        decided = request.model_copy(
-            update={
-                "status": (
-                    ApprovalStatus.APPROVED
-                    if decision == ApprovalDecision.APPROVE
-                    else ApprovalStatus.DENIED
-                ),
-                "decided_by": decided_by,
-                "decided_at": datetime.now(UTC),
-            }
+        decided = await self.store.transition(
+            tenant_id,
+            approval_id,
+            from_statuses=(ApprovalStatus.PENDING,),
+            to_status=(
+                ApprovalStatus.APPROVED
+                if decision == ApprovalDecision.APPROVE
+                else ApprovalStatus.DENIED
+            ),
+            decided_by=decided_by,
+            decided_at=datetime.now(UTC),
         )
-        await self.store.upsert(decided)
+        if decided is None:
+            raise ApprovalError("APPROVAL_ALREADY_DECIDED")
         return decided
 
     async def consume(
@@ -221,10 +268,13 @@ class ApprovalService:
         tool_version: int,
         params_hash: str,
         requested_by: str,
+        release_id: str,
     ) -> ApprovalRequest:
-        """Flip one approved request to CONSUMED; verifiable exactly once."""
+        """Flip one approved request to CONSUMED; exactly once via CAS."""
 
         request = await self.get(tenant_id, approval_id)
+        if request.status == ApprovalStatus.EXPIRED:
+            raise ApprovalError("APPROVAL_EXPIRED")
         if request.status != ApprovalStatus.APPROVED:
             raise ApprovalError("APPROVAL_NOT_APPROVED")
         if (
@@ -232,10 +282,17 @@ class ApprovalService:
             or request.tool_version != tool_version
             or request.params_hash != params_hash
             or request.requested_by != requested_by
+            or request.release_id != release_id
         ):
             raise ApprovalError("APPROVAL_BINDING_MISMATCH")
-        consumed = request.model_copy(update={"status": ApprovalStatus.CONSUMED})
-        await self.store.upsert(consumed)
+        consumed = await self.store.transition(
+            tenant_id,
+            approval_id,
+            from_statuses=(ApprovalStatus.APPROVED,),
+            to_status=ApprovalStatus.CONSUMED,
+        )
+        if consumed is None:
+            raise ApprovalError("APPROVAL_NOT_APPROVED")
         return consumed
 
     async def find_approved(

@@ -104,9 +104,12 @@ class CheckpointService:
         parked_by: str,
         lease_manager: WorkerLeaseManager,
     ) -> ExecutionCheckpoint:
-        """Persist the wait state and give up the worker's session lease."""
+        """Persist the wait state, then give up the worker's session lease.
 
-        await lease_manager.release(tenant_id, session_id, parked_by)
+        The checkpoint is durable before the lease is released so a failed
+        write never leaves the session free with no wait record.
+        """
+
         checkpoint = ExecutionCheckpoint(
             checkpoint_id=str(uuid4()),
             tenant_id=tenant_id,
@@ -122,6 +125,7 @@ class CheckpointService:
             created_at=datetime.now(UTC),
         )
         await self.store.upsert(checkpoint)
+        await lease_manager.release(tenant_id, session_id, parked_by)
         return checkpoint
 
     async def resume(
@@ -140,6 +144,7 @@ class CheckpointService:
             raise CheckpointError("CHECKPOINT_NOT_FOUND")
         if checkpoint.status != CheckpointStatus.WAITING_APPROVAL:
             raise CheckpointError("CHECKPOINT_NOT_WAITING")
+        grant = await lease_manager.acquire(tenant_id, checkpoint.session_id, resumed_by)
         try:
             await approvals.consume(
                 tenant_id,
@@ -148,10 +153,13 @@ class CheckpointService:
                 tool_version=checkpoint.tool_version,
                 params_hash=checkpoint.params_hash,
                 requested_by=checkpoint.requested_by,
+                release_id=checkpoint.release_id,
             )
         except Exception as error:
+            # The approval stays unbuilt for a later attempt; give the lease
+            # back so this resume attempt leaves no held state behind.
+            await lease_manager.release(tenant_id, checkpoint.session_id, resumed_by)
             raise CheckpointError("CHECKPOINT_APPROVAL_NOT_GRANTED") from error
-        grant = await lease_manager.acquire(tenant_id, checkpoint.session_id, resumed_by)
         resumed = replace(
             checkpoint,
             status=CheckpointStatus.RESUMED,

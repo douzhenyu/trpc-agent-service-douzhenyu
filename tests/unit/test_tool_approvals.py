@@ -191,6 +191,7 @@ def test_approval_consumption_is_single_use_and_binding_checked() -> None:
             tool_version=1,
             params_hash="a" * 64,
             requested_by="dev-1",
+            release_id="r-1",
         )
     )
     assert consumed.status == ApprovalStatus.CONSUMED
@@ -203,6 +204,7 @@ def test_approval_consumption_is_single_use_and_binding_checked() -> None:
                 tool_version=1,
                 params_hash="a" * 64,
                 requested_by="dev-1",
+                release_id="r-1",
             )
         )
 
@@ -224,12 +226,14 @@ def test_consumption_rejects_tampered_binding() -> None:
         {"requested_by": "someone-else"},
         {"tool_version": 2},
         {"tool_name": "other_tool"},
+        {"release_id": "r-OTHER"},
     ):
         base: dict[str, Any] = dict(
             tool_name="charge_card",
             tool_version=1,
             params_hash="a" * 64,
             requested_by="dev-1",
+            release_id="r-1",
         )
         base.update(overrides)
         with pytest.raises(ApprovalError, match="APPROVAL_BINDING_MISMATCH"):
@@ -482,5 +486,66 @@ def test_reconciliation_resolves_unknown_outcomes_once() -> None:
                 result.record.call_id,
                 ReconciliationDecision.CONFIRMED_NOT_EXECUTED,
                 resolved_by="ops-2",
+            )
+        )
+
+
+def test_deciding_an_expired_approval_reports_expiry() -> None:
+    approvals = ApprovalService.in_memory()
+    request = _create(approvals)
+    asyncio.run(approvals.store.transition(
+        "t-1", request.approval_id,
+        from_statuses=(ApprovalStatus.PENDING,), to_status=ApprovalStatus.EXPIRED,
+    ))
+    with pytest.raises(ApprovalError, match="APPROVAL_EXPIRED"):
+        asyncio.run(
+            approvals.decide(
+                "t-1", request.approval_id, ApprovalDecision.APPROVE,
+                decided_by="admin-2", decided_by_role="TENANT_ADMIN",
+            )
+        )
+
+
+def test_consume_loses_the_race_when_another_consumer_won() -> None:
+    approvals = ApprovalService.in_memory()
+    request = _create(approvals)
+    asyncio.run(
+        approvals.decide(
+            "t-1", request.approval_id, ApprovalDecision.APPROVE,
+            decided_by="admin-2", decided_by_role="TENANT_ADMIN",
+        )
+    )
+    first = asyncio.run(
+        approvals.store.transition(
+            "t-1", request.approval_id,
+            from_statuses=(ApprovalStatus.APPROVED,), to_status=ApprovalStatus.CONSUMED,
+        )
+    )
+    assert first is not None
+    with pytest.raises(ApprovalError, match="APPROVAL_NOT_APPROVED"):
+        asyncio.run(
+            approvals.consume(
+                "t-1", request.approval_id,
+                tool_name="charge_card", tool_version=1,
+                params_hash="a" * 64, requested_by="dev-1", release_id="r-1",
+            )
+        )
+
+
+def test_consume_rejects_a_release_mismatch() -> None:
+    approvals = ApprovalService.in_memory()
+    request = _create(approvals)
+    asyncio.run(
+        approvals.decide(
+            "t-1", request.approval_id, ApprovalDecision.APPROVE,
+            decided_by="admin-2", decided_by_role="TENANT_ADMIN",
+        )
+    )
+    with pytest.raises(ApprovalError, match="APPROVAL_BINDING_MISMATCH"):
+        asyncio.run(
+            approvals.consume(
+                "t-1", request.approval_id,
+                tool_name="charge_card", tool_version=1,
+                params_hash="a" * 64, requested_by="dev-1", release_id="release-OTHER",
             )
         )

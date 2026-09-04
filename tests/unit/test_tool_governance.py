@@ -98,6 +98,20 @@ class MemoryStore:
     async def record(self, record: ToolInvocationRecord) -> None:
         self.records.append(record)
 
+    async def list_unknown(self, tenant_id: str) -> list[ToolInvocationRecord]:
+        return [
+            record
+            for record in self.records
+            if record.tenant_id == tenant_id
+            and record.status == ToolInvocationStatus.OUTCOME_UNKNOWN
+        ]
+
+    async def get_call(self, tenant_id: str, call_id: str) -> ToolInvocationRecord | None:
+        for record in self.records:
+            if record.tenant_id == tenant_id and record.call_id == call_id:
+                return record
+        return None
+
 
 def _service(backend: ScriptedBackend, store: MemoryStore | None = None) -> ToolInvocationService:
     registry = ToolRegistry.in_memory()

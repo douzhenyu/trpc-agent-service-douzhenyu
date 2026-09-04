@@ -288,6 +288,32 @@ class DatabaseApprovalStore:
     def __init__(self, database: Database) -> None:
         self._database = database
 
+    async def transition(
+        self,
+        tenant_id: str,
+        approval_id: str,
+        *,
+        from_statuses: tuple[ApprovalStatus, ...],
+        to_status: ApprovalStatus,
+        decided_by: str | None = None,
+        decided_at: object | None = None,
+    ) -> ApprovalRequest | None:
+        async with self._database.tenant_transaction(UUID(tenant_id)) as connection:
+            row = await connection.fetchrow(
+                """UPDATE tenant.tool_approval
+                SET status=$3,
+                    decided_by=COALESCE($4, decided_by),
+                    decided_at=COALESCE($5, decided_at)
+                WHERE approval_id=$2 AND status=ANY($1)
+                RETURNING *""",
+                list(from_statuses),
+                approval_id,
+                str(to_status),
+                decided_by,
+                decided_at,
+            )
+        return _approval_from_row(row) if row is not None else None
+
     async def upsert(self, request: ApprovalRequest) -> None:
         async with self._database.tenant_transaction(UUID(request.tenant_id)) as connection:
             await connection.execute(

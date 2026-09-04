@@ -8,7 +8,7 @@ CREATE TABLE tenant.tool_approval (
   tool_name text NOT NULL,
   tool_version integer NOT NULL CHECK (tool_version >= 1),
   params_hash text NOT NULL CHECK (params_hash ~ '^[0-9a-f]{64}$'),
-  params jsonb NOT NULL DEFAULT '{}'::jsonb,
+  params jsonb NOT NULL DEFAULT '{}'::jsonb CHECK (jsonb_typeof(params) = 'object'),
   side_effect text NOT NULL CHECK (side_effect IN ('READ_ONLY','IDEMPOTENT_WRITE','NON_IDEMPOTENT_WRITE','HIGH_RISK')),
   requested_by text NOT NULL CHECK (length(requested_by) BETWEEN 1 AND 256),
   requester_role text NOT NULL CHECK (length(requester_role) BETWEEN 1 AND 64),

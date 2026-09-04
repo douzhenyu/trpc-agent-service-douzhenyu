@@ -290,7 +290,9 @@ class ToolInvocationService:
         """
 
         if self._approvals is None:
-            if mode != _CONVERSATION:
+            if mode != _CONVERSATION and definition.side_effect != ToolSideEffect.HIGH_RISK:
+                # Direct invocations are explicit operator actions; HIGH_RISK
+                # still never runs without an approved, consumable grant.
                 return None
             await self._record_blocked(
                 tenant_id=definition.tenant_id,
@@ -318,6 +320,7 @@ class ToolInvocationService:
                 tool_version=definition.version,
                 params_hash=params_hash,
                 requested_by=requested_by,
+                release_id=release_id or "unknown",
             )
             return None
         pending = await self._approvals.find_pending(
@@ -334,7 +337,7 @@ class ToolInvocationService:
                 tool_name=definition.name,
                 tool_version=definition.version,
                 params_hash=params_hash,
-                params={},
+                params=params,
                 side_effect=definition.side_effect,
                 requested_by=requested_by,
                 requester_role="AGENT_RUNNER",
@@ -432,7 +435,9 @@ class ToolInvocationService:
 def _write_outcome(
     side_effect: ToolSideEffect, error_code: str, attempts: int
 ) -> tuple[ToolInvocationStatus, str | None, dict[str, Any] | None, int]:
-    if side_effect in (ToolSideEffect.IDEMPOTENT_WRITE, ToolSideEffect.NON_IDEMPOTENT_WRITE):
+    if side_effect != ToolSideEffect.READ_ONLY:
+        # Writes and HIGH_RISK calls with an unknown outcome are reconcilable,
+        # never blindly retried and never reported as clean failures.
         return (ToolInvocationStatus.OUTCOME_UNKNOWN, error_code, None, attempts)
     return (ToolInvocationStatus.FAILED, error_code, None, attempts)
 

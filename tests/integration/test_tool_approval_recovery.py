@@ -220,7 +220,9 @@ def test_approval_checkpoint_reconciliation_lifecycle() -> None:
                     lease_manager=leases,
                     resumed_by="worker-2",
                 )
-                assert resumed.fencing_token == 3
+                # The rejected attempt consumed one acquire (released again on
+                # failure), so the successful resume holds the next token.
+                assert resumed.fencing_token == 4
                 consumed = await approvals.get(tenant_id, request.approval_id)
                 assert consumed.status == ApprovalStatus.CONSUMED
 

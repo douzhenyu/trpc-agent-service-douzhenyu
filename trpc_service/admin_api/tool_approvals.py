@@ -14,6 +14,7 @@ from trpc_service.admin_api.http_contract import error_responses
 from trpc_service.admin_api.tenant_access import require_tenant_access
 from trpc_service.tool.approvals import (
     APPROVER_ROLES,
+    SELF_SERVICE_ROLES,
     ApprovalDecision,
     ApprovalError,
     ApprovalRequest,
@@ -47,6 +48,7 @@ class ApprovalResponse(BaseModel):
     tool_name: str
     tool_version: int
     params_hash: str
+    params: dict[str, object]
     side_effect: str
     requested_by: str
     requester_role: str
@@ -87,10 +89,14 @@ async def resolve_decider_role(database: Database, principal: Principal, tenant_
             _uuid_or_none(principal.subject),
         )
     roles = {str(row["role"]) for row in rows}
-    for role in roles:
+    for role in sorted(roles):
         if role in APPROVER_ROLES:
             return role
-    return next(iter(roles), "AGENT_DEVELOPER")
+    for role in sorted(roles):
+        if role in SELF_SERVICE_ROLES:
+            return role
+    # Deterministic denial: the service rejects any role outside its sets.
+    return "TENANT_AUDITOR"
 
 
 def _uuid_or_none(value: str) -> UUID | None:
@@ -108,6 +114,7 @@ def _approval_response(request: ApprovalRequest) -> ApprovalResponse:
         tool_name=request.tool_name,
         tool_version=request.tool_version,
         params_hash=request.params_hash,
+        params=request.params,
         side_effect=str(request.side_effect),
         requested_by=request.requested_by,
         requester_role=request.requester_role,
