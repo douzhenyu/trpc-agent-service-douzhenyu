@@ -685,6 +685,12 @@ def test_published_agent_release_is_the_runtime_source_of_allowed_model_fallback
         assert released.status_code == 201
         assert released.json()["model_alias"] == "balanced"
         assert released.json()["fallback_aliases"] == ["economy"]
+        changed = client.patch(
+            f"{profiles}/balanced",
+            headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+            json={"provider_model": "changed-after-release"},
+        )
+        assert changed.status_code == 200
 
         async def resolve_route() -> object:
             database = Database(APP_URL)
@@ -700,5 +706,6 @@ def test_published_agent_release_is_the_runtime_source_of_allowed_model_fallback
         assert route is not None
         assert route.model_alias == "balanced"
         assert route.allowed_fallback_aliases == frozenset({"economy"})
+        assert route.profile_snapshots[0].provider_model == "fake-balanced"
         audit = client.get("/api/v1/audit-events", params={"tenant_id": tenant_id})
         assert any(event["action"] == "agent_release.publish" for event in audit.json()["items"])

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 from collections.abc import Sequence
+from dataclasses import replace
 from uuid import uuid4
 
 import httpx
@@ -269,3 +270,27 @@ def test_gateway_model_adapter_does_not_accept_provider_credentials() -> None:
     result = asyncio.run(model.complete([{"role": "user", "content": "safe prompt"}]))
 
     assert result.completion["choices"][0]["message"]["content"] == "reply"
+
+
+def test_gateway_uses_the_release_profile_snapshot_instead_of_mutable_profile_lookup() -> None:
+    tenant_id = str(uuid4())
+
+    async def fake_llm(http_request: httpx.Request) -> httpx.Response:
+        assert json.loads(http_request.content)["model"] == "fake-released"
+        return httpx.Response(200, json={"choices": []})
+
+    released = replace(profile(tenant_id, "balanced"), provider_model="fake-released")
+    gateway = LLMGateway(
+        InMemoryModelProfileResolver([]),
+        FakeSecretProvider(),
+        httpx.AsyncClient(transport=httpx.MockTransport(fake_llm)),
+        policy=AllowOutboundPolicy(),
+    )
+
+    result = asyncio.run(
+        gateway.complete(
+            replace(request(tenant_id), profile_snapshots=(released,))
+        )
+    )
+
+    assert result.model_alias == "balanced"

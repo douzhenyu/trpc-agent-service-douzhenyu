@@ -22,6 +22,7 @@ from trpc_service.llm_gateway import (
     GatewayRequest,
     GatewayResult,
     ModelGatewayError,
+    ModelProfile,
 )
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
@@ -35,6 +36,7 @@ class ReleaseRoute:
     data_classification: DataClassification
     region: str
     allowed_fallback_aliases: frozenset[str]
+    profile_snapshots: tuple[ModelProfile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -97,12 +99,29 @@ class DatabaseReleaseRouteResolver:
             return None
         async with self._database.tenant_transaction(parsed_tenant_id) as connection:
             row = await connection.fetchrow(
-                """SELECT id,tenant_id,model_alias,data_classification,region,fallback_aliases
+                """SELECT id,tenant_id,model_alias,data_classification,region,fallback_aliases,
+                model_profiles
                 FROM tenant.agent_release WHERE tenant_id=$1 AND id=$2""",
                 parsed_tenant_id,
                 parsed_release_id,
             )
         if row is None:
+            return None
+        snapshots = tuple(
+            ModelProfile(
+                tenant_id=str(profile["tenant_id"]),
+                alias=str(profile["alias"]),
+                provider_model=str(profile["provider_model"]),
+                endpoint_url=str(profile["endpoint_url"]),
+                secret_ref=str(profile["secret_ref"]),
+                data_classification=DataClassification(str(profile["data_classification"])),
+                region=str(profile["region"]),
+                fallback_aliases=tuple(str(alias) for alias in profile["fallback_aliases"]),
+                requests_per_minute=int(profile["requests_per_minute"]),
+            )
+            for profile in row["model_profiles"]
+        )
+        if not snapshots:
             return None
         return ReleaseRoute(
             release_id=str(row["id"]),
@@ -111,6 +130,7 @@ class DatabaseReleaseRouteResolver:
             data_classification=DataClassification(str(row["data_classification"])),
             region=str(row["region"]),
             allowed_fallback_aliases=frozenset(str(alias) for alias in row["fallback_aliases"]),
+            profile_snapshots=snapshots,
         )
 
 
@@ -136,6 +156,7 @@ class AgentWorker:
             data_classification=route.data_classification,
             region=route.region,
             allowed_fallback_aliases=route.allowed_fallback_aliases,
+            profile_snapshots=route.profile_snapshots,
         ).complete(request.messages)
         if result.fallback_used and self._fallback_auditor is not None:
             try:
@@ -183,6 +204,20 @@ class HttpGatewayClient:
                     "data_classification": request.data_classification,
                     "region": request.region,
                     "allowed_fallback_aliases": sorted(request.allowed_fallback_aliases),
+                    "profile_snapshots": [
+                        {
+                            "tenant_id": profile.tenant_id,
+                            "alias": profile.alias,
+                            "provider_model": profile.provider_model,
+                            "endpoint_url": profile.endpoint_url,
+                            "secret_ref": profile.secret_ref,
+                            "data_classification": profile.data_classification,
+                            "region": profile.region,
+                            "fallback_aliases": profile.fallback_aliases,
+                            "requests_per_minute": profile.requests_per_minute,
+                        }
+                        for profile in request.profile_snapshots
+                    ],
                 },
             )
             if response.status_code >= 400:

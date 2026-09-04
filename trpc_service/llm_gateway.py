@@ -62,6 +62,7 @@ class GatewayRequest:
     data_classification: DataClassification
     region: str
     allowed_fallback_aliases: frozenset[str] = frozenset()
+    profile_snapshots: tuple[ModelProfile, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -370,13 +371,18 @@ class LLMGateway:
         aliases = [request.model_alias]
         profiles: list[ModelProfile] = []
         seen: set[str] = set()
+        snapshots = {profile.alias: profile for profile in request.profile_snapshots}
         while aliases:
             alias = aliases.pop(0)
             if alias in seen:
                 continue
             seen.add(alias)
-            profile = await self._profiles.resolve(request.tenant_id, alias)
+            profile = snapshots.get(alias)
+            if profile is None and not snapshots:
+                profile = await self._profiles.resolve(request.tenant_id, alias)
             if profile is None:
+                continue
+            if profile.tenant_id != request.tenant_id:
                 continue
             profiles.append(profile)
             aliases.extend(
@@ -491,6 +497,7 @@ class GatewayModel:
         data_classification: DataClassification,
         region: str,
         allowed_fallback_aliases: frozenset[str] = frozenset(),
+        profile_snapshots: tuple[ModelProfile, ...] = (),
     ) -> None:
         self._gateway = gateway
         self._tenant_id = tenant_id
@@ -498,6 +505,7 @@ class GatewayModel:
         self._data_classification = data_classification
         self._region = region
         self._allowed_fallback_aliases = allowed_fallback_aliases
+        self._profile_snapshots = profile_snapshots
 
     async def complete(self, messages: list[dict[str, str]]) -> GatewayResult:
         return await self._gateway.complete(
@@ -508,6 +516,7 @@ class GatewayModel:
                 data_classification=self._data_classification,
                 region=self._region,
                 allowed_fallback_aliases=self._allowed_fallback_aliases,
+                profile_snapshots=self._profile_snapshots,
             )
         )
 
@@ -558,6 +567,7 @@ class GatewayCompletionPayload(BaseModel):
     data_classification: DataClassification
     region: str = Field(min_length=2, max_length=63)
     allowed_fallback_aliases: list[str] = Field(default_factory=list, max_length=10)
+    profile_snapshots: list[ModelProfile] = Field(default_factory=list, max_length=11)
 
 
 class GatewayCompletionResponse(BaseModel):
@@ -632,6 +642,7 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
                     data_classification=payload.data_classification,
                     region=payload.region,
                     allowed_fallback_aliases=frozenset(payload.allowed_fallback_aliases),
+                    profile_snapshots=tuple(payload.profile_snapshots),
                 )
             )
         except ModelGatewayError as error:

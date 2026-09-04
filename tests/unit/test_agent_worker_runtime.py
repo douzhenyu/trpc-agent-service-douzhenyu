@@ -88,6 +88,7 @@ def test_worker_gateway_client_sends_routing_data_but_never_provider_credentials
             "data_classification",
             "region",
             "allowed_fallback_aliases",
+            "profile_snapshots",
         }
         return httpx.Response(
             200,

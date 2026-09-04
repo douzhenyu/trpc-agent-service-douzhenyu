@@ -339,7 +339,10 @@ def create_agent_router(database: Database) -> APIRouter:
                     status_code=409, detail="Agent Draft with model alias is required"
                 )
             profile = await connection.fetchrow(
-                "SELECT fallback_aliases FROM tenant.model_profile WHERE tenant_id=$1 AND alias=$2",
+                """SELECT tenant_id,alias,provider_model,endpoint_url,secret_ref,
+                data_classification,region,fallback_aliases,requests_per_minute
+                FROM tenant.model_profile
+                WHERE tenant_id=$1 AND alias=$2""",
                 tenant_id,
                 draft["model_alias"],
             )
@@ -350,10 +353,40 @@ def create_agent_router(database: Database) -> APIRouter:
                 raise HTTPException(
                     status_code=422, detail="Release fallback is not configured on model profile"
                 )
+            profiles = [profile]
+            for fallback_alias in payload.fallback_aliases:
+                fallback = await connection.fetchrow(
+                    """SELECT tenant_id,alias,provider_model,endpoint_url,secret_ref,
+                    data_classification,region,fallback_aliases,requests_per_minute
+                    FROM tenant.model_profile
+                    WHERE tenant_id=$1 AND alias=$2""",
+                    tenant_id,
+                    fallback_alias,
+                )
+                if fallback is None:
+                    raise HTTPException(
+                        status_code=409, detail="Fallback model profile does not exist"
+                    )
+                profiles.append(fallback)
+            profile_snapshots = [
+                {
+                    "tenant_id": str(item["tenant_id"]),
+                    "alias": str(item["alias"]),
+                    "provider_model": str(item["provider_model"]),
+                    "endpoint_url": str(item["endpoint_url"]),
+                    "secret_ref": str(item["secret_ref"]),
+                    "data_classification": str(item["data_classification"]),
+                    "region": str(item["region"]),
+                    "fallback_aliases": [str(alias) for alias in item["fallback_aliases"]],
+                    "requests_per_minute": int(item["requests_per_minute"]),
+                }
+                for item in profiles
+            ]
             row = await connection.fetchrow(
                 """INSERT INTO tenant.agent_release
-                (tenant_id,id,application_id,model_alias,data_classification,region,fallback_aliases)
-                VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS jsonb))
+                (tenant_id,id,application_id,model_alias,data_classification,region,fallback_aliases,
+                model_profiles)
+                VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS jsonb),CAST($8 AS jsonb))
                 RETURNING id,tenant_id,application_id,model_alias,data_classification,region,
                 fallback_aliases,created_at""",
                 tenant_id,
@@ -363,6 +396,7 @@ def create_agent_router(database: Database) -> APIRouter:
                 payload.data_classification,
                 payload.region,
                 json.dumps(payload.fallback_aliases),
+                json.dumps(profile_snapshots),
             )
             assert row is not None
             result = record_to_dict(row)
