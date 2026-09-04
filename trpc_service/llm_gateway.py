@@ -19,8 +19,19 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.exc import SQLAlchemyError
 
 from trpc_service.admin_api.database import Database
+from trpc_service.budgets import (
+    BudgetCommand,
+    BudgetExceeded,
+    BudgetReservationBundle,
+    BudgetService,
+    BudgetStateUnknown,
+    ModelPrice,
+    estimate_cost_micros,
+    estimate_tokens,
+)
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
@@ -64,6 +75,8 @@ class GatewayRequest:
     allowed_fallback_aliases: frozenset[str] = frozenset()
     profile_snapshots: tuple[ModelProfile, ...] = ()
     release_id: str | None = None
+    application_id: str | None = None
+    execution_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -110,6 +123,16 @@ class SecretProvider(Protocol):
 
 class OutboundPolicy(Protocol):
     async def allows(self, request: GatewayRequest, profile: ModelProfile) -> bool: ...
+
+
+class BudgetGuard(Protocol):
+    """Reserve before a billable model call; settle after, release on failure."""
+
+    async def reserve(self, request: GatewayRequest) -> BudgetReservationBundle: ...
+
+    async def settle(self, bundle: BudgetReservationBundle) -> None: ...
+
+    async def release(self, bundle: BudgetReservationBundle, *, reason: str) -> None: ...
 
 
 class VaultSecretProvider:
@@ -267,6 +290,7 @@ class LLMGateway:
         circuit_reset_seconds: float = 30,
         observer: GatewayObserver | None = None,
         policy: OutboundPolicy,
+        budget: BudgetGuard | None = None,
     ) -> None:
         self._profiles = profiles
         self._secrets = secrets
@@ -275,6 +299,7 @@ class LLMGateway:
         self._circuit_reset_seconds = circuit_reset_seconds
         self._observer = observer or LoggingGatewayObserver()
         self._policy = policy
+        self._budget = budget
         self._failures: dict[tuple[str, str], int] = defaultdict(int)
         self._opened_at: dict[tuple[str, str], float] = {}
         self._requests: dict[tuple[str, str], deque[float]] = defaultdict(deque)
@@ -282,6 +307,42 @@ class LLMGateway:
     async def complete(self, request: GatewayRequest) -> GatewayResult:
         started_at = monotonic()
         request_content_hash = _content_hash(request.messages)
+        bundle = None
+        if self._budget is not None:
+            # The guard maps its domain failures to BUDGET_EXCEEDED and
+            # BUDGET_STATE_UNKNOWN; both fail closed before any provider call.
+            bundle = await self._budget.reserve(request)
+        try:
+            result = await self._complete_with_guard(
+                request,
+                bundle=None if bundle is None else bundle,
+                started_at=started_at,
+                request_content_hash=request_content_hash,
+            )
+        except ModelGatewayError as error:
+            # The call failed upstream: return the reservation. A settlement
+            # uncertainty cannot happen here because settle runs after success.
+            if bundle is not None and self._budget is not None:
+                try:
+                    await self._budget.release(bundle, reason=error.code)
+                except Exception as release_error:
+                    raise ModelGatewayError("BUDGET_STATE_UNKNOWN") from release_error
+            raise
+        if bundle is not None and self._budget is not None:
+            # Fail closed on settlement uncertainty: the bookkeeping must not
+            # silently diverge from actual spend. A successful call is never
+            # released.
+            await self._budget.settle(bundle)
+        return result
+
+    async def _complete_with_guard(
+        self,
+        request: GatewayRequest,
+        bundle: BudgetReservationBundle | None,
+        *,
+        started_at: float,
+        request_content_hash: str,
+    ) -> GatewayResult:
         attempted = False
         rate_limited = False
         circuit_open = False
@@ -508,6 +569,8 @@ class GatewayModel:
         allowed_fallback_aliases: frozenset[str] = frozenset(),
         profile_snapshots: tuple[ModelProfile, ...] = (),
         release_id: str | None = None,
+        application_id: str | None = None,
+        execution_id: str | None = None,
     ) -> None:
         self._gateway = gateway
         self._tenant_id = tenant_id
@@ -517,6 +580,8 @@ class GatewayModel:
         self._allowed_fallback_aliases = allowed_fallback_aliases
         self._profile_snapshots = profile_snapshots
         self._release_id = release_id
+        self._application_id = application_id
+        self._execution_id = execution_id
 
     async def complete(self, messages: list[dict[str, str]]) -> GatewayResult:
         return await self._gateway.complete(
@@ -529,8 +594,64 @@ class GatewayModel:
                 allowed_fallback_aliases=self._allowed_fallback_aliases,
                 profile_snapshots=self._profile_snapshots,
                 release_id=self._release_id,
+                application_id=self._application_id,
+                execution_id=self._execution_id,
             )
         )
+
+
+class DatabaseBudgetGuard:
+    """LLM Gateway BudgetGuard: estimates, reserves, settles and releases.
+
+    Domain failures are mapped to stable ModelGatewayError codes so the model
+    call path fails closed with its own error vocabulary.
+    """
+
+    def __init__(self, service: BudgetService) -> None:
+        self._service = service
+
+    async def reserve(self, request: GatewayRequest) -> BudgetReservationBundle:
+        prices, price_version = await self._service.latest_prices(request.tenant_id)
+        price = prices.get(request.model_alias)
+        if price is None and await self._service.has_active_budgets(request.tenant_id):
+            # An enforced budget without a price for this model cannot bound
+            # spend; fail closed instead of reserving zero.
+            raise ModelGatewayError("MODEL_UNPRICED")
+        unpriced = ModelPrice(request.model_alias, 0, 0)
+        effective = price or unpriced
+        input_tokens, output_tokens = estimate_tokens(request.messages)
+        estimated = estimate_cost_micros(
+            input_tokens,
+            output_tokens,
+            input_micros_per_1k=effective.input_micros_per_1k,
+            output_micros_per_1k=effective.output_micros_per_1k,
+        )
+        try:
+            return await self._service.reserve(
+                BudgetCommand(
+                    tenant_id=request.tenant_id,
+                    application_id=request.application_id,
+                    execution_id=request.execution_id,
+                    estimated_micros=estimated,
+                    price_version=price_version,
+                )
+            )
+        except BudgetExceeded as error:
+            raise ModelGatewayError(error.code) from error
+        except BudgetStateUnknown as error:
+            raise ModelGatewayError(error.code) from error
+
+    async def settle(self, bundle: BudgetReservationBundle) -> None:
+        try:
+            await self._service.settle(bundle)
+        except SQLAlchemyError as error:
+            raise ModelGatewayError("BUDGET_STATE_UNKNOWN") from error
+
+    async def release(self, bundle: BudgetReservationBundle, *, reason: str) -> None:
+        try:
+            await self._service.release(bundle, reason=reason)
+        except SQLAlchemyError as error:
+            raise ModelGatewayError("BUDGET_STATE_UNKNOWN") from error
 
 
 def _content_hash(content: object) -> str:
@@ -576,6 +697,8 @@ class GatewayCompletionPayload(BaseModel):
     tenant_id: str = Field(min_length=36, max_length=36)
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
     release_id: str = Field(min_length=36, max_length=36)
+    application_id: str | None = Field(default=None, min_length=1, max_length=64)
+    execution_id: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class GatewayCompletionResponse(BaseModel):
@@ -586,7 +709,11 @@ class GatewayCompletionResponse(BaseModel):
     completion: dict[str, Any]
 
 
-def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
+def create_app(
+    settings: GatewayRuntimeSettings | None = None,
+    *,
+    budget: BudgetGuard | None = None,
+) -> FastAPI:
     """Create the sole in-cluster process allowed to resolve provider credentials."""
 
     @asynccontextmanager
@@ -608,6 +735,7 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
             ),
             provider_client,
             policy=OpaOutboundPolicy(opa_client),
+            budget=budget or DatabaseBudgetGuard(BudgetService(database)),
         )
         application.state.database = database
         try:
@@ -644,7 +772,12 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
     async def complete(payload: GatewayCompletionPayload) -> GatewayCompletionResponse:
         try:
             request = await _released_request(
-                application.state.database, payload.tenant_id, payload.release_id, payload.messages
+                application.state.database,
+                payload.tenant_id,
+                payload.release_id,
+                payload.messages,
+                application_id=payload.application_id,
+                execution_id=payload.execution_id,
             )
             result = await application.state.gateway.complete(request)
         except ModelGatewayError as error:
@@ -659,7 +792,13 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
 
 
 async def _released_request(
-    database: Database, tenant_id: str, release_id: str, messages: list[dict[str, str]]
+    database: Database,
+    tenant_id: str,
+    release_id: str,
+    messages: list[dict[str, str]],
+    *,
+    application_id: str | None = None,
+    execution_id: str | None = None,
 ) -> GatewayRequest:
     try:
         tenant_uuid, release_uuid = UUID(tenant_id), UUID(release_id)

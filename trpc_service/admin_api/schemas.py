@@ -350,3 +350,104 @@ class AuditEventResponse(BaseModel):
 class AuditEventList(BaseModel):
     items: list[AuditEventResponse]
     next_cursor: str | None = None
+
+
+class BudgetConfigUpsert(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scope: Literal["TENANT_MONTHLY", "AGENT_DAILY", "EXECUTION"]
+    application_id: UUID | None = None
+    limit_micros: int = Field(ge=0)
+    contingency_micros: int = Field(default=0, ge=0)
+    unknown_policy: Literal["FAIL_CLOSED", "CONTINGENCY"] = "FAIL_CLOSED"
+
+
+class BudgetResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID | None
+    scope: str
+    limit_micros: int
+    contingency_micros: int
+    unknown_policy: str
+    version: int
+    period_key: str | None = None
+    reserved_micros: int | None = None
+    consumed_micros: int | None = None
+    allowance_micros: int | None = None
+    contingency_reserved_micros: int | None = None
+
+
+class BudgetList(BaseModel):
+    items: list[BudgetResponse]
+    next_cursor: str | None = None
+
+
+class BudgetAdjustmentRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    delta_micros: int
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class LedgerEntryResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    id: UUID
+    budget_id: UUID
+    period_key: str
+    application_id: UUID | None
+    execution_id: str | None
+    entry_type: str
+    amount_micros: int
+    reserve_id: UUID | None
+    contingency: bool
+    reason: str
+    actor: str
+    price_version: int | None
+    created_at: datetime
+
+
+class LedgerList(BaseModel):
+    items: list[LedgerEntryResponse]
+    next_cursor: str | None = None
+
+
+class BudgetAlertResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    budget_id: UUID
+    period_key: str
+    level: str
+    used_micros: int
+    limit_micros: int
+    created_at: datetime
+
+
+class BudgetAlertList(BaseModel):
+    items: list[BudgetAlertResponse]
+    next_cursor: str | None = None
+
+
+class ModelPriceEntry(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_alias: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{0,62}$")
+    input_micros_per_1k: int = Field(ge=0)
+    output_micros_per_1k: int = Field(ge=0)
+
+
+class ModelPriceSet(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    prices: list[ModelPriceEntry] = Field(min_length=1, max_length=100)
+
+
+class ModelPriceVersionResponse(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID
+    version: int
+    prices: list[ModelPriceEntry]
