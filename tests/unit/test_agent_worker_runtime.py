@@ -185,6 +185,8 @@ def test_worker_gateway_client_sends_only_release_identity_and_messages() -> Non
             "tenant_id",
             "messages",
             "release_id",
+            "application_id",
+            "execution_id",
         }
         assert payload["release_id"] == release_id
         return httpx.Response(

@@ -73,6 +73,10 @@ jobs:
           uv run coverage report
           --include=trpc_service/database_migrations.py,trpc_service/migrations/*.py,trpc_service/migrations/versions/*.py
           --fail-under=90
+      - run: >-
+          uv run coverage report
+          --include=trpc_service/budgets.py
+          --fail-under=90
       - run: uv run python scripts/export_openapi.py
 
       - run: npm ci

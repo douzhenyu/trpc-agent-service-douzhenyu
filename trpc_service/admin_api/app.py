@@ -25,6 +25,7 @@ from trpc_service.admin_api.auth import (
     require_role,
     verify_emergency_password,
 )
+from trpc_service.admin_api.budgets import create_budget_router
 from trpc_service.admin_api.database import Database, record_to_dict
 from trpc_service.admin_api.http_contract import ETAG_HEADER, error_responses
 from trpc_service.admin_api.idempotency import (
@@ -99,6 +100,7 @@ def create_app(
     )
     application.state.settings = configured
     application.include_router(create_agent_router(db))
+    application.include_router(create_budget_router(db))
     application.include_router(create_model_profile_router(db))
 
     @application.exception_handler(HTTPException)

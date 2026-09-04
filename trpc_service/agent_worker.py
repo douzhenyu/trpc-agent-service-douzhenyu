@@ -61,6 +61,8 @@ class AgentExecutionRequest:
     tenant_id: str
     release_id: str
     messages: list[dict[str, str]]
+    application_id: str | None = None
+    execution_id: str | None = None
 
 
 class ReleaseRouteResolver(Protocol):
@@ -268,6 +270,8 @@ class AgentWorker:
             allowed_fallback_aliases=route.allowed_fallback_aliases,
             profile_snapshots=route.profile_snapshots,
             release_id=route.release_id,
+            application_id=request.application_id,
+            execution_id=request.execution_id,
         ).complete(request.messages)
         if result.fallback_used and self._fallback_auditor is not None:
             try:
@@ -312,7 +316,13 @@ class AgentExecutionProcessor:
         if route is None:
             raise ModelGatewayError("RELEASE_NOT_FOUND")
         result = await self._worker.complete(
-            AgentExecutionRequest(data.tenant_id, data.release_id, data.messages)
+            AgentExecutionRequest(
+                data.tenant_id,
+                data.release_id,
+                data.messages,
+                application_id=data.application_id,
+                execution_id=data.execution_id,
+            )
         )
         await self._leases.renew(tenant_id, session_id, self._owner_id, grant.fencing_token)
         events = [
@@ -397,6 +407,8 @@ class HttpGatewayClient:
                     "tenant_id": request.tenant_id,
                     "messages": request.messages,
                     "release_id": request.release_id,
+                    "application_id": request.application_id,
+                    "execution_id": request.execution_id,
                 },
             )
             if response.status_code >= 400:

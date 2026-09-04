@@ -322,6 +322,92 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenant_id}/budget-alerts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Budget Alerts */
+        get: operations["list_budget_alerts_api_v1_tenants__tenant_id__budget_alerts_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/budgets": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Budgets */
+        get: operations["list_budgets_api_v1_tenants__tenant_id__budgets_get"];
+        /** Upsert Budget */
+        put: operations["upsert_budget_api_v1_tenants__tenant_id__budgets_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/budgets/{budget_id}/adjustments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Adjust Budget */
+        post: operations["adjust_budget_api_v1_tenants__tenant_id__budgets__budget_id__adjustments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/cost-ledger": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Cost Ledger */
+        get: operations["list_cost_ledger_api_v1_tenants__tenant_id__cost_ledger_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/model-prices": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Set Model Prices */
+        put: operations["set_model_prices_api_v1_tenants__tenant_id__model_prices_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenant_id}/model-profiles": {
         parameters: {
             query?: never;
@@ -697,6 +783,106 @@ export interface components {
             /** Tenant Id */
             tenant_id: string | null;
         };
+        /** BudgetAdjustmentRequest */
+        BudgetAdjustmentRequest: {
+            /** Delta Micros */
+            delta_micros: number;
+            /** Reason */
+            reason: string;
+        };
+        /** BudgetAlertList */
+        BudgetAlertList: {
+            /** Items */
+            items: components["schemas"]["BudgetAlertResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** BudgetAlertResponse */
+        BudgetAlertResponse: {
+            /**
+             * Budget Id
+             * Format: uuid
+             */
+            budget_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Level */
+            level: string;
+            /** Limit Micros */
+            limit_micros: number;
+            /** Period Key */
+            period_key: string;
+            /** Used Micros */
+            used_micros: number;
+        };
+        /** BudgetConfigUpsert */
+        BudgetConfigUpsert: {
+            /** Application Id */
+            application_id?: string | null;
+            /**
+             * Contingency Micros
+             * @default 0
+             */
+            contingency_micros: number;
+            /** Limit Micros */
+            limit_micros: number;
+            /**
+             * Scope
+             * @enum {string}
+             */
+            scope: "TENANT_MONTHLY" | "AGENT_DAILY" | "EXECUTION";
+            /**
+             * Unknown Policy
+             * @default FAIL_CLOSED
+             * @enum {string}
+             */
+            unknown_policy: "FAIL_CLOSED" | "CONTINGENCY";
+        };
+        /** BudgetList */
+        BudgetList: {
+            /** Items */
+            items: components["schemas"]["BudgetResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** BudgetResponse */
+        BudgetResponse: {
+            /** Allowance Micros */
+            allowance_micros?: number | null;
+            /** Application Id */
+            application_id: string | null;
+            /** Consumed Micros */
+            consumed_micros?: number | null;
+            /** Contingency Micros */
+            contingency_micros: number;
+            /** Contingency Reserved Micros */
+            contingency_reserved_micros?: number | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Limit Micros */
+            limit_micros: number;
+            /** Period Key */
+            period_key?: string | null;
+            /** Reserved Micros */
+            reserved_micros?: number | null;
+            /** Scope */
+            scope: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Unknown Policy */
+            unknown_policy: string;
+            /** Version */
+            version: number;
+        };
         /** DraftValidationIssue */
         DraftValidationIssue: {
             /**
@@ -739,6 +925,11 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
         };
+        /** HTTPValidationError */
+        HTTPValidationError: {
+            /** Detail */
+            detail?: components["schemas"]["ValidationError"][];
+        };
         /**
          * HealthResponse
          * @description Stable public health contract consumed by the Web Console.
@@ -760,6 +951,77 @@ export interface components {
             trpc_agent_version: string;
             /** Version */
             version: string;
+        };
+        /** LedgerEntryResponse */
+        LedgerEntryResponse: {
+            /** Actor */
+            actor: string;
+            /** Amount Micros */
+            amount_micros: number;
+            /** Application Id */
+            application_id: string | null;
+            /**
+             * Budget Id
+             * Format: uuid
+             */
+            budget_id: string;
+            /** Contingency */
+            contingency: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Entry Type */
+            entry_type: string;
+            /** Execution Id */
+            execution_id: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Period Key */
+            period_key: string;
+            /** Price Version */
+            price_version: number | null;
+            /** Reason */
+            reason: string;
+            /** Reserve Id */
+            reserve_id: string | null;
+        };
+        /** LedgerList */
+        LedgerList: {
+            /** Items */
+            items: components["schemas"]["LedgerEntryResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** ModelPriceEntry */
+        ModelPriceEntry: {
+            /** Input Micros Per 1K */
+            input_micros_per_1k: number;
+            /** Model Alias */
+            model_alias: string;
+            /** Output Micros Per 1K */
+            output_micros_per_1k: number;
+        };
+        /** ModelPriceSet */
+        ModelPriceSet: {
+            /** Prices */
+            prices: components["schemas"]["ModelPriceEntry"][];
+        };
+        /** ModelPriceVersionResponse */
+        ModelPriceVersionResponse: {
+            /** Prices */
+            prices: components["schemas"]["ModelPriceEntry"][];
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Version */
+            version: number;
         };
         /** ModelProfileCreate */
         ModelProfileCreate: {
@@ -971,6 +1233,15 @@ export interface components {
             updated_at: string;
             /** Version */
             version: number;
+        };
+        /** ValidationError */
+        ValidationError: {
+            /** Location */
+            loc: (string | number)[];
+            /** Message */
+            msg: string;
+            /** Error Type */
+            type: string;
         };
     };
     responses: never;
@@ -3246,6 +3517,343 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_budget_alerts_api_v1_tenants__tenant_id__budget_alerts_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetAlertList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_budgets_api_v1_tenants__tenant_id__budgets_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    upsert_budget_api_v1_tenants__tenant_id__budgets_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BudgetConfigUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    /** @description Quoted current resource version */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    adjust_budget_api_v1_tenants__tenant_id__budgets__budget_id__adjustments_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                tenant_id: string;
+                budget_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BudgetAdjustmentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    /** @description Quoted current resource version */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BudgetResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_cost_ledger_api_v1_tenants__tenant_id__cost_ledger_get: {
+        parameters: {
+            query?: {
+                execution_id?: string | null;
+                budget_id?: string | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["LedgerList"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    set_model_prices_api_v1_tenants__tenant_id__model_prices_put: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ModelPriceSet"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelPriceVersionResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description Internal error */
