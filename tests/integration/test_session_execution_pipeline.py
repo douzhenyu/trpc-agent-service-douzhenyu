@@ -11,20 +11,21 @@ from fastapi.testclient import TestClient
 
 from trpc_service.admin_api.database import Database
 from trpc_service.agent_gateway import (
+    AgentExecutionSubmission,
+    AgentExecutionSubmitter,
     AgentGatewaySettings,
-    SessionExecutionPayload,
-    SessionExecutionSubmitter,
     create_app,
 )
 from trpc_service.agent_worker import (
+    AgentExecutionProcessor,
     AgentWorker,
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
-    SessionExecutionProcessor,
 )
 from trpc_service.database_migrations import apply_migrations
 from trpc_service.execution_bus import (
     EXECUTION_REQUESTED_EVENT,
+    ExecutionEnvelope,
     InMemoryExecutionBus,
     OutboxDispatcher,
 )
@@ -141,7 +142,7 @@ async def _open_database() -> Database:
     return database
 
 
-async def _authority_state(tenant_id: str, session_id: str) -> dict[str, int | str | None]:
+async def _authority_state(tenant_id: str, session_id: str) -> dict[str, int]:
     connection = await asyncpg.connect(ADMIN_URL)
     try:
         return {
@@ -165,6 +166,7 @@ async def _authority_state(tenant_id: str, session_id: str) -> dict[str, int | s
                     UUID(tenant_id),
                     session_id,
                 )
+                or 0
             ),
             "outbox_committed": int(
                 await connection.fetchval(
@@ -178,23 +180,49 @@ async def _authority_state(tenant_id: str, session_id: str) -> dict[str, int | s
         await connection.close()
 
 
-def _payload(tenant_id: str, application_id: str, session_id: str) -> SessionExecutionPayload:
-    return SessionExecutionPayload(
+def _submission(
+    tenant_id: str,
+    application_id: str,
+    session_id: str,
+    message_id: str | None = None,
+    content: str = "hello session",
+) -> AgentExecutionSubmission:
+    return AgentExecutionSubmission(
         tenant_id=UUID(tenant_id),
         application_id=UUID(application_id),
         environment="PRODUCTION",
         session_id=session_id,
-        messages=[{"role": "user", "content": "hello session"}],
+        messages=[{"role": "user", "content": content}],
+        message_id=message_id,
     )
 
 
 def _processor(
     database: Database, owner_id: str
-) -> tuple[SessionExecutionProcessor, ScriptedGateway]:
+) -> tuple[AgentExecutionProcessor, ScriptedGateway]:
     gateway = ScriptedGateway()
     worker = AgentWorker(gateway, DatabaseReleaseRouteResolver(database))
-    processor = SessionExecutionProcessor(worker, database, SessionLeaseManager(database), owner_id)
+    processor = AgentExecutionProcessor(
+        worker,
+        database,
+        DatabaseReleaseRouteResolver(database),
+        SessionLeaseManager(database),
+        owner_id,
+    )
     return processor, gateway
+
+
+async def _expire_lease(tenant_id: str, session_id: str) -> None:
+    connection = await asyncpg.connect(ADMIN_URL)
+    try:
+        await connection.execute(
+            "UPDATE tenant.session_lease SET expires_at=now() - interval '1 second' "
+            "WHERE tenant_id=$1 AND session_id=$2",
+            UUID(tenant_id),
+            session_id,
+        )
+    finally:
+        await connection.close()
 
 
 def test_gateway_commits_execution_and_outbox_in_one_transaction() -> None:
@@ -216,17 +244,23 @@ def test_gateway_commits_execution_and_outbox_in_one_transaction() -> None:
                 "messages": [{"role": "user", "content": "hello session"}],
                 "message_id": "fixed-message-1",
             }
-            submitted = client.post("/internal/v1/session-executions", json=payload)
+            submitted = client.post("/internal/v1/agent-executions", json=payload)
             assert submitted.status_code == 202
             body = submitted.json()
             assert body["release_id"] == release_id
             assert body["deduplicated"] is False
-            duplicate = client.post("/internal/v1/session-executions", json=payload)
+            duplicate = client.post("/internal/v1/agent-executions", json=payload)
             assert duplicate.status_code == 200
             assert duplicate.json()["execution_id"] == body["execution_id"]
             assert duplicate.json()["deduplicated"] is True
+            conflicting = client.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "messages": [{"role": "user", "content": "different payload"}]},
+            )
+            assert conflicting.status_code == 409
+            assert conflicting.json()["detail"] == "MESSAGE_PAYLOAD_CONFLICT"
             unknown_app = client.post(
-                "/internal/v1/session-executions",
+                "/internal/v1/agent-executions",
                 json={**payload, "application_id": str(uuid4()), "message_id": "lost-message"},
             )
             assert unknown_app.status_code == 409
@@ -234,21 +268,25 @@ def test_gateway_commits_execution_and_outbox_in_one_transaction() -> None:
         connection = await asyncpg.connect(ADMIN_URL)
         try:
             executions = await connection.fetch(
-                "SELECT status,application_id FROM tenant.agent_execution WHERE tenant_id=$1",
+                "SELECT status,application_id,payload_hash FROM tenant.agent_execution "
+                "WHERE tenant_id=$1",
                 UUID(tenant_id),
             )
             assert len(executions) == 1
             assert executions[0]["status"] == "PENDING"
             assert str(executions[0]["application_id"]) == application_id
+            assert len(str(executions[0]["payload_hash"])) == 64
             outbox = await connection.fetch(
-                "SELECT status,event_type,partition_key FROM platform.outbox_record "
-                "WHERE tenant_id=$1",
+                "SELECT status,event_type,partition_key,correlation_id,data_classification "
+                "FROM platform.outbox_record WHERE tenant_id=$1",
                 UUID(tenant_id),
             )
             assert len(outbox) == 1
             assert outbox[0]["status"] == "PENDING"
             assert outbox[0]["event_type"] == EXECUTION_REQUESTED_EVENT
             assert outbox[0]["partition_key"] == f"{tenant_id}:session-tx"
+            assert outbox[0]["correlation_id"] == body["execution_id"]
+            assert outbox[0]["data_classification"] == "CONFIDENTIAL"
             sessions = await connection.fetchval(
                 "SELECT count(*) FROM tenant.agent_session WHERE tenant_id=$1", UUID(tenant_id)
             )
@@ -267,18 +305,18 @@ def test_dispatcher_publishes_pending_records_and_marks_them_published() -> None
         try:
             tenant_id, application_id, _release_id = await _seed_release_stack()
             bus = InMemoryExecutionBus(partition_count=4)
-            submitter = SessionExecutionSubmitter(
-                database, DatabaseDeploymentRouteResolver(database)
-            )
-            await submitter.submit(_payload(tenant_id, application_id, "session-dispatch"))
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            await submitter.submit(_submission(tenant_id, application_id, "session-dispatch"))
             dispatcher = OutboxDispatcher(database, bus)
             assert await dispatcher.dispatch_pending() == 1
             assert await dispatcher.dispatch_pending() == 0
             assert len(bus.published) == 1
             envelope = bus.published[0]
-            assert envelope.message_id == "m-1" or envelope.message_id
+            assert envelope.tenant_id == tenant_id
+            assert envelope.data_schema == f"{EXECUTION_REQUESTED_EVENT}.schema.json"
             assert envelope.data["session_id"] == "session-dispatch"
             assert envelope.data["tenant_id"] == tenant_id
+            assert envelope.correlation_id is not None
             assert envelope.to_dict()["specversion"] == "1.0"
             connection = await asyncpg.connect(ADMIN_URL)
             try:
@@ -307,19 +345,12 @@ def test_duplicate_message_yields_one_execution_and_one_authoritative_event_set(
         try:
             tenant_id, application_id, release_id = await _seed_release_stack()
             bus = InMemoryExecutionBus(partition_count=4)
-            submitter = SessionExecutionSubmitter(
-                database, DatabaseDeploymentRouteResolver(database)
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            submission = _submission(
+                tenant_id, application_id, "session-dedup", message_id="fixed-message-1"
             )
-            payload = SessionExecutionPayload(
-                tenant_id=UUID(tenant_id),
-                application_id=UUID(application_id),
-                environment="PRODUCTION",
-                session_id="session-dedup",
-                messages=[{"role": "user", "content": "hello session"}],
-                message_id="fixed-message-1",
-            )
-            first = await submitter.submit(payload)
-            second = await submitter.submit(payload)
+            first = await submitter.submit(submission)
+            second = await submitter.submit(submission)
             assert first.execution_id == second.execution_id
             assert second.deduplicated is True
             dispatcher = OutboxDispatcher(database, bus)
@@ -347,12 +378,17 @@ def test_duplicate_message_yields_one_execution_and_one_authoritative_event_set(
                 assert [event["kind"] for event in events] == ["USER_MESSAGE", "AGENT_REPLY"]
                 assert json.loads(events[0]["payload"])["content"] == "hello session"
                 assert json.loads(events[1]["payload"])["model_alias"] == "primary-alias"
-                committed = await connection.fetchval(
-                    "SELECT count(*) FROM platform.outbox_record "
-                    "WHERE tenant_id=$1 AND event_type='platform.session.events.committed.v1'",
+                committed = await connection.fetchrow(
+                    """SELECT causation_id,correlation_id,data_classification
+                    FROM platform.outbox_record
+                    WHERE tenant_id=$1
+                      AND event_type='platform.session.events.committed.v1'""",
                     UUID(tenant_id),
                 )
-                assert int(committed) == 1
+                assert committed is not None
+                assert committed["causation_id"] == "fixed-message-1"
+                assert committed["correlation_id"] == str(first.execution_id)
+                assert committed["data_classification"] == "CONFIDENTIAL"
                 status = await connection.fetchval(
                     "SELECT status FROM tenant.agent_execution WHERE tenant_id=$1",
                     UUID(tenant_id),
@@ -366,6 +402,44 @@ def test_duplicate_message_yields_one_execution_and_one_authoritative_event_set(
     asyncio.run(scenario())
 
 
+def test_worker_rejects_a_message_without_a_known_execution() -> None:
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = await _open_database()
+        try:
+            tenant_id, application_id, release_id = await _seed_release_stack()
+            bus = InMemoryExecutionBus(partition_count=2)
+            fabricated = ExecutionEnvelope(
+                message_id="unknown-message",
+                source="trpc-agent-platform://agent-gateway",
+                event_type=EXECUTION_REQUESTED_EVENT,
+                partition_key=f"{tenant_id}:session-ghost",
+                time="2026-09-04T09:00:00+00:00",
+                tenant_id=tenant_id,
+                data_schema=f"{EXECUTION_REQUESTED_EVENT}.schema.json",
+                data={
+                    "tenant_id": tenant_id,
+                    "application_id": application_id,
+                    "execution_id": str(uuid4()),
+                    "release_id": release_id,
+                    "environment": "PRODUCTION",
+                    "session_id": "session-ghost",
+                    "messages": [{"role": "user", "content": "ghost"}],
+                },
+            )
+            await bus.publish(fabricated)
+            processor, gateway = _processor(database, "worker-a")
+            assert await bus.deliver_once(processor.handle) is False
+            assert len(gateway.requests) == 0
+            state = await _authority_state(tenant_id, "session-ghost")
+            assert state["events"] == 0
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
 def test_worker_that_lost_its_lease_cannot_commit() -> None:
     asyncio.run(_prepare_database())
 
@@ -373,26 +447,17 @@ def test_worker_that_lost_its_lease_cannot_commit() -> None:
         database = await _open_database()
         try:
             tenant_id, application_id, _release_id = await _seed_release_stack()
-            submitter = SessionExecutionSubmitter(
-                database, DatabaseDeploymentRouteResolver(database)
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            submission = _submission(
+                tenant_id, application_id, "session-fence", message_id="fence-message-1"
             )
-            await submitter.submit(_payload(tenant_id, application_id, "session-fence"))
+            await submitter.submit(submission)
             leases = SessionLeaseManager(database)
-            worker_a, worker_b = UUID(tenant_id), UUID(tenant_id)
-            grant_a = await leases.acquire(worker_a, "session-fence", "worker-a")
+            grant_a = await leases.acquire(UUID(tenant_id), "session-fence", "worker-a")
             with pytest.raises(SessionLeaseError, match="SESSION_LEASE_HELD"):
-                await leases.acquire(worker_b, "session-fence", "worker-b")
-            connection = await asyncpg.connect(ADMIN_URL)
-            try:
-                await connection.execute(
-                    "UPDATE tenant.session_lease SET expires_at=now() - interval '1 second' "
-                    "WHERE tenant_id=$1 AND session_id=$2",
-                    UUID(tenant_id),
-                    "session-fence",
-                )
-            finally:
-                await connection.close()
-            grant_b = await leases.acquire(worker_b, "session-fence", "worker-b")
+                await leases.acquire(UUID(tenant_id), "session-fence", "worker-b")
+            await _expire_lease(tenant_id, "session-fence")
+            grant_b = await leases.acquire(UUID(tenant_id), "session-fence", "worker-b")
             assert grant_b.fencing_token == grant_a.fencing_token + 1
             events = [SessionEvent(kind="AGENT_REPLY", payload={"content": "stale"})]
             async with database.tenant_transaction(UUID(tenant_id)) as tx:
@@ -405,6 +470,7 @@ def test_worker_that_lost_its_lease_cannot_commit() -> None:
                         fencing_token=grant_a.fencing_token,
                         expected_version=grant_a.session_version,
                         execution_id=uuid4(),
+                        idempotency_key="fence-message-1",
                         events=events,
                     )
             state = await _authority_state(tenant_id, "session-fence")
@@ -419,6 +485,7 @@ def test_worker_that_lost_its_lease_cannot_commit() -> None:
                     fencing_token=grant_b.fencing_token,
                     expected_version=grant_b.session_version,
                     execution_id=uuid4(),
+                    idempotency_key="fence-message-1",
                     events=events,
                 )
             assert new_version == grant_b.session_version + 1
@@ -438,12 +505,20 @@ def test_version_conflict_blocks_a_stale_worker_result() -> None:
         database = await _open_database()
         try:
             tenant_id, application_id, _release_id = await _seed_release_stack()
-            submitter = SessionExecutionSubmitter(
-                database, DatabaseDeploymentRouteResolver(database)
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            await submitter.submit(
+                _submission(
+                    tenant_id,
+                    application_id,
+                    "session-version",
+                    message_id="version-message-1",
+                )
             )
-            await submitter.submit(_payload(tenant_id, application_id, "session-version"))
             leases = SessionLeaseManager(database)
             grant = await leases.acquire(UUID(tenant_id), "session-version", "worker-a")
+            await leases.renew(UUID(tenant_id), "session-version", "worker-a", grant.fencing_token)
+            with pytest.raises(SessionLeaseError, match="SESSION_LEASE_INVALID"):
+                await leases.renew(UUID(tenant_id), "session-version", "worker-a", 99)
             events = [SessionEvent(kind="AGENT_REPLY", payload={"content": "stale"})]
             async with database.tenant_transaction(UUID(tenant_id)) as tx:
                 with pytest.raises(SessionVersionConflictError, match="SESSION_VERSION_CONFLICT"):
@@ -455,6 +530,7 @@ def test_version_conflict_blocks_a_stale_worker_result() -> None:
                         fencing_token=grant.fencing_token,
                         expected_version=grant.session_version + 5,
                         execution_id=uuid4(),
+                        idempotency_key="version-message-1",
                         events=events,
                     )
             state = await _authority_state(tenant_id, "session-version")
@@ -469,6 +545,7 @@ def test_version_conflict_blocks_a_stale_worker_result() -> None:
                     fencing_token=grant.fencing_token,
                     expected_version=grant.session_version,
                     execution_id=uuid4(),
+                    idempotency_key="version-message-1",
                     events=events,
                 )
             assert new_version == grant.session_version + 1

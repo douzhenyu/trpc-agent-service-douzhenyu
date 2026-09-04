@@ -2,7 +2,9 @@
 
 Production wires a Kafka (Redpanda) transport behind :class:`ExecutionBusPublisher`;
 the in-memory transport exists for unit tests and local runs only. Envelopes follow
-the CloudEvents 1.0 JSON format so bus payloads never serialize runtime objects.
+the CloudEvents 1.0 JSON format and carry the tenant, causation, correlation, trace,
+schema and data-classification metadata required by ADR-0041, so bus payloads never
+serialize runtime objects.
 """
 
 from __future__ import annotations
@@ -11,8 +13,12 @@ import hashlib
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, Protocol
+from uuid import UUID
 
-from trpc_service.admin_api.database import Database
+from pydantic import BaseModel, ConfigDict, Field
+
+from trpc_service.admin_api.database import Connection, Database
+from trpc_service.ids import uuid7
 
 ENVELOPE_SPECVERSION = "1.0"
 GATEWAY_SOURCE = "trpc-agent-platform://agent-gateway"
@@ -20,7 +26,30 @@ WORKER_SOURCE = "trpc-agent-platform://agent-worker"
 EXECUTION_REQUESTED_EVENT = "platform.agent-execution.requested.v1"
 SESSION_EVENTS_COMMITTED_EVENT = "platform.session.events.committed.v1"
 
-_REQUIRED_ENVELOPE_FIELDS = ("id", "source", "type", "time", "partitionkey", "data")
+_REQUIRED_ENVELOPE_FIELDS = (
+    "id",
+    "source",
+    "type",
+    "time",
+    "partitionkey",
+    "tenantid",
+    "dataschema",
+    "data",
+)
+
+
+class ExecutionRequestedData(BaseModel):
+    """Typed payload contract of `platform.agent-execution.requested.v1`."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: str
+    application_id: str
+    execution_id: str
+    release_id: str
+    environment: str
+    session_id: str
+    messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
 
 
 @dataclass(frozen=True)
@@ -32,19 +61,36 @@ class ExecutionEnvelope:
     event_type: str
     partition_key: str
     time: str
+    tenant_id: str
+    data_schema: str
     data: dict[str, Any]
+    causation_id: str | None = None
+    correlation_id: str | None = None
+    data_classification: str | None = None
+    trace_parent: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        payload: dict[str, Any] = {
             "specversion": ENVELOPE_SPECVERSION,
             "id": self.message_id,
             "source": self.source,
             "type": self.event_type,
             "time": self.time,
             "partitionkey": self.partition_key,
+            "tenantid": self.tenant_id,
+            "dataschema": self.data_schema,
             "datacontenttype": "application/json",
             "data": self.data,
         }
+        if self.causation_id is not None:
+            payload["causationid"] = self.causation_id
+        if self.correlation_id is not None:
+            payload["correlationid"] = self.correlation_id
+        if self.data_classification is not None:
+            payload["dataclassification"] = self.data_classification
+        if self.trace_parent is not None:
+            payload["traceparent"] = self.trace_parent
+        return payload
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> ExecutionEnvelope:
@@ -61,20 +107,35 @@ class ExecutionEnvelope:
             event_type=str(payload["type"]),
             partition_key=str(payload["partitionkey"]),
             time=str(payload["time"]),
+            tenant_id=str(payload["tenantid"]),
+            data_schema=str(payload["dataschema"]),
             data=dict(payload["data"]),
+            causation_id=_optional_str(payload, "causationid"),
+            correlation_id=_optional_str(payload, "correlationid"),
+            data_classification=_optional_str(payload, "dataclassification"),
+            trace_parent=_optional_str(payload, "traceparent"),
         )
+
+
+def _optional_str(payload: Mapping[str, Any], field: str) -> str | None:
+    value = payload.get(field)
+    return str(value) if value is not None else None
 
 
 def session_partition_key(tenant_id: str, session_id: str) -> str:
     return f"{tenant_id}:{session_id}"
 
 
-def partition_for(tenant_id: str, session_id: str, partition_count: int) -> int:
-    """Deterministically map one tenant Session to one bus partition."""
+def _stable_bucket(key: str, partition_count: int) -> int:
     if partition_count < 0:
         raise ValueError("partition_count must not be negative")
-    digest = hashlib.sha256(f"{tenant_id}\x1f{session_id}".encode()).digest()
+    digest = hashlib.sha256(key.encode()).digest()
     return int.from_bytes(digest[:8], "big") % max(partition_count, 1)
+
+
+def partition_for(tenant_id: str, session_id: str, partition_count: int) -> int:
+    """Deterministically map one tenant Session to one bus partition."""
+    return _stable_bucket(f"{tenant_id}\x1f{session_id}", partition_count)
 
 
 def partition_of(envelope: ExecutionEnvelope, partition_count: int) -> int:
@@ -82,8 +143,7 @@ def partition_of(envelope: ExecutionEnvelope, partition_count: int) -> int:
     session_id = envelope.data.get("session_id")
     if isinstance(tenant_id, str) and isinstance(session_id, str):
         return partition_for(tenant_id, session_id, partition_count)
-    digest = hashlib.sha256(envelope.partition_key.encode()).digest()
-    return int.from_bytes(digest[:8], "big") % max(partition_count, 1)
+    return _stable_bucket(envelope.partition_key, partition_count)
 
 
 class ExecutionBusPublisher(Protocol):
@@ -91,6 +151,39 @@ class ExecutionBusPublisher(Protocol):
 
 
 ExecutionConsumer = Callable[[ExecutionEnvelope], Awaitable[None]]
+
+
+async def insert_outbox_record(
+    connection: Connection,
+    *,
+    tenant_id: str,
+    message_id: str,
+    source: str,
+    event_type: str,
+    partition_key: str,
+    payload_json: str,
+    causation_id: str | None = None,
+    correlation_id: str | None = None,
+    data_classification: str | None = None,
+) -> None:
+    """Append one Outbox record; must run inside the caller's business transaction."""
+
+    await connection.execute(
+        """INSERT INTO platform.outbox_record
+        (tenant_id,id,message_id,source,event_type,partition_key,causation_id,correlation_id,
+        data_classification,payload)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,CAST($10 AS jsonb))""",
+        UUID(tenant_id),
+        uuid7(),
+        message_id,
+        source,
+        event_type,
+        partition_key,
+        causation_id,
+        correlation_id,
+        data_classification,
+        payload_json,
+    )
 
 
 class InMemoryExecutionBus:
@@ -147,10 +240,12 @@ class InMemoryExecutionBus:
 
 
 class OutboxDispatcher:
-    """Publish transactional Outbox records at-least-once, marking only after publish.
+    """Publish transactional Outbox records at-least-once, marking only in the same tx.
 
-    A crash between publish and mark republishes the record; consumers dedupe on
-    the message id, so at-least-once delivery never becomes duplicate execution.
+    Rows are selected `FOR UPDATE SKIP LOCKED` and published while the locking
+    transaction is open, so concurrent dispatchers never double-publish one
+    record; a crash rolls the transaction back and the record is redelivered —
+    consumers dedupe on the message id.
     """
 
     def __init__(self, database: Database, bus: ExecutionBusPublisher, batch_size: int = 100):
@@ -161,28 +256,41 @@ class OutboxDispatcher:
     async def dispatch_pending(self) -> int:
         async with self._database.transaction() as connection:
             rows = await connection.fetch(
-                """SELECT id,tenant_id,message_id,source,event_type,partition_key,payload,created_at
+                """SELECT id,tenant_id,message_id,source,event_type,partition_key,causation_id,
+                correlation_id,data_classification,payload,created_at
                 FROM platform.outbox_record WHERE status='PENDING'
-                ORDER BY created_at,id LIMIT $1""",
+                ORDER BY created_at,id LIMIT $1 FOR UPDATE SKIP LOCKED""",
                 self._batch_size,
             )
-        published = 0
-        for row in rows:
-            envelope = ExecutionEnvelope(
-                message_id=str(row["message_id"]),
-                source=str(row["source"]),
-                event_type=str(row["event_type"]),
-                partition_key=str(row["partition_key"]),
-                time=row["created_at"].isoformat(),
-                data=dict(row["payload"]),
-            )
-            await self._bus.publish(envelope)
-            async with self._database.transaction() as connection:
+            published = 0
+            for row in rows:
+                envelope = ExecutionEnvelope(
+                    message_id=str(row["message_id"]),
+                    source=str(row["source"]),
+                    event_type=str(row["event_type"]),
+                    partition_key=str(row["partition_key"]),
+                    time=row["created_at"].isoformat(),
+                    tenant_id=str(row["tenant_id"]),
+                    data_schema=f"{row['event_type']}.schema.json",
+                    data=dict(row["payload"]),
+                    causation_id=(
+                        str(row["causation_id"]) if row["causation_id"] is not None else None
+                    ),
+                    correlation_id=(
+                        str(row["correlation_id"]) if row["correlation_id"] is not None else None
+                    ),
+                    data_classification=(
+                        str(row["data_classification"])
+                        if row["data_classification"] is not None
+                        else None
+                    ),
+                )
+                await self._bus.publish(envelope)
                 await connection.execute(
                     """UPDATE platform.outbox_record
                     SET status='PUBLISHED',published_at=now(),attempts=attempts+1
                     WHERE id=$1 AND status='PENDING'""",
                     row["id"],
                 )
-            published += 1
-        return published
+                published += 1
+            return published

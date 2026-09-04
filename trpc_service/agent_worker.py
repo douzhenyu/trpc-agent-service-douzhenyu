@@ -17,7 +17,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
-from trpc_service.execution_bus import ExecutionEnvelope
+from trpc_service.execution_bus import ExecutionEnvelope, ExecutionRequestedData
 from trpc_service.llm_gateway import (
     DataClassification,
     GatewayCompletionClient,
@@ -274,43 +274,48 @@ class AgentWorker:
         return result
 
 
-class SessionExecutionProcessor:
+class AgentExecutionProcessor:
     """At-least-once bus consumer committing one authoritative Session state per message.
 
     Duplicates are collapsed twice: redelivered messages skip executions that
     already succeeded, and concurrent consumers arbitrate at commit time through
-    the Session lease fencing token and the expected Session version.
+    the idempotency key, the Session lease fencing token and the expected
+    Session version. Any lost race or expired lease fails closed — the result
+    is discarded and the message is redelivered.
     """
 
     def __init__(
         self,
         worker: AgentWorker,
         database: Database,
+        releases: ReleaseRouteResolver,
         leases: SessionLeaseManager,
         owner_id: str,
     ) -> None:
         self._worker = worker
         self._database = database
+        self._releases = releases
         self._leases = leases
         self._owner_id = owner_id
 
     async def handle(self, envelope: ExecutionEnvelope) -> None:
-        data = envelope.data
-        tenant_id = UUID(str(data["tenant_id"]))
-        session_id = str(data["session_id"])
-        execution_id = UUID(str(data["execution_id"]))
-        release_id = str(data["release_id"])
-        messages = [dict(message) for message in data["messages"]]
+        data = ExecutionRequestedData.model_validate(envelope.data)
+        tenant_id = UUID(data.tenant_id)
+        session_id = data.session_id
         if await self._execution_status(tenant_id, envelope.message_id) == "SUCCEEDED":
             return
         grant: LeaseGrant = await self._leases.acquire(tenant_id, session_id, self._owner_id)
+        route = await self._releases.resolve(data.tenant_id, data.release_id)
+        if route is None:
+            raise ModelGatewayError("RELEASE_NOT_FOUND")
         result = await self._worker.complete(
-            AgentExecutionRequest(str(tenant_id), release_id, messages)
+            AgentExecutionRequest(data.tenant_id, data.release_id, data.messages)
         )
+        await self._leases.renew(tenant_id, session_id, self._owner_id, grant.fencing_token)
         events = [
             SessionEvent(
                 kind="USER_MESSAGE",
-                payload={"content": str(messages[-1].get("content", ""))},
+                payload={"content": data.messages[-1].get("content", "")},
             ),
             SessionEvent(
                 kind="AGENT_REPLY",
@@ -322,21 +327,25 @@ class SessionExecutionProcessor:
             ),
         ]
         async with self._database.tenant_transaction(tenant_id) as connection:
-            await commit_session_events(
+            new_version = await commit_session_events(
                 connection,
                 tenant_id=tenant_id,
                 session_id=session_id,
                 owner_id=self._owner_id,
                 fencing_token=grant.fencing_token,
                 expected_version=grant.session_version,
-                execution_id=execution_id,
+                execution_id=UUID(data.execution_id),
+                idempotency_key=envelope.message_id,
                 events=events,
+                data_classification=str(route.data_classification),
             )
+            if new_version is None:
+                return
             await connection.execute(
                 """UPDATE tenant.agent_execution SET status='SUCCEEDED',updated_at=now()
                 WHERE tenant_id=$1 AND id=$2""",
                 tenant_id,
-                execution_id,
+                UUID(data.execution_id),
             )
 
     async def _execution_status(self, tenant_id: UUID, message_id: str) -> str | None:

@@ -23,9 +23,13 @@ def _envelope(
         event_type=EXECUTION_REQUESTED_EVENT,
         partition_key=session_partition_key(tenant_id, session_id),
         time="2026-09-04T09:00:00+00:00",
+        tenant_id=tenant_id,
+        data_schema=f"{EXECUTION_REQUESTED_EVENT}.schema.json",
         data=data
         if data is not None
         else {"tenant_id": tenant_id, "session_id": session_id, "messages": []},
+        correlation_id="0197c5a5-0000-7000-8000-0000000000ff",
+        data_classification="CONFIDENTIAL",
     )
 
 
@@ -36,8 +40,30 @@ def test_execution_envelope_round_trips_cloudevents_fields() -> None:
     payload = envelope.to_dict()
     assert payload["specversion"] == "1.0"
     assert payload["id"] == "m-1"
+    assert payload["tenantid"] == envelope.tenant_id
+    assert payload["dataschema"] == envelope.data_schema
     assert payload["datacontenttype"] == "application/json"
     assert payload["partitionkey"] == envelope.partition_key
+    assert payload["correlationid"] == envelope.correlation_id
+    assert payload["dataclassification"] == "CONFIDENTIAL"
+
+
+def test_execution_envelope_omits_and_restores_optional_fields() -> None:
+    envelope = _envelope()
+    minimal = ExecutionEnvelope(
+        message_id=envelope.message_id,
+        source=envelope.source,
+        event_type=envelope.event_type,
+        partition_key=envelope.partition_key,
+        time=envelope.time,
+        tenant_id=envelope.tenant_id,
+        data_schema=envelope.data_schema,
+        data=envelope.data,
+    )
+    encoded = minimal.to_dict()
+    assert "causationid" not in encoded
+    assert "traceparent" not in encoded
+    assert ExecutionEnvelope.from_dict(encoded) == minimal
 
 
 def test_execution_envelope_rejects_foreign_or_incomplete_payloads() -> None:

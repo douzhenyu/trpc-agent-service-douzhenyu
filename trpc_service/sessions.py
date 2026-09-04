@@ -1,17 +1,16 @@
 """Session lease, fencing tokens and the authoritative Session Event commit.
 
 The authoritative commit runs in a single PostgreSQL transaction: it validates
-the fencing token and the expected Session version, appends the immutable
-Session Events, advances the Session State version and writes an Outbox record
-for downstream projections. A Worker that lost its lease or hit a version
-conflict cannot commit.
+the idempotency key (ADR-0012), the fencing token and the expected Session
+version, appends the immutable Session Events, advances the Session State
+version and writes an Outbox record for downstream projections. A Worker that
+lost its lease or hit a version conflict cannot commit.
 """
 
 from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
@@ -19,6 +18,7 @@ from trpc_service.admin_api.database import Connection, Database
 from trpc_service.execution_bus import (
     SESSION_EVENTS_COMMITTED_EVENT,
     WORKER_SOURCE,
+    insert_outbox_record,
     session_partition_key,
 )
 from trpc_service.ids import uuid7
@@ -70,12 +70,25 @@ async def create_session_if_missing(
     )
 
 
+async def _lock_session_version(
+    connection: Connection, tenant_id: UUID, session_id: str
+) -> int | None:
+    version: int | None = await connection.fetchval(
+        """SELECT version FROM tenant.agent_session
+        WHERE tenant_id=$1 AND id=$2 FOR UPDATE""",
+        tenant_id,
+        session_id,
+    )
+    return version
+
+
 class SessionLeaseManager:
     """Issue short leases with monotonic fencing tokens per Session.
 
     A lease is acquired per execution: the fencing token always increments on
     reacquisition, and a lease actively held by another owner is never stolen —
     rebalancing waits for expiry, and stale holders are fenced at commit time.
+    Renewal extends the same ownership epoch without bumping the token.
     """
 
     def __init__(self, database: Database, lease_ttl_seconds: float = DEFAULT_LEASE_TTL_SECONDS):
@@ -111,15 +124,31 @@ class SessionLeaseManager:
                     session_id,
                 )
                 raise SessionLeaseError(f"SESSION_LEASE_HELD:{holder}")
-            version = await connection.fetchval(
-                """SELECT version FROM tenant.agent_session
-                WHERE tenant_id=$1 AND id=$2 FOR UPDATE""",
-                tenant_id,
-                session_id,
-            )
+            version = await _lock_session_version(connection, tenant_id, session_id)
             if version is None:
                 raise SessionLeaseError("SESSION_NOT_FOUND")
             return LeaseGrant(fencing_token=int(token), session_version=int(version))
+
+    async def renew(
+        self, tenant_id: UUID, session_id: str, owner_id: str, fencing_token: int
+    ) -> None:
+        """Extend the caller's lease epoch; fail closed when it was already fenced."""
+
+        async with self._database.tenant_transaction(tenant_id) as connection:
+            token = await connection.fetchval(
+                """UPDATE tenant.session_lease
+                SET expires_at=now() + make_interval(secs => $4), renewed_at=now()
+                WHERE tenant_id=$1 AND session_id=$2 AND owner_id=$3
+                  AND fencing_token=$4 AND expires_at > now()
+                RETURNING fencing_token""",
+                tenant_id,
+                session_id,
+                owner_id,
+                fencing_token,
+                self._lease_ttl_seconds,
+            )
+        if token is None:
+            raise SessionLeaseError("SESSION_LEASE_INVALID")
 
 
 async def commit_session_events(
@@ -131,20 +160,38 @@ async def commit_session_events(
     fencing_token: int,
     expected_version: int,
     execution_id: UUID,
+    idempotency_key: str,
     events: list[SessionEvent],
-) -> int:
+    data_classification: str | None = None,
+) -> int | None:
     """Append authoritative Session Events or fail closed without any write.
 
-    Runs inside the caller's transaction: validates lease and expected version,
-    appends events at the next sequence numbers, advances the Session version
+    Runs inside the caller's transaction and validates, in order: the
+    idempotency key against the Agent Execution record, the fencing token
+    against the Session lease and the expected version against the Session.
+    Appends events at the next sequence numbers, advances the Session version
     and enqueues the Outbox record that drives downstream projections.
+
+    Returns the new Session version, or None when the execution already
+    committed under this idempotency key — the caller must then discard its
+    result instead of writing anything.
     """
 
     if not events:
         raise ValueError("a session commit requires at least one event")
+    status: str | None = await connection.fetchval(
+        """SELECT status FROM tenant.agent_execution
+        WHERE tenant_id=$1 AND message_id=$2 FOR UPDATE""",
+        tenant_id,
+        idempotency_key,
+    )
+    if status is None:
+        raise SessionLeaseError("EXECUTION_NOT_FOUND")
+    if status == "SUCCEEDED":
+        return None
     lease = await connection.fetchrow(
-        """SELECT owner_id,fencing_token,expires_at FROM tenant.session_lease
-        WHERE tenant_id=$1 AND session_id=$2 FOR UPDATE""",
+        """SELECT owner_id,fencing_token,expires_at <= now() AS expired
+        FROM tenant.session_lease WHERE tenant_id=$1 AND session_id=$2 FOR UPDATE""",
         tenant_id,
         session_id,
     )
@@ -152,15 +199,10 @@ async def commit_session_events(
         lease is None
         or str(lease["owner_id"]) != owner_id
         or int(lease["fencing_token"]) != fencing_token
-        or lease["expires_at"] <= datetime.now(UTC)
+        or bool(lease["expired"])
     ):
         raise SessionLeaseError("SESSION_LEASE_INVALID")
-    version = await connection.fetchval(
-        """SELECT version FROM tenant.agent_session
-        WHERE tenant_id=$1 AND id=$2 FOR UPDATE""",
-        tenant_id,
-        session_id,
-    )
+    version = await _lock_session_version(connection, tenant_id, session_id)
     if version is None:
         raise SessionLeaseError("SESSION_NOT_FOUND")
     if int(version) != expected_version:
@@ -189,17 +231,14 @@ async def commit_session_events(
         session_id,
         new_version,
     )
-    await connection.execute(
-        """INSERT INTO platform.outbox_record
-        (tenant_id,id,message_id,source,event_type,partition_key,payload)
-        VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS jsonb))""",
-        tenant_id,
-        uuid7(),
-        str(uuid7()),
-        WORKER_SOURCE,
-        SESSION_EVENTS_COMMITTED_EVENT,
-        session_partition_key(str(tenant_id), session_id),
-        json.dumps(
+    await insert_outbox_record(
+        connection,
+        tenant_id=str(tenant_id),
+        message_id=str(uuid7()),
+        source=WORKER_SOURCE,
+        event_type=SESSION_EVENTS_COMMITTED_EVENT,
+        partition_key=session_partition_key(str(tenant_id), session_id),
+        payload_json=json.dumps(
             {
                 "tenant_id": str(tenant_id),
                 "session_id": session_id,
@@ -209,5 +248,8 @@ async def commit_session_events(
                 "event_kinds": [event.kind for event in events],
             }
         ),
+        causation_id=idempotency_key,
+        correlation_id=str(execution_id),
+        data_classification=data_classification,
     )
     return new_version

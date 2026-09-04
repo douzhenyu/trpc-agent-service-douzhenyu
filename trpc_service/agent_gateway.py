@@ -3,13 +3,15 @@
 The gateway resolves the environment Deployment to a fixed Agent Release, then
 commits the Agent Execution business state and the Outbox record in a single
 PostgreSQL transaction. The Outbox dispatcher publishes to the execution bus
-afterwards; a duplicate submission dedupes on the message id and never produces
-a second execution.
+afterwards; a duplicate submission dedupes on the message id and a resubmission
+with a different payload is rejected so one message id never maps to two
+business payloads.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -26,8 +28,10 @@ from trpc_service.execution_bus import (
     EXECUTION_REQUESTED_EVENT,
     GATEWAY_SOURCE,
     ExecutionBusPublisher,
+    ExecutionRequestedData,
     InMemoryExecutionBus,
     OutboxDispatcher,
+    insert_outbox_record,
     session_partition_key,
 )
 from trpc_service.ids import uuid7
@@ -64,7 +68,7 @@ class AgentGatewaySettings(BaseSettings):
             raise RuntimeError(f"Agent Gateway configuration is incomplete: {', '.join(missing)}")
 
 
-class SessionExecutionPayload(BaseModel):
+class AgentExecutionSubmission(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tenant_id: UUID
@@ -75,7 +79,7 @@ class SessionExecutionPayload(BaseModel):
     message_id: str | None = Field(default=None, min_length=1, max_length=256)
 
 
-class SessionExecutionAccepted(BaseModel):
+class AgentExecutionAccepted(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     execution_id: UUID
@@ -84,90 +88,117 @@ class SessionExecutionAccepted(BaseModel):
     deduplicated: bool = False
 
 
-class SessionExecutionSubmitter:
+def _payload_hash(submission: AgentExecutionSubmission) -> str:
+    """Hash the business payload so one message id cannot carry two payloads."""
+
+    canonical = json.dumps(
+        {
+            "tenant_id": str(submission.tenant_id),
+            "application_id": str(submission.application_id),
+            "environment": submission.environment,
+            "session_id": submission.session_id,
+            "messages": submission.messages,
+        },
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(canonical.encode()).hexdigest()
+
+
+class AgentExecutionSubmitter:
     """Commits the execution business state and its Outbox record in one transaction."""
 
     def __init__(self, database: Database, deployments: DatabaseDeploymentRouteResolver):
         self._database = database
         self._deployments = deployments
 
-    async def submit(self, payload: SessionExecutionPayload) -> SessionExecutionAccepted:
+    async def submit(self, submission: AgentExecutionSubmission) -> AgentExecutionAccepted:
         release_id = await self._deployments.resolve(
-            str(payload.tenant_id),
-            str(payload.application_id),
-            payload.environment,
-            payload.session_id,
+            str(submission.tenant_id),
+            str(submission.application_id),
+            submission.environment,
+            submission.session_id,
         )
         if release_id is None:
             raise AgentGatewayError("DEPLOYMENT_NOT_FOUND")
-        message_id = payload.message_id or str(uuid7())
-        async with self._database.tenant_transaction(payload.tenant_id) as connection:
+        message_id = submission.message_id or str(uuid7())
+        payload_hash = _payload_hash(submission)
+        async with self._database.tenant_transaction(submission.tenant_id) as connection:
+            classification_row = await connection.fetchrow(
+                """SELECT id,data_classification FROM tenant.agent_release
+                WHERE tenant_id=$1 AND id=$2""",
+                submission.tenant_id,
+                UUID(release_id),
+            )
+            if classification_row is None:
+                raise AgentGatewayError("DEPLOYMENT_NOT_FOUND")
             await create_session_if_missing(
-                connection, payload.tenant_id, payload.application_id, payload.session_id
+                connection, submission.tenant_id, submission.application_id, submission.session_id
             )
             execution_id = await connection.fetchval(
                 """INSERT INTO tenant.agent_execution
-                (tenant_id,id,application_id,release_id,environment,session_id,message_id)
-                VALUES ($1,$2,$3,$4,$5,$6,$7)
+                (tenant_id,id,application_id,release_id,environment,session_id,message_id,
+                payload_hash)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                 ON CONFLICT (tenant_id,message_id) DO NOTHING RETURNING id""",
-                payload.tenant_id,
+                submission.tenant_id,
                 uuid7(),
-                payload.application_id,
+                submission.application_id,
                 UUID(release_id),
-                payload.environment,
-                payload.session_id,
+                submission.environment,
+                submission.session_id,
                 message_id,
+                payload_hash,
             )
             if execution_id is None:
-                execution_id = await connection.fetchval(
-                    """SELECT id FROM tenant.agent_execution
+                existing = await connection.fetchrow(
+                    """SELECT id,payload_hash FROM tenant.agent_execution
                     WHERE tenant_id=$1 AND message_id=$2""",
-                    payload.tenant_id,
+                    submission.tenant_id,
                     message_id,
                 )
-                assert execution_id is not None
-                return SessionExecutionAccepted(
-                    execution_id=execution_id,
+                if existing is None or str(existing["payload_hash"]) != payload_hash:
+                    raise AgentGatewayError("MESSAGE_PAYLOAD_CONFLICT")
+                return AgentExecutionAccepted(
+                    execution_id=existing["id"],
                     release_id=UUID(release_id),
-                    session_id=payload.session_id,
+                    session_id=submission.session_id,
                     deduplicated=True,
                 )
-            await connection.execute(
-                """INSERT INTO platform.outbox_record
-                (tenant_id,id,message_id,source,event_type,partition_key,payload)
-                VALUES ($1,$2,$3,$4,$5,$6,CAST($7 AS jsonb))""",
-                payload.tenant_id,
-                uuid7(),
-                message_id,
-                GATEWAY_SOURCE,
-                EXECUTION_REQUESTED_EVENT,
-                session_partition_key(str(payload.tenant_id), payload.session_id),
-                json.dumps(
-                    {
-                        "tenant_id": str(payload.tenant_id),
-                        "application_id": str(payload.application_id),
-                        "execution_id": str(execution_id),
-                        "release_id": release_id,
-                        "environment": payload.environment,
-                        "session_id": payload.session_id,
-                        "messages": payload.messages,
-                    }
-                ),
+            data = ExecutionRequestedData(
+                tenant_id=str(submission.tenant_id),
+                application_id=str(submission.application_id),
+                execution_id=str(execution_id),
+                release_id=release_id,
+                environment=submission.environment,
+                session_id=submission.session_id,
+                messages=submission.messages,
             )
-            return SessionExecutionAccepted(
+            await insert_outbox_record(
+                connection,
+                tenant_id=str(submission.tenant_id),
+                message_id=message_id,
+                source=GATEWAY_SOURCE,
+                event_type=EXECUTION_REQUESTED_EVENT,
+                partition_key=session_partition_key(
+                    str(submission.tenant_id), submission.session_id
+                ),
+                payload_json=json.dumps(data.model_dump()),
+                correlation_id=str(execution_id),
+                data_classification=str(classification_row["data_classification"]),
+            )
+            return AgentExecutionAccepted(
                 execution_id=execution_id,
                 release_id=UUID(release_id),
-                session_id=payload.session_id,
+                session_id=submission.session_id,
             )
 
 
 def create_app(
     settings: AgentGatewaySettings | None = None,
     *,
-    database: Database | None = None,
-    submitter: SessionExecutionSubmitter | None = None,
     bus: ExecutionBusPublisher | None = None,
-    dispatcher: OutboxDispatcher | None = None,
 ) -> FastAPI:
     """Create the data-plane entry that accepts executions through the Outbox."""
 
@@ -175,28 +206,22 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
-        if submitter is not None:
-            application.state.submitter = submitter
-            yield
-            return
         configured.validate_runtime()
-        active_database = database or Database(configured.database_url)
-        if database is None:
-            await active_database.open()
-        active_submitter = SessionExecutionSubmitter(
-            active_database,
-            DatabaseDeploymentRouteResolver(active_database),
+        database = Database(configured.database_url)
+        await database.open()
+        application.state.submitter = AgentExecutionSubmitter(
+            database,
+            DatabaseDeploymentRouteResolver(database),
         )
-        application.state.submitter = active_submitter
         active_bus = bus or InMemoryExecutionBus(partition_count=configured.partition_count)
-        active_dispatcher = dispatcher or OutboxDispatcher(active_database, active_bus)
+        dispatcher = OutboxDispatcher(database, active_bus)
         dispatch_task: asyncio.Task[None] | None = None
         if configured.dispatch_interval_seconds > 0:
 
             async def dispatch_loop() -> None:
                 while True:
                     await asyncio.sleep(configured.dispatch_interval_seconds)
-                    await active_dispatcher.dispatch_pending()
+                    await dispatcher.dispatch_pending()
 
             dispatch_task = asyncio.create_task(dispatch_loop())
         try:
@@ -204,8 +229,7 @@ def create_app(
         finally:
             if dispatch_task is not None:
                 dispatch_task.cancel()
-            if database is None:
-                await active_database.close()
+            await database.close()
 
     application = FastAPI(
         title="tRPC-Agent Platform agent-gateway",
@@ -230,15 +254,15 @@ def create_app(
         return health()
 
     @application.post(
-        "/internal/v1/session-executions",
-        response_model=SessionExecutionAccepted,
+        "/internal/v1/agent-executions",
+        response_model=AgentExecutionAccepted,
     )
     async def submit_execution(
-        payload: SessionExecutionPayload, response: Response
-    ) -> SessionExecutionAccepted:
-        active_submitter = cast(SessionExecutionSubmitter, application.state.submitter)
+        submission: AgentExecutionSubmission, response: Response
+    ) -> AgentExecutionAccepted:
+        submitter = cast(AgentExecutionSubmitter, application.state.submitter)
         try:
-            accepted = await active_submitter.submit(payload)
+            accepted = await submitter.submit(submission)
         except AgentGatewayError as error:
             raise HTTPException(status_code=409, detail=error.code) from error
         response.status_code = 200 if accepted.deduplicated else 202
