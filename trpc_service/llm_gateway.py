@@ -169,6 +169,7 @@ class OpaOutboundPolicy:
                     "input": {
                         "tenant_id": request.tenant_id,
                         "model_alias": profile.alias,
+                        "endpoint_url": profile.endpoint_url,
                         "data_classification": request.data_classification,
                         "region": request.region,
                         "messages": request.messages,
@@ -177,7 +178,14 @@ class OpaOutboundPolicy:
             )
             response.raise_for_status()
             result = response.json().get("result")
-            return result is True or (isinstance(result, Mapping) and result.get("allow") is True)
+            if result is True:
+                return request.data_classification is not DataClassification.CONFIDENTIAL
+            if not isinstance(result, Mapping) or result.get("allow") is not True:
+                return False
+            return (
+                request.data_classification is not DataClassification.CONFIDENTIAL
+                or result.get("private_endpoint") is True
+            )
         except (httpx.HTTPError, ValueError, AttributeError):
             return False
 

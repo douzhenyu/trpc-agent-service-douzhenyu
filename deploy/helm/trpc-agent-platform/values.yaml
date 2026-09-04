@@ -55,7 +55,7 @@ agentGateway:
   databaseSecretKey: url
   vaultUrl: https://openbao.platform.svc
   vaultKubernetesRole: agent-gateway
-  opaUrl: http://opa.platform.svc
+  opaUrl: http://127.0.0.1:8181
 
 zeroTrust:
   enabled: true

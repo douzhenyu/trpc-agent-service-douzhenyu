@@ -203,6 +203,57 @@ def test_opa_policy_fails_closed_and_never_calls_provider_when_denied() -> None:
     assert provider_calls == 0
 
 
+def test_opa_policy_requires_an_explicit_private_endpoint_for_confidential_content() -> None:
+    tenant_id = str(uuid4())
+    provider_calls = 0
+
+    async def opa(request: httpx.Request) -> httpx.Response:
+        assert json.loads(request.content)["input"]["endpoint_url"] == "https://provider.test/v1"
+        return httpx.Response(200, json={"result": {"allow": True}})
+
+    async def provider(_request: httpx.Request) -> httpx.Response:
+        nonlocal provider_calls
+        provider_calls += 1
+        return httpx.Response(200, json={"choices": []})
+
+    profile = ModelProfile(
+        tenant_id=tenant_id,
+        alias="balanced",
+        provider_model="fake-balanced",
+        endpoint_url="https://provider.test/v1",
+        secret_ref=f"vault://tenant/{tenant_id}/llm/openai#api_key",
+        data_classification=DataClassification.CONFIDENTIAL,
+        region="cn-north-1",
+        fallback_aliases=(),
+        requests_per_minute=60,
+    )
+    gateway = LLMGateway(
+        InMemoryModelProfileResolver([profile]),
+        FakeSecretProvider(),
+        httpx.AsyncClient(transport=httpx.MockTransport(provider)),
+        policy=OpaOutboundPolicy(
+            httpx.AsyncClient(
+                base_url="https://opa.test",
+                transport=httpx.MockTransport(opa),
+            )
+        ),
+    )
+
+    with pytest.raises(ModelGatewayError, match="MODEL_POLICY_DENIED"):
+        asyncio.run(
+            gateway.complete(
+                GatewayRequest(
+                    tenant_id=tenant_id,
+                    model_alias="balanced",
+                    messages=[{"role": "user", "content": "confidential"}],
+                    data_classification=DataClassification.CONFIDENTIAL,
+                    region="cn-north-1",
+                )
+            )
+        )
+    assert provider_calls == 0
+
+
 def test_agent_worker_uses_release_route_and_rejects_unreleased_fallbacks() -> None:
     tenant_id = str(uuid4())
     release_id = str(uuid4())
