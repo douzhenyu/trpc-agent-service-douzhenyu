@@ -2,15 +2,21 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 from uuid import uuid4
 
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.exc import SQLAlchemyError
 
+from trpc_service.admin_api.schemas import AgentReleaseSource
 from trpc_service.agent_worker import (
     AgentExecutionRequest,
     AgentWorker,
+    AgentWorkerSettings,
+    DatabaseDeploymentRouteResolver,
+    DatabaseReleaseRouteResolver,
     HttpGatewayClient,
     InMemoryReleaseRouteResolver,
     ReleaseRoute,
@@ -45,6 +51,57 @@ class FakeWorker:
         assert request.messages == [{"role": "user", "content": "hello"}]
         return GatewayResult("economy", True, {"choices": [{"message": {"content": "reply"}}]})
 
+    async def complete_for_deployment(
+        self,
+        _tenant_id: str,
+        _application_id: str,
+        environment: str,
+        session_id: str,
+        messages: list[dict[str, str]],
+    ) -> GatewayResult:
+        assert environment == "STAGING"
+        assert session_id == "stable-session"
+        assert messages == [{"role": "user", "content": "hello"}]
+        return GatewayResult("balanced", False, {"choices": []})
+
+
+class MutableDeploymentResolver:
+    def __init__(self, release_id: str) -> None:
+        self.release_id = release_id
+        self.resolved = asyncio.Event()
+
+    async def resolve(
+        self, _tenant_id: str, _application_id: str, _environment: str, _session_id: str
+    ) -> str | None:
+        self.resolved.set()
+        return self.release_id
+
+
+class BlockingGateway:
+    def __init__(self) -> None:
+        self.requests: list[GatewayRequest] = []
+        self.release_completion = asyncio.Event()
+
+    async def complete(self, request: GatewayRequest) -> GatewayResult:
+        self.requests.append(request)
+        await self.release_completion.wait()
+        return GatewayResult("balanced", False, {"choices": []})
+
+
+class CachedRouteDatabase:
+    def __init__(self, row: dict[str, object] | None) -> None:
+        self.row = row
+        self.unavailable = False
+
+    @asynccontextmanager
+    async def tenant_transaction(self, _tenant_id: object):
+        yield self
+
+    async def fetchrow(self, _query: str, *_args: object) -> dict[str, object] | None:
+        if self.unavailable:
+            raise SQLAlchemyError("control plane unavailable")
+        return self.row
+
 
 def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fallback() -> None:
     tenant_id, release_id = str(uuid4()), str(uuid4())
@@ -72,6 +129,49 @@ def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fal
     assert response.status_code == 200
     assert response.json()["model_alias"] == "economy"
     assert response.json()["fallback_used"] is True
+
+
+def test_worker_deployment_execution_api_and_health_endpoints_are_publicly_available() -> None:
+    tenant_id, application_id = str(uuid4()), str(uuid4())
+    with TestClient(create_app(worker=FakeWorker())) as client:
+        response = client.post(
+            "/internal/v1/deployment-executions",
+            json={
+                "tenant_id": tenant_id,
+                "application_id": application_id,
+                "environment": "STAGING",
+                "session_id": "stable-session",
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+
+        assert response.status_code == 200
+        assert response.json()["model_alias"] == "balanced"
+        assert client.get("/health/live").status_code == 200
+        assert client.get("/health/ready").status_code == 200
+
+
+def test_worker_rejects_unknown_release_and_unavailable_deployment_routing() -> None:
+    tenant_id, application_id, release_id = str(uuid4()), str(uuid4()), str(uuid4())
+    worker = AgentWorker(FakeWorker(), InMemoryReleaseRouteResolver([]))
+
+    with pytest.raises(ModelGatewayError, match="RELEASE_NOT_FOUND"):
+        asyncio.run(worker.complete(AgentExecutionRequest(tenant_id, release_id, [])))
+    with pytest.raises(ModelGatewayError, match="DEPLOYMENT_ROUTING_UNAVAILABLE"):
+        asyncio.run(
+            worker.complete_for_deployment(
+                tenant_id, application_id, "STAGING", "session", [{"role": "user", "content": "x"}]
+            )
+        )
+
+
+def test_worker_runtime_settings_require_both_runtime_dependencies() -> None:
+    with pytest.raises(RuntimeError, match="DATABASE_URL, LLM_GATEWAY_URL"):
+        AgentWorkerSettings().validate_runtime()
+
+    AgentWorkerSettings(
+        database_url="postgresql://test", llm_gateway_url="https://gateway.test"
+    ).validate_runtime()
 
 
 def test_worker_gateway_client_sends_only_release_identity_and_messages() -> None:
@@ -319,3 +419,119 @@ def test_agent_worker_uses_release_route_and_rejects_unreleased_fallbacks() -> N
             )
         )
     assert primary_calls == 1
+
+
+def test_execution_started_before_a_rollback_keeps_its_resolved_release() -> None:
+    tenant_id, application_id = str(uuid4()), str(uuid4())
+    old_release, new_release = str(uuid4()), str(uuid4())
+    deployments = MutableDeploymentResolver(old_release)
+    gateway = BlockingGateway()
+    worker = AgentWorker(
+        gateway,
+        InMemoryReleaseRouteResolver(
+            [
+                ReleaseRoute(
+                    old_release,
+                    tenant_id,
+                    "balanced",
+                    DataClassification.INTERNAL,
+                    "cn-north-1",
+                    frozenset(),
+                ),
+                ReleaseRoute(
+                    new_release,
+                    tenant_id,
+                    "balanced",
+                    DataClassification.INTERNAL,
+                    "cn-north-1",
+                    frozenset(),
+                ),
+            ]
+        ),
+        deployments=deployments,
+    )
+
+    async def execute_then_rollback() -> GatewayResult:
+        task = asyncio.create_task(
+            worker.complete_for_deployment(
+                tenant_id,
+                application_id,
+                "PRODUCTION",
+                "stable-session",
+                [{"role": "user", "content": "hello"}],
+            )
+        )
+        await deployments.resolved.wait()
+        deployments.release_id = new_release
+        gateway.release_completion.set()
+        return await task
+
+    result = asyncio.run(execute_then_rollback())
+
+    assert result.model_alias == "balanced"
+    assert [request.release_id for request in gateway.requests] == [old_release]
+
+
+def test_database_route_resolvers_use_immutable_snapshots_during_control_plane_outage() -> None:
+    tenant_id, application_id, release_id = str(uuid4()), str(uuid4()), str(uuid4())
+    profile = {
+        "tenant_id": tenant_id,
+        "alias": "balanced",
+        "provider_model": "fake-balanced",
+        "endpoint_url": "https://fake-llm.test/v1",
+        "secret_ref": f"vault://tenant/{tenant_id}/llm/balanced#api_key",
+        "data_classification": "CONFIDENTIAL",
+        "region": "cn-north-1",
+        "fallback_aliases": [],
+        "requests_per_minute": 60,
+    }
+    release_database = CachedRouteDatabase(
+        {
+            "id": release_id,
+            "tenant_id": tenant_id,
+            "model_alias": "balanced",
+            "data_classification": "INTERNAL",
+            "region": "cn-north-1",
+            "fallback_aliases": [],
+            "model_profiles": [profile],
+        }
+    )
+    deployment_database = CachedRouteDatabase(
+        {
+            "release_id": release_id,
+            "previous_release_id": None,
+            "rollout_percentage": 100,
+        }
+    )
+    releases = DatabaseReleaseRouteResolver(release_database)  # type: ignore[arg-type]
+    deployments = DatabaseDeploymentRouteResolver(deployment_database)  # type: ignore[arg-type]
+
+    async def resolve_before_and_during_outage() -> tuple[object, object, object, object]:
+        first_release = await releases.resolve(tenant_id, release_id)
+        first_deployment = await deployments.resolve(
+            tenant_id, application_id, "PRODUCTION", "stable-session"
+        )
+        release_database.unavailable = deployment_database.unavailable = True
+        cached_release = await releases.resolve(tenant_id, release_id)
+        cached_deployment = await deployments.resolve(
+            tenant_id, application_id, "PRODUCTION", "stable-session"
+        )
+        return first_release, first_deployment, cached_release, cached_deployment
+
+    first_release, first_deployment, cached_release, cached_deployment = asyncio.run(
+        resolve_before_and_during_outage()
+    )
+
+    assert cached_release == first_release
+    assert cached_deployment == first_deployment == release_id
+
+
+def test_release_source_can_distinguish_a_legacy_snapshot_from_a_draft_release() -> None:
+    source = AgentReleaseSource(
+        draft_version=None,
+        actor="legacy-migration",
+        kind="LEGACY",
+    )
+
+    assert source.draft_version is None
+    assert source.kind == "LEGACY"

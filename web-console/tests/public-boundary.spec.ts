@@ -39,7 +39,7 @@ test("应急管理员可通过 Web Console 完成租户管理闭环", async ({
   await expect(page.getByText(`Smoke Agent (${agentSlug})`)).toBeVisible();
 
   await page.getByLabel("Draft 指令").fill("Answer smoke-test questions.");
-  await page.getByLabel("模型别名").fill("balanced");
+  await page.getByLabel("模型别名", { exact: true }).fill("balanced");
   await page.getByRole("button", { name: "创建 Agent Draft" }).click();
   await expect(page.getByText("Draft 版本 1 · 不承载生产流量")).toBeVisible();
   await page.getByRole("button", { name: "校验 Agent Draft" }).click();

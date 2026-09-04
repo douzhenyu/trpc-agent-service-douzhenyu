@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -12,6 +13,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.exc import SQLAlchemyError
 
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
@@ -40,6 +42,13 @@ class ReleaseRoute:
 
 
 @dataclass(frozen=True)
+class DeploymentRoute:
+    release_id: str
+    previous_release_id: str | None
+    rollout_percentage: int
+
+
+@dataclass(frozen=True)
 class AgentExecutionRequest:
     tenant_id: str
     release_id: str
@@ -48,6 +57,12 @@ class AgentExecutionRequest:
 
 class ReleaseRouteResolver(Protocol):
     async def resolve(self, tenant_id: str, release_id: str) -> ReleaseRoute | None: ...
+
+
+class DeploymentRouteResolver(Protocol):
+    async def resolve(
+        self, tenant_id: str, application_id: str, environment: str, session_id: str
+    ) -> str | None: ...
 
 
 class FallbackAuditor(Protocol):
@@ -91,20 +106,27 @@ class DatabaseReleaseRouteResolver:
 
     def __init__(self, database: Database) -> None:
         self._database = database
+        self._routes: dict[tuple[str, str], ReleaseRoute] = {}
 
     async def resolve(self, tenant_id: str, release_id: str) -> ReleaseRoute | None:
         try:
             parsed_tenant_id, parsed_release_id = UUID(tenant_id), UUID(release_id)
         except ValueError:
             return None
-        async with self._database.tenant_transaction(parsed_tenant_id) as connection:
-            row = await connection.fetchrow(
-                """SELECT id,tenant_id,model_alias,data_classification,region,fallback_aliases,
-                model_profiles
-                FROM tenant.agent_release WHERE tenant_id=$1 AND id=$2""",
-                parsed_tenant_id,
-                parsed_release_id,
-            )
+        cache_key = (tenant_id, release_id)
+        if cached := self._routes.get(cache_key):
+            return cached
+        try:
+            async with self._database.tenant_transaction(parsed_tenant_id) as connection:
+                row = await connection.fetchrow(
+                    """SELECT id,tenant_id,model_alias,data_classification,region,fallback_aliases,
+                    model_profiles
+                    FROM tenant.agent_release WHERE tenant_id=$1 AND id=$2""",
+                    parsed_tenant_id,
+                    parsed_release_id,
+                )
+        except SQLAlchemyError:
+            return self._routes.get(cache_key)
         if row is None:
             return None
         snapshots = tuple(
@@ -123,7 +145,7 @@ class DatabaseReleaseRouteResolver:
         )
         if not snapshots:
             return None
-        return ReleaseRoute(
+        route = ReleaseRoute(
             release_id=str(row["id"]),
             tenant_id=str(row["tenant_id"]),
             model_alias=str(row["model_alias"]),
@@ -132,18 +154,96 @@ class DatabaseReleaseRouteResolver:
             allowed_fallback_aliases=frozenset(str(alias) for alias in row["fallback_aliases"]),
             profile_snapshots=snapshots,
         )
+        self._routes[cache_key] = route
+        return route
+
+
+class DatabaseDeploymentRouteResolver:
+    """Resolve an environment Deployment once per execution using a stable Session bucket."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+        self._routes: dict[tuple[str, str, str], DeploymentRoute] = {}
+
+    async def resolve(
+        self, tenant_id: str, application_id: str, environment: str, session_id: str
+    ) -> str | None:
+        try:
+            parsed_tenant_id, parsed_application_id = UUID(tenant_id), UUID(application_id)
+        except ValueError:
+            return None
+        cache_key = (tenant_id, application_id, environment)
+        try:
+            async with self._database.tenant_transaction(parsed_tenant_id) as connection:
+                row = await connection.fetchrow(
+                    """SELECT release_id,previous_release_id,rollout_percentage
+                    FROM tenant.agent_deployment
+                    WHERE tenant_id=$1 AND application_id=$2 AND environment=$3 AND status='ACTIVE'
+                    ORDER BY activated_at DESC, id DESC LIMIT 1""",
+                    parsed_tenant_id,
+                    parsed_application_id,
+                    environment,
+                )
+        except SQLAlchemyError:
+            deployment = self._routes.get(cache_key)
+            if deployment is None:
+                return None
+        else:
+            if row is None:
+                return None
+            deployment = DeploymentRoute(
+                release_id=str(row["release_id"]),
+                previous_release_id=(
+                    str(row["previous_release_id"])
+                    if row["previous_release_id"] is not None
+                    else None
+                ),
+                rollout_percentage=int(row["rollout_percentage"]),
+            )
+            self._routes[cache_key] = deployment
+        previous_release_id = deployment.previous_release_id
+        if (
+            previous_release_id is not None
+            and deployment.rollout_percentage < 100
+            and _session_rollout_bucket(session_id) >= deployment.rollout_percentage
+        ):
+            return previous_release_id
+        return deployment.release_id
+
+
+def _session_rollout_bucket(session_id: str) -> int:
+    return int.from_bytes(hashlib.sha256(session_id.encode()).digest()[:8], "big") % 100
 
 
 class AgentWorker:
-    """Deep runtime module: callers supply only a released execution and messages."""
+    """Deep runtime module that resolves a Release once before running an execution."""
 
     def __init__(
         self,
         gateway: GatewayCompletionClient,
         releases: ReleaseRouteResolver,
         fallback_auditor: FallbackAuditor | None = None,
+        deployments: DeploymentRouteResolver | None = None,
     ) -> None:
         self._gateway, self._releases, self._fallback_auditor = gateway, releases, fallback_auditor
+        self._deployments = deployments
+
+    async def complete_for_deployment(
+        self,
+        tenant_id: str,
+        application_id: str,
+        environment: str,
+        session_id: str,
+        messages: list[dict[str, str]],
+    ) -> GatewayResult:
+        if self._deployments is None:
+            raise ModelGatewayError("DEPLOYMENT_ROUTING_UNAVAILABLE")
+        release_id = await self._deployments.resolve(
+            tenant_id, application_id, environment, session_id
+        )
+        if release_id is None:
+            raise ModelGatewayError("DEPLOYMENT_NOT_FOUND")
+        return await self.complete(AgentExecutionRequest(tenant_id, release_id, messages))
 
     async def complete(self, request: AgentExecutionRequest) -> GatewayResult:
         route = await self._releases.resolve(request.tenant_id, request.release_id)
@@ -226,6 +326,16 @@ class WorkerExecutionPayload(BaseModel):
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
 
 
+class DeploymentExecutionPayload(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: UUID
+    application_id: UUID
+    environment: str = Field(pattern=r"^(DEVELOPMENT|STAGING|PRODUCTION)$")
+    session_id: str = Field(min_length=1, max_length=512)
+    messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
+
+
 class WorkerExecutionResponse(BaseModel):
     model_config = ConfigDict(frozen=True)
 
@@ -254,6 +364,7 @@ def create_app(
             HttpGatewayClient(gateway_client),
             DatabaseReleaseRouteResolver(database),
             DatabaseFallbackAuditor(database),
+            DatabaseDeploymentRouteResolver(database),
         )
         try:
             yield
@@ -292,6 +403,24 @@ def create_app(
                     release_id=str(payload.release_id),
                     messages=payload.messages,
                 )
+            )
+        except ModelGatewayError as error:
+            raise HTTPException(status_code=409, detail=error.code) from error
+        return WorkerExecutionResponse(
+            model_alias=result.model_alias,
+            fallback_used=result.fallback_used,
+            completion=result.completion,
+        )
+
+    @application.post("/internal/v1/deployment-executions", response_model=WorkerExecutionResponse)
+    async def execute_deployment(payload: DeploymentExecutionPayload) -> WorkerExecutionResponse:
+        try:
+            result = await application.state.worker.complete_for_deployment(
+                str(payload.tenant_id),
+                str(payload.application_id),
+                payload.environment,
+                payload.session_id,
+                payload.messages,
             )
         except ModelGatewayError as error:
             raise HTTPException(status_code=409, detail=error.code) from error

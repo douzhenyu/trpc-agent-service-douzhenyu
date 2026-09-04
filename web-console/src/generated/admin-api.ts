@@ -215,6 +215,58 @@ export interface paths {
         patch: operations["update_application_api_v1_tenants__tenant_id__agent_applications__application_id__patch"];
         trace?: never;
     };
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Deployments */
+        get: operations["list_deployments_api_v1_tenants__tenant_id__agent_applications__application_id__deployments_get"];
+        put?: never;
+        /** Create Deployment */
+        post: operations["create_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/approve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Approve Deployment */
+        post: operations["approve_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__approve_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rollback Deployment */
+        post: operations["rollback_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__rollback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/draft": {
         parameters: {
             query?: never;
@@ -259,7 +311,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Releases */
+        get: operations["list_releases_api_v1_tenants__tenant_id__agent_applications__application_id__releases_get"];
         put?: never;
         /** Publish Release */
         post: operations["publish_release_api_v1_tenants__tenant_id__agent_applications__application_id__releases_post"];
@@ -369,6 +422,86 @@ export interface components {
             /** Slug */
             slug?: string | null;
         };
+        /** AgentDeploymentCreate */
+        AgentDeploymentCreate: {
+            /**
+             * Environment
+             * @enum {string}
+             */
+            environment: "DEVELOPMENT" | "STAGING" | "PRODUCTION";
+            /**
+             * Release Id
+             * Format: uuid
+             */
+            release_id: string;
+            /** Rollout Percentage */
+            rollout_percentage: number;
+        };
+        /** AgentDeploymentList */
+        AgentDeploymentList: {
+            /** Items */
+            items: components["schemas"]["AgentDeploymentResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** AgentDeploymentResponse */
+        AgentDeploymentResponse: {
+            /** Activated At */
+            activated_at: string | null;
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /** Approver */
+            approver: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Environment
+             * @enum {string}
+             */
+            environment: "DEVELOPMENT" | "STAGING" | "PRODUCTION";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Initiator */
+            initiator: string;
+            /** Previous Release Id */
+            previous_release_id: string | null;
+            /**
+             * Release Id
+             * Format: uuid
+             */
+            release_id: string;
+            /** Rollout Percentage */
+            rollout_percentage: number;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PENDING_APPROVAL" | "ACTIVE";
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Version */
+            version: number;
+        };
+        /** AgentDeploymentRollback */
+        AgentDeploymentRollback: {
+            /**
+             * Release Id
+             * Format: uuid
+             */
+            release_id: string;
+        };
         /** AgentDraftCreate */
         AgentDraftCreate: {
             /** Governance Policy Ref */
@@ -460,6 +593,13 @@ export interface components {
             /** Region */
             region: string;
         };
+        /** AgentReleaseList */
+        AgentReleaseList: {
+            /** Items */
+            items: components["schemas"]["AgentReleaseResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
         /** AgentReleaseResponse */
         AgentReleaseResponse: {
             /**
@@ -467,6 +607,8 @@ export interface components {
              * Format: uuid
              */
             application_id: string;
+            /** Content Hash */
+            content_hash: string;
             /**
              * Created At
              * Format: date-time
@@ -477,6 +619,10 @@ export interface components {
              * @enum {string}
              */
             data_classification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
+            /** Draft Snapshot */
+            draft_snapshot: {
+                [key: string]: unknown;
+            };
             /** Fallback Aliases */
             fallback_aliases: string[];
             /**
@@ -486,13 +632,32 @@ export interface components {
             id: string;
             /** Model Alias */
             model_alias: string;
+            /** Model Profiles */
+            model_profiles: {
+                [key: string]: unknown;
+            }[];
             /** Region */
             region: string;
+            source: components["schemas"]["AgentReleaseSource"];
             /**
              * Tenant Id
              * Format: uuid
              */
             tenant_id: string;
+            /** Version */
+            version: number;
+        };
+        /** AgentReleaseSource */
+        AgentReleaseSource: {
+            /** Actor */
+            actor: string;
+            /** Draft Version */
+            draft_version?: number | null;
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "DRAFT" | "LEGACY";
         };
         /** AuditEventList */
         AuditEventList: {
@@ -2081,6 +2246,410 @@ export interface operations {
             };
         };
     };
+    list_deployments_api_v1_tenants__tenant_id__agent_applications__application_id__deployments_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeploymentList"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match"?: string | null;
+            };
+            path: {
+                tenant_id: string;
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentDeploymentCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeploymentResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeploymentResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Version precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Version precondition required */
+            428: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    approve_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__approve_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                tenant_id: string;
+                application_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    /** @description Quoted current resource version */
+                    ETag?: string;
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeploymentResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Version precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    rollback_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__rollback_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+                "If-Match": string;
+            };
+            path: {
+                tenant_id: string;
+                application_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AgentDeploymentRollback"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeploymentResponse"];
+                };
+            };
+            /** @description Accepted */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDeploymentResponse"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Version precondition failed */
+            412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     get_draft_api_v1_tenants__tenant_id__agent_applications__application_id__draft_get: {
         parameters: {
             query?: never;
@@ -2509,6 +3078,77 @@ export interface operations {
             };
             /** @description Version precondition failed */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_releases_api_v1_tenants__tenant_id__agent_applications__application_id__releases_get: {
+        parameters: {
+            query?: {
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentReleaseList"];
+                };
+            };
+            /** @description Invalid request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
                 headers: {
                     [name: string]: unknown;
                 };

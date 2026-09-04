@@ -59,6 +59,7 @@ async def _exercise_isolation() -> None:
         )
         assert [row["relname"] for row in tenant_tables] == [
             "agent_application",
+            "agent_deployment",
             "agent_draft",
             "agent_release",
             "member",
@@ -120,8 +121,8 @@ async def _exercise_isolation() -> None:
             )
             await app.execute(
                 """INSERT INTO tenant.agent_release
-                (tenant_id,id,application_id,model_alias,data_classification,region)
-                VALUES ($1,$2,$3,'balanced','INTERNAL','cn-north-1')""",
+                (tenant_id,id,application_id,model_alias,data_classification,region,release_version)
+                VALUES ($1,$2,$3,'balanced','INTERNAL','cn-north-1',1)""",
                 tenant_a,
                 uuid4(),
                 application_id,
@@ -142,6 +143,7 @@ async def _exercise_isolation() -> None:
             assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.agent_application") == 0
+            assert await app.fetchval("SELECT count(*) FROM tenant.agent_deployment") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.agent_draft") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.agent_release") == 0
             assert await app.fetchval("SELECT count(*) FROM tenant.model_profile") == 0
@@ -234,6 +236,7 @@ async def _exercise_isolation() -> None:
         assert await app.fetchval("SELECT count(*) FROM tenant.member") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.member_role") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.agent_application") == 0
+        assert await app.fetchval("SELECT count(*) FROM tenant.agent_deployment") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.agent_draft") == 0
         assert await app.fetchval("SELECT count(*) FROM tenant.model_profile") == 0
     finally:

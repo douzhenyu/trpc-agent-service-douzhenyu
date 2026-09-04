@@ -8,6 +8,7 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 
 import App from "./App";
+import { getAgentDeployments, getAgentReleases } from "./api";
 
 afterEach(() => {
   cleanup();
@@ -209,6 +210,24 @@ test("错误的应急凭据显示失败提示", async () => {
   });
   fireEvent.click(screen.getByRole("button", { name: "应急登录" }));
   expect(await screen.findByText("应急凭据无效")).toBeInTheDocument();
+});
+
+test("Release 与 Deployment 查询沿用公开 API 的稳定错误响应", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(() =>
+    Promise.resolve(
+      json({ error: { code: "FORBIDDEN", message: "denied" } }, 403),
+    ),
+  );
+
+  await expect(
+    getAgentReleases("tenant-1", "application-1"),
+  ).rejects.toMatchObject({
+    code: "FORBIDDEN",
+    status: 403,
+  });
+  await expect(
+    getAgentDeployments("tenant-1", "application-1"),
+  ).rejects.toMatchObject({ code: "FORBIDDEN", status: 403 });
 });
 
 test("Agent 开发者通过公开 API 完成应用与 Draft 编辑校验闭环", async () => {
@@ -496,6 +515,8 @@ test("现有 Agent 应用和 Draft 可继续编辑并通过校验", async () => 
             version: 2,
           }),
         );
+      if (path.endsWith("/releases") || path.endsWith("/deployments"))
+        return Promise.resolve(json({ items: [] }));
       if (path.endsWith("/draft") && request.method === "GET")
         return Promise.resolve(json(draft));
       if (path.endsWith("/draft") && request.method === "PATCH")
@@ -542,6 +563,177 @@ test("现有 Agent 应用和 Draft 可继续编辑并通过校验", async () => 
   fireEvent.click(screen.getByRole("button", { name: "校验 Agent Draft" }));
   expect(await screen.findByText("Agent Draft 校验通过")).toBeInTheDocument();
   expect(fetchMock).toHaveBeenCalled();
+});
+
+test("控制台经公开 API 发布不可变 Release 并提交和批准 Production Deployment", async () => {
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const application = {
+    id: "00000000-0000-0000-0000-000000000002",
+    tenant_id: tenant.id,
+    slug: "support-agent",
+    name: "Support Agent",
+    description: "",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const draft = {
+    tenant_id: tenant.id,
+    application_id: application.id,
+    instructions: "Answer helpfully.",
+    model_alias: "balanced",
+    tool_aliases: [],
+    knowledge_refs: [],
+    governance_policy_ref: null,
+    lifecycle: "DRAFT",
+    serves_production_traffic: false,
+    version: 3,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  const release = {
+    id: "00000000-0000-0000-0000-000000000003",
+    tenant_id: tenant.id,
+    application_id: application.id,
+    version: 1,
+    model_alias: "balanced",
+    data_classification: "INTERNAL",
+    region: "cn-north-1",
+    fallback_aliases: [],
+    model_profiles: [],
+    source: { draft_version: 3, actor: "developer-1" },
+    draft_snapshot: {},
+    content_hash: "a".repeat(64),
+    created_at: "2026-01-01T00:00:00Z",
+  };
+  const pendingDeployment = {
+    id: "00000000-0000-0000-0000-000000000004",
+    tenant_id: tenant.id,
+    application_id: application.id,
+    environment: "PRODUCTION",
+    release_id: release.id,
+    previous_release_id: "00000000-0000-0000-0000-000000000005",
+    rollout_percentage: 100,
+    status: "PENDING_APPROVAL",
+    initiator: "developer-1",
+    approver: null,
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    activated_at: null,
+  };
+  const activeDeployment = {
+    ...pendingDeployment,
+    id: "00000000-0000-0000-0000-000000000007",
+    status: "ACTIVE",
+    approver: "developer-2",
+    version: 3,
+    activated_at: "2026-01-01T00:01:00Z",
+  };
+  const fetchMock = vi
+    .spyOn(globalThis, "fetch")
+    .mockImplementation((input) => {
+      const request = input as Request;
+      const path = new URL(request.url).pathname;
+      if (path === "/api/v1/auth/session")
+        return Promise.resolve(
+          json({ subject: "developer-2", auth_method: "oidc", roles: [] }),
+        );
+      if (path === "/api/v1/tenants")
+        return Promise.resolve(json({ items: [tenant] }));
+      if (path.endsWith("/agent-applications") && request.method === "GET")
+        return Promise.resolve(json({ items: [application] }));
+      if (path.endsWith("/draft")) return Promise.resolve(json(draft));
+      if (path.endsWith("/releases") && request.method === "GET")
+        return Promise.resolve(json({ items: [] }));
+      if (path.endsWith("/releases") && request.method === "POST")
+        return Promise.resolve(json(release, 201));
+      if (path.endsWith("/deployments") && request.method === "GET")
+        return Promise.resolve(json({ items: [activeDeployment] }));
+      if (path.endsWith("/deployments") && request.method === "POST")
+        return Promise.resolve(json(pendingDeployment, 202));
+      if (path.endsWith("/approve") && request.method === "POST")
+        return Promise.resolve(
+          json(
+            {
+              ...pendingDeployment,
+              approver: "developer-2",
+              status: "ACTIVE",
+              version: 2,
+              activated_at: "2026-01-01T00:01:00Z",
+            },
+            200,
+          ),
+        );
+      if (path.endsWith("/rollback") && request.method === "POST")
+        return Promise.resolve(
+          json(
+            {
+              ...pendingDeployment,
+              id: "00000000-0000-0000-0000-000000000006",
+              release_id: pendingDeployment.previous_release_id,
+            },
+            202,
+          ),
+        );
+      throw new Error(`Unexpected request: ${request.method} ${path}`);
+    });
+
+  render(<App />);
+  fireEvent.click(
+    await screen.findByRole("button", { name: "加载 Agent 应用" }),
+  );
+  fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Support Agent (support-agent)",
+    }),
+  );
+  await screen.findByText("Draft 版本 3 · 不承载生产流量");
+  fireEvent.click(
+    screen.getByRole("button", { name: "发布不可变 Agent Release" }),
+  );
+  expect(
+    await screen.findByText("已发布 Agent Release v1。"),
+  ).toBeInTheDocument();
+  fireEvent.change(screen.getByLabelText("Deployment 环境"), {
+    target: { value: "PRODUCTION" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "提交 Deployment" }));
+  await screen.findByText("环境 Deployment 已提交。");
+  const deploymentRequest = fetchMock.mock.calls
+    .map(([input]) => input as Request)
+    .find(
+      (request) =>
+        request.method === "POST" &&
+        new URL(request.url).pathname.endsWith("/deployments"),
+    );
+  expect(deploymentRequest?.headers.get("If-Match")).toBe('"3"');
+  fireEvent.click(
+    await screen.findByRole("button", { name: "批准 Production Deployment" }),
+  );
+  expect(
+    await screen.findByText("Production Deployment 已批准。"),
+  ).toBeInTheDocument();
+  fireEvent.click(
+    screen.getAllByRole("button", { name: "回滚到上一个 Release" }).at(-1)!,
+  );
+  expect(
+    await screen.findByText("已提交 Deployment 指针回滚。"),
+  ).toBeInTheDocument();
+  expect(
+    fetchMock.mock.calls.every(([request]) =>
+      new URL(
+        request instanceof Request ? request.url : String(request),
+      ).pathname.startsWith("/api/v1"),
+    ),
+  ).toBe(true);
 });
 
 test("快速切换 Agent 时不会让较慢的旧 Draft 覆盖当前选择", async () => {
@@ -638,6 +830,8 @@ test("快速切换 Agent 时不会让较慢的旧 Draft 覆盖当前选择", asy
       return Promise.resolve(json({ items: applications }));
     if (path.endsWith("/agent-applications") && request.method === "POST")
       return Promise.resolve(json(createdApplication, 201));
+    if (path.endsWith("/releases") || path.endsWith("/deployments"))
+      return Promise.resolve(json({ items: [] }));
     if (path.includes(applications[0].id)) return slowDraft;
     if (path.includes(applications[1].id))
       return Promise.resolve(json(draft(applications[1].id, "Fast draft")));

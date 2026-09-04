@@ -187,15 +187,66 @@ class AgentReleaseCreate(BaseModel):
     fallback_aliases: list[ModelFallbackAlias] = Field(default_factory=list, max_length=10)
 
 
+class AgentReleaseSource(BaseModel):
+    draft_version: int | None = Field(default=None, ge=1)
+    actor: str = Field(min_length=1, max_length=255)
+    kind: Literal["DRAFT", "LEGACY"]
+
+
 class AgentReleaseResponse(BaseModel):
     id: UUID
     tenant_id: UUID
     application_id: UUID
+    version: int = Field(ge=1)
     model_alias: str
     data_classification: DataClassification
     region: str
     fallback_aliases: list[str]
+    model_profiles: list[dict[str, Any]]
+    source: AgentReleaseSource
+    draft_snapshot: dict[str, Any]
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     created_at: datetime
+
+
+class AgentReleaseList(BaseModel):
+    items: list[AgentReleaseResponse]
+    next_cursor: str | None = None
+
+
+DeploymentEnvironment = Literal["DEVELOPMENT", "STAGING", "PRODUCTION"]
+DeploymentStatus = Literal["PENDING_APPROVAL", "ACTIVE"]
+
+
+class AgentDeploymentCreate(BaseModel):
+    environment: DeploymentEnvironment
+    release_id: UUID
+    rollout_percentage: int = Field(ge=1, le=100)
+
+
+class AgentDeploymentRollback(BaseModel):
+    release_id: UUID
+
+
+class AgentDeploymentResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    environment: DeploymentEnvironment
+    release_id: UUID
+    previous_release_id: UUID | None
+    rollout_percentage: int = Field(ge=1, le=100)
+    status: DeploymentStatus
+    initiator: str
+    approver: str | None
+    version: int = Field(ge=1)
+    created_at: datetime
+    activated_at: datetime | None
+
+
+class AgentDeploymentList(BaseModel):
+    items: list[AgentDeploymentResponse]
+    next_cursor: str | None = None
 
 
 DraftIssueCode = Literal[
