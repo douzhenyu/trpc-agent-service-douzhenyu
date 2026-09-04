@@ -12,6 +12,7 @@ ERROR_RESPONSES: dict[int, dict[str, Any]] = {
     409: {"model": ErrorResponse, "description": "Command conflict"},
     412: {"model": ErrorResponse, "description": "Version precondition failed"},
     422: {"model": ErrorResponse, "description": "Request validation failed"},
+    428: {"model": ErrorResponse, "description": "Version precondition required"},
     500: {"model": ErrorResponse, "description": "Internal error"},
     502: {"model": ErrorResponse, "description": "Identity provider unavailable"},
 }

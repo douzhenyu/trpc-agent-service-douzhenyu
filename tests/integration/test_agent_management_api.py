@@ -12,7 +12,7 @@ from trpc_service.admin_api.app import create_app
 from trpc_service.admin_api.auth import Principal, encode_session
 from trpc_service.admin_api.database import Database
 from trpc_service.admin_api.settings import AdminSettings
-from trpc_service.agent_worker import DatabaseReleaseRouteResolver
+from trpc_service.agent_worker import DatabaseDeploymentRouteResolver, DatabaseReleaseRouteResolver
 from trpc_service.database_migrations import apply_migrations
 from trpc_service.llm_gateway import (
     DatabaseModelProfileResolver,
@@ -668,7 +668,7 @@ def test_published_agent_release_is_the_runtime_source_of_allowed_model_fallback
             client.put(
                 draft_url,
                 headers={"Idempotency-Key": str(uuid4())},
-                json={"model_alias": "balanced"},
+                json={"instructions": "Answer helpfully.", "model_alias": "balanced"},
             ).status_code
             == 201
         )
@@ -710,3 +710,338 @@ def test_published_agent_release_is_the_runtime_source_of_allowed_model_fallback
         assert route.profile_snapshots[0].provider_model == "fake-balanced"
         audit = client.get("/api/v1/audit-events", params={"tenant_id": tenant_id})
         assert any(event["action"] == "agent_release.publish" for event in audit.json()["items"])
+
+
+def test_published_agent_releases_preserve_a_complete_versioned_draft_snapshot() -> None:
+    """The public release API is the only transition out of a mutable Draft."""
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        tenant_id = _login_and_create_tenant(client)
+        profiles = f"/api/v1/tenants/{tenant_id}/model-profiles"
+        assert (
+            client.post(
+                profiles,
+                headers={"Idempotency-Key": str(uuid4())},
+                json={
+                    "alias": "balanced",
+                    "provider_model": "fake-balanced",
+                    "endpoint_url": "https://fake-llm.internal/v1/chat/completions",
+                    "secret_ref": f"vault://tenant/{tenant_id}/llm/balanced#api_key",
+                    "data_classification": "CONFIDENTIAL",
+                    "region": "cn-north-1",
+                },
+            ).status_code
+            == 201
+        )
+        application = client.post(
+            f"/api/v1/tenants/{tenant_id}/agent-applications",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"slug": "releaseable", "name": "Releaseable Agent"},
+        ).json()
+        draft_url = f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/draft"
+        assert (
+            client.put(
+                draft_url,
+                headers={"Idempotency-Key": str(uuid4())},
+                json={
+                    "instructions": "Answer only with cited sources.",
+                    "model_alias": "balanced",
+                    "tool_aliases": ["search"],
+                    "knowledge_refs": ["handbook"],
+                    "governance_policy_ref": "standard-policy",
+                },
+            ).status_code
+            == 201
+        )
+
+        releases_url = (
+            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/releases"
+        )
+        first = client.post(
+            releases_url,
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "data_classification": "INTERNAL",
+                "region": "cn-north-1",
+                "fallback_aliases": [],
+            },
+        )
+
+        assert first.status_code == 201
+        assert first.json() == {
+            **first.json(),
+            "tenant_id": tenant_id,
+            "application_id": application["id"],
+            "version": 1,
+            "source": {
+                "draft_version": 1,
+                "actor": "emergency:break-glass",
+                "kind": "DRAFT",
+            },
+            "draft_snapshot": {
+                "instructions": "Answer only with cited sources.",
+                "model_alias": "balanced",
+                "tool_aliases": ["search"],
+                "knowledge_refs": ["handbook"],
+                "governance_policy_ref": "standard-policy",
+                "version": 1,
+            },
+        }
+        assert len(first.json()["content_hash"]) == 64
+        assert set(first.json()["content_hash"]) <= set("0123456789abcdef")
+
+        assert (
+            client.patch(
+                draft_url,
+                headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+                json={"instructions": "The mutable Draft changed after publishing."},
+            ).status_code
+            == 200
+        )
+        second = client.post(
+            releases_url,
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "data_classification": "INTERNAL",
+                "region": "cn-north-1",
+                "fallback_aliases": [],
+            },
+        )
+        assert second.status_code == 201
+        assert second.json()["version"] == 2
+        assert second.json()["source"]["draft_version"] == 2
+        assert second.json()["draft_snapshot"]["instructions"].startswith("The mutable")
+
+        listing = client.get(releases_url)
+        assert listing.status_code == 200
+        assert [item["id"] for item in listing.json()["items"]] == [
+            first.json()["id"],
+            second.json()["id"],
+        ]
+        assert listing.json()["items"][0]["draft_snapshot"] == first.json()["draft_snapshot"]
+
+        async def direct_release_mutation() -> None:
+            connection = await asyncpg.connect(APP_URL)
+            try:
+                with pytest.raises(asyncpg.InsufficientPrivilegeError):
+                    await connection.execute(
+                        "UPDATE tenant.agent_release SET content_hash=$1 WHERE id=$2",
+                        "f" * 64,
+                        first.json()["id"],
+                    )
+            finally:
+                await connection.close()
+
+        asyncio.run(direct_release_mutation())
+
+
+def test_environment_deployments_require_production_approval_and_route_sessions_stably() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        tenant_id = _login_and_create_tenant(client)
+        developer_token, developer_id = asyncio.run(_seed_tenant_developer(tenant_id))
+        approver_token, approver_id = asyncio.run(_seed_tenant_developer(tenant_id))
+        profiles = f"/api/v1/tenants/{tenant_id}/model-profiles"
+        assert (
+            client.post(
+                profiles,
+                headers={"Idempotency-Key": str(uuid4())},
+                json={
+                    "alias": "balanced",
+                    "provider_model": "fake-balanced",
+                    "endpoint_url": "https://fake-llm.internal/v1/chat/completions",
+                    "secret_ref": f"vault://tenant/{tenant_id}/llm/balanced#api_key",
+                    "data_classification": "CONFIDENTIAL",
+                    "region": "cn-north-1",
+                },
+            ).status_code
+            == 201
+        )
+        application = client.post(
+            f"/api/v1/tenants/{tenant_id}/agent-applications",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"slug": "deployed", "name": "Deployed Agent"},
+        ).json()
+        draft_url = f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/draft"
+        assert (
+            client.put(
+                draft_url,
+                headers={"Idempotency-Key": str(uuid4())},
+                json={"instructions": "Release one.", "model_alias": "balanced"},
+            ).status_code
+            == 201
+        )
+        releases_url = (
+            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/releases"
+        )
+        release_payload = {
+            "data_classification": "INTERNAL",
+            "region": "cn-north-1",
+            "fallback_aliases": [],
+        }
+        first_release = client.post(
+            releases_url,
+            headers={"Idempotency-Key": str(uuid4())},
+            json=release_payload,
+        ).json()
+        assert (
+            client.patch(
+                draft_url,
+                headers={"Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+                json={"instructions": "Release two."},
+            ).status_code
+            == 200
+        )
+        second_release = client.post(
+            releases_url,
+            headers={"Idempotency-Key": str(uuid4())},
+            json=release_payload,
+        ).json()
+        deployments_url = (
+            f"/api/v1/tenants/{tenant_id}/agent-applications/{application['id']}/deployments"
+        )
+        developer = {"Authorization": f"Bearer {developer_token}"}
+
+        baseline = client.post(
+            deployments_url,
+            headers={**developer, "Idempotency-Key": str(uuid4())},
+            json={
+                "environment": "STAGING",
+                "release_id": first_release["id"],
+                "rollout_percentage": 100,
+            },
+        )
+        missing_precondition = client.post(
+            deployments_url,
+            headers={**developer, "Idempotency-Key": str(uuid4())},
+            json={
+                "environment": "STAGING",
+                "release_id": second_release["id"],
+                "rollout_percentage": 25,
+            },
+        )
+        canary = client.post(
+            deployments_url,
+            headers={
+                **developer,
+                "Idempotency-Key": str(uuid4()),
+                "If-Match": f'"{baseline.json()["version"]}"',
+            },
+            json={
+                "environment": "STAGING",
+                "release_id": second_release["id"],
+                "rollout_percentage": 25,
+            },
+        )
+
+        assert baseline.status_code == canary.status_code == 201
+        assert missing_precondition.status_code == 428
+        assert canary.headers["ETag"] == '"2"'
+        assert baseline.json()["status"] == canary.json()["status"] == "ACTIVE"
+        assert canary.json()["previous_release_id"] == first_release["id"]
+        assert canary.json()["rollout_percentage"] == 25
+
+        stale_deployment = client.post(
+            deployments_url,
+            headers={
+                **developer,
+                "Idempotency-Key": str(uuid4()),
+                "If-Match": f'"{baseline.json()["version"]}"',
+            },
+            json={
+                "environment": "STAGING",
+                "release_id": first_release["id"],
+                "rollout_percentage": 100,
+            },
+        )
+        assert stale_deployment.status_code == 412
+
+        async def routes_for_stable_sessions() -> dict[str, str]:
+            database = Database(APP_URL)
+            await database.open()
+            try:
+                resolver = DatabaseDeploymentRouteResolver(database)
+                return {
+                    f"session-{index}": str(
+                        await resolver.resolve(
+                            tenant_id,
+                            application["id"],
+                            "STAGING",
+                            f"session-{index}",
+                        )
+                    )
+                    for index in range(200)
+                }
+            finally:
+                await database.close()
+
+        first_routes = asyncio.run(routes_for_stable_sessions())
+        assert set(first_routes.values()) == {first_release["id"], second_release["id"]}
+        assert asyncio.run(routes_for_stable_sessions()) == first_routes
+
+        rollback = client.post(
+            f"{deployments_url}/{canary.json()['id']}/rollback",
+            headers={
+                **developer,
+                "Idempotency-Key": str(uuid4()),
+                "If-Match": f'"{canary.json()["version"]}"',
+            },
+            json={"release_id": first_release["id"]},
+        )
+        assert rollback.status_code == 201
+        assert rollback.headers["ETag"] == '"3"'
+        assert rollback.json()["release_id"] == first_release["id"]
+        assert set(asyncio.run(routes_for_stable_sessions()).values()) == {first_release["id"]}
+        assert [item["content_hash"] for item in client.get(releases_url).json()["items"]] == [
+            first_release["content_hash"],
+            second_release["content_hash"],
+        ]
+
+        stale_rollback = client.post(
+            f"{deployments_url}/{canary.json()['id']}/rollback",
+            headers={
+                **developer,
+                "Idempotency-Key": str(uuid4()),
+                "If-Match": f'"{canary.json()["version"]}"',
+            },
+            json={"release_id": second_release["id"]},
+        )
+        assert stale_rollback.status_code == 412
+
+        production = client.post(
+            deployments_url,
+            headers={**developer, "Idempotency-Key": str(uuid4())},
+            json={
+                "environment": "PRODUCTION",
+                "release_id": second_release["id"],
+                "rollout_percentage": 100,
+            },
+        )
+        assert production.status_code == 202
+        assert production.json()["status"] == "PENDING_APPROVAL"
+        assert production.json()["initiator"] == developer_id
+
+        own_approval = client.post(
+            f"{deployments_url}/{production.json()['id']}/approve",
+            headers={**developer, "Idempotency-Key": str(uuid4()), "If-Match": '"1"'},
+        )
+        approved = client.post(
+            f"{deployments_url}/{production.json()['id']}/approve",
+            headers={
+                "Authorization": f"Bearer {approver_token}",
+                "Idempotency-Key": str(uuid4()),
+                "If-Match": '"1"',
+            },
+        )
+        assert own_approval.status_code == 409
+        assert approved.status_code == 200
+        assert approved.json()["status"] == "ACTIVE"
+        assert approved.json()["approver"] == approver_id
+        deployment_history = client.get(deployments_url, headers=developer)
+        assert deployment_history.status_code == 200
+        assert [item["id"] for item in deployment_history.json()["items"]] == [
+            baseline.json()["id"],
+            canary.json()["id"],
+            rollback.json()["id"],
+            production.json()["id"],
+        ]

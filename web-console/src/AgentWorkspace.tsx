@@ -2,17 +2,27 @@ import { FormEvent, useEffect, useRef, useState } from "react";
 
 import {
   ApiError,
+  approveAgentDeployment,
   createAgentApplication,
+  createAgentDeployment,
   createAgentDraft,
   deleteAgentApplication,
   deleteAgentDraft,
   getAgentApplications,
+  getAgentDeployments,
   getAgentDraft,
+  getAgentReleases,
+  publishAgentRelease,
+  rollbackAgentDeployment,
   updateAgentApplication,
   updateAgentDraft,
   validateAgentDraft,
   type AgentApplication,
+  type AgentDeployment,
+  type AgentDeploymentCreate,
   type AgentDraft,
+  type AgentRelease,
+  type AgentReleaseCreate,
   type DraftValidation,
   type Tenant,
 } from "./api";
@@ -36,6 +46,8 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
   const [applications, setApplications] = useState<AgentApplication[]>([]);
   const [selected, setSelected] = useState<AgentApplication | null>(null);
   const [draft, setDraft] = useState<AgentDraft | null>(null);
+  const [releases, setReleases] = useState<AgentRelease[]>([]);
+  const [deployments, setDeployments] = useState<AgentDeployment[]>([]);
   const [validation, setValidation] = useState<DraftValidation | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   const [slug, setSlug] = useState("");
@@ -47,6 +59,14 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
   const [toolAliases, setToolAliases] = useState("");
   const [knowledgeRefs, setKnowledgeRefs] = useState("");
   const [policyRef, setPolicyRef] = useState("");
+  const [releaseClassification, setReleaseClassification] =
+    useState<AgentReleaseCreate["data_classification"]>("INTERNAL");
+  const [releaseRegion, setReleaseRegion] = useState("cn-north-1");
+  const [fallbackAliases, setFallbackAliases] = useState("");
+  const [deploymentEnvironment, setDeploymentEnvironment] =
+    useState<AgentDeploymentCreate["environment"]>("DEVELOPMENT");
+  const [deploymentReleaseId, setDeploymentReleaseId] = useState("");
+  const [rolloutPercentage, setRolloutPercentage] = useState("100");
 
   useEffect(() => {
     if (!tenants.some((tenant) => tenant.id === tenantId))
@@ -70,6 +90,8 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
       setApplications(await getAgentApplications(tenantId));
       setSelected(null);
       showDraft(null);
+      setReleases([]);
+      setDeployments([]);
       setMessage(null);
     } catch (error) {
       setMessage(failureMessage(error));
@@ -83,12 +105,16 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
       setEditName(application.name);
       setDescription(application.description);
       showDraft(null);
-      const nextDraft = await getAgentDraft(
-        application.tenant_id,
-        application.id,
-      );
+      const [nextDraft, nextReleases, nextDeployments] = await Promise.all([
+        getAgentDraft(application.tenant_id, application.id),
+        getAgentReleases(application.tenant_id, application.id),
+        getAgentDeployments(application.tenant_id, application.id),
+      ]);
       if (selectionRequest.current !== request) return;
       showDraft(nextDraft);
+      setReleases(nextReleases);
+      setDeployments(nextDeployments);
+      setDeploymentReleaseId(nextReleases.at(-1)?.id ?? "");
       setMessage(null);
     } catch (error) {
       if (selectionRequest.current !== request) return;
@@ -108,6 +134,8 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
       setApplications((current) => [...current, application]);
       setSelected(application);
       showDraft(null);
+      setReleases([]);
+      setDeployments([]);
       setSlug("");
       setCreateName("");
       setEditName(application.name);
@@ -148,6 +176,8 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
       );
       setSelected(null);
       showDraft(null);
+      setReleases([]);
+      setDeployments([]);
       setMessage(null);
     } catch (error) {
       setMessage(failureMessage(error));
@@ -192,6 +222,85 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
     try {
       setValidation(await validateAgentDraft(draft));
       setMessage(null);
+    } catch (error) {
+      setMessage(failureMessage(error));
+    }
+  }
+
+  async function onPublishRelease() {
+    if (!selected) return;
+    try {
+      const release = await publishAgentRelease(selected, {
+        data_classification: releaseClassification,
+        region: releaseRegion,
+        fallback_aliases: references(fallbackAliases),
+      });
+      setReleases((current) => [...current, release]);
+      setDeploymentReleaseId(release.id);
+      setMessage(`已发布 Agent Release v${release.version}。`);
+    } catch (error) {
+      setMessage(failureMessage(error));
+    }
+  }
+
+  function replaceDeployment(next: AgentDeployment) {
+    setDeployments((current) => {
+      const index = current.findIndex(
+        (deployment) => deployment.id === next.id,
+      );
+      return index === -1
+        ? [...current, next]
+        : current.map((deployment) =>
+            deployment.id === next.id ? next : deployment,
+          );
+    });
+  }
+
+  async function onCreateDeployment(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected || !deploymentReleaseId) return;
+    try {
+      replaceDeployment(
+        await createAgentDeployment(
+          selected,
+          {
+            environment: deploymentEnvironment,
+            release_id: deploymentReleaseId,
+            rollout_percentage: Number(rolloutPercentage),
+          },
+          deployments
+            .filter(
+              (deployment) =>
+                deployment.environment === deploymentEnvironment &&
+                deployment.status === "ACTIVE",
+            )
+            .at(-1),
+        ),
+      );
+      setMessage("环境 Deployment 已提交。");
+    } catch (error) {
+      setMessage(failureMessage(error));
+    }
+  }
+
+  async function onApproveDeployment(deployment: AgentDeployment) {
+    try {
+      replaceDeployment(await approveAgentDeployment(deployment));
+      setMessage("Production Deployment 已批准。");
+    } catch (error) {
+      setMessage(failureMessage(error));
+    }
+  }
+
+  async function onRollbackDeployment(deployment: AgentDeployment) {
+    if (!deployment.previous_release_id) return;
+    try {
+      replaceDeployment(
+        await rollbackAgentDeployment(deployment, {
+          release_id: deployment.previous_release_id,
+        }),
+      );
+      setMessage("已提交 Deployment 指针回滚。");
     } catch (error) {
       setMessage(failureMessage(error));
     }
@@ -357,6 +466,148 @@ export function AgentWorkspace({ tenants }: { tenants: Tenant[] }) {
                     </button>
                   </>
                 )}
+              </form>
+
+              <div className="stack">
+                <h3>Agent Release</h3>
+                <p className="muted">
+                  发布会固化当前 Draft、模型配置与内容摘要；Release 不可编辑。
+                </p>
+                <label>
+                  数据分级
+                  <select
+                    aria-label="Release 数据分级"
+                    value={releaseClassification}
+                    onChange={(event) =>
+                      setReleaseClassification(
+                        event.target
+                          .value as AgentReleaseCreate["data_classification"],
+                      )
+                    }
+                  >
+                    <option value="PUBLIC">PUBLIC</option>
+                    <option value="INTERNAL">INTERNAL</option>
+                    <option value="CONFIDENTIAL">CONFIDENTIAL</option>
+                    <option value="RESTRICTED">RESTRICTED</option>
+                  </select>
+                </label>
+                <label>
+                  Release 区域
+                  <input
+                    aria-label="Release 区域"
+                    value={releaseRegion}
+                    onChange={(event) => setReleaseRegion(event.target.value)}
+                    required
+                  />
+                </label>
+                <label>
+                  Fallback 模型别名
+                  <input
+                    aria-label="Fallback 模型别名"
+                    value={fallbackAliases}
+                    onChange={(event) => setFallbackAliases(event.target.value)}
+                  />
+                </label>
+                <button
+                  type="button"
+                  disabled={!draft}
+                  onClick={onPublishRelease}
+                >
+                  发布不可变 Agent Release
+                </button>
+                <ul>
+                  {releases.map((release) => (
+                    <li key={release.id}>
+                      Release v{release.version} ·{" "}
+                      {release.content_hash.slice(0, 12)} · Draft v
+                      {release.source.draft_version}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+
+              <form className="stack" onSubmit={onCreateDeployment}>
+                <h3>环境 Deployment</h3>
+                <p className="muted">
+                  Production 变更将保持待审批，且发起人不能自批。
+                </p>
+                <label>
+                  Deployment 环境
+                  <select
+                    aria-label="Deployment 环境"
+                    value={deploymentEnvironment}
+                    onChange={(event) =>
+                      setDeploymentEnvironment(
+                        event.target
+                          .value as AgentDeploymentCreate["environment"],
+                      )
+                    }
+                  >
+                    <option value="DEVELOPMENT">Development</option>
+                    <option value="STAGING">Staging</option>
+                    <option value="PRODUCTION">Production</option>
+                  </select>
+                </label>
+                <label>
+                  Deployment Release
+                  <select
+                    aria-label="Deployment Release"
+                    value={deploymentReleaseId}
+                    onChange={(event) =>
+                      setDeploymentReleaseId(event.target.value)
+                    }
+                    required
+                  >
+                    <option value="">选择 Release</option>
+                    {releases.map((release) => (
+                      <option key={release.id} value={release.id}>
+                        Release v{release.version}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  灰度比例
+                  <input
+                    aria-label="灰度比例"
+                    type="number"
+                    min="1"
+                    max="100"
+                    value={rolloutPercentage}
+                    onChange={(event) =>
+                      setRolloutPercentage(event.target.value)
+                    }
+                    required
+                  />
+                </label>
+                <button type="submit" disabled={!deploymentReleaseId}>
+                  提交 Deployment
+                </button>
+                <ul>
+                  {deployments.map((deployment) => (
+                    <li key={deployment.id}>
+                      {deployment.environment} · Release{" "}
+                      {deployment.release_id.slice(0, 8)} ·{" "}
+                      {deployment.rollout_percentage}% · {deployment.status}
+                      {deployment.status === "PENDING_APPROVAL" && (
+                        <button
+                          type="button"
+                          onClick={() => onApproveDeployment(deployment)}
+                        >
+                          批准 Production Deployment
+                        </button>
+                      )}
+                      {deployment.previous_release_id && (
+                        <button
+                          type="button"
+                          onClick={() => onRollbackDeployment(deployment)}
+                        >
+                          回滚到上一个 Release
+                        </button>
+                      )}
+                    </li>
+                  ))}
+                </ul>
               </form>
             </div>
           )}

@@ -16,6 +16,13 @@ export type AgentDraft = components["schemas"]["AgentDraftResponse"];
 export type AgentDraftCreate = components["schemas"]["AgentDraftCreate"];
 export type AgentDraftUpdate = components["schemas"]["AgentDraftUpdate"];
 export type DraftValidation = components["schemas"]["DraftValidationResponse"];
+export type AgentRelease = components["schemas"]["AgentReleaseResponse"];
+export type AgentReleaseCreate = components["schemas"]["AgentReleaseCreate"];
+export type AgentDeployment = components["schemas"]["AgentDeploymentResponse"];
+export type AgentDeploymentCreate =
+  components["schemas"]["AgentDeploymentCreate"];
+export type AgentDeploymentRollback =
+  components["schemas"]["AgentDeploymentRollback"];
 export type ModelProfile = components["schemas"]["ModelProfileResponse"];
 export type ModelProfileCreate = components["schemas"]["ModelProfileCreate"];
 export type ModelProfileUpdate = components["schemas"]["ModelProfileUpdate"];
@@ -346,5 +353,135 @@ export async function validateAgentDraft(
   );
   if (!response.ok || !data)
     throw apiError(response, "无法校验 Agent Draft", error);
+  return data;
+}
+
+export async function getAgentReleases(
+  tenantId: string,
+  applicationId: string,
+): Promise<AgentRelease[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/releases",
+    {
+      params: { path: { tenant_id: tenantId, application_id: applicationId } },
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取 Agent Release", error);
+  return data.items;
+}
+
+export async function publishAgentRelease(
+  application: AgentApplication,
+  payload: AgentReleaseCreate,
+): Promise<AgentRelease> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/releases",
+    {
+      params: {
+        path: {
+          tenant_id: application.tenant_id,
+          application_id: application.id,
+        },
+        header: { "Idempotency-Key": idempotencyKey() },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法发布 Agent Release", error);
+  return data;
+}
+
+export async function getAgentDeployments(
+  tenantId: string,
+  applicationId: string,
+): Promise<AgentDeployment[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments",
+    {
+      params: { path: { tenant_id: tenantId, application_id: applicationId } },
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取环境 Deployment", error);
+  return data.items;
+}
+
+export async function createAgentDeployment(
+  application: AgentApplication,
+  payload: AgentDeploymentCreate,
+  activeDeployment?: AgentDeployment,
+): Promise<AgentDeployment> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments",
+    {
+      params: {
+        path: {
+          tenant_id: application.tenant_id,
+          application_id: application.id,
+        },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          ...(activeDeployment
+            ? { "If-Match": `"${activeDeployment.version}"` }
+            : {}),
+        },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法创建环境 Deployment", error);
+  return data;
+}
+
+export async function approveAgentDeployment(
+  deployment: AgentDeployment,
+): Promise<AgentDeployment> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/approve",
+    {
+      params: {
+        path: {
+          tenant_id: deployment.tenant_id,
+          application_id: deployment.application_id,
+          deployment_id: deployment.id,
+        },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"${deployment.version}"`,
+        },
+      },
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法批准 Production Deployment", error);
+  return data;
+}
+
+export async function rollbackAgentDeployment(
+  deployment: AgentDeployment,
+  payload: AgentDeploymentRollback,
+): Promise<AgentDeployment> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/rollback",
+    {
+      params: {
+        path: {
+          tenant_id: deployment.tenant_id,
+          application_id: deployment.application_id,
+          deployment_id: deployment.id,
+        },
+        header: {
+          "Idempotency-Key": idempotencyKey(),
+          "If-Match": `"${deployment.version}"`,
+        },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法回滚环境 Deployment", error);
   return data;
 }
