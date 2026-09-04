@@ -74,8 +74,8 @@ def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fal
     assert response.json()["fallback_used"] is True
 
 
-def test_worker_gateway_client_sends_routing_data_but_never_provider_credentials() -> None:
-    tenant_id = str(uuid4())
+def test_worker_gateway_client_sends_only_release_identity_and_messages() -> None:
+    tenant_id, release_id = str(uuid4()), str(uuid4())
 
     async def gateway(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/internal/v1/llm-completions"
@@ -83,13 +83,10 @@ def test_worker_gateway_client_sends_routing_data_but_never_provider_credentials
         payload = json.loads(request.content)
         assert set(payload) == {
             "tenant_id",
-            "model_alias",
             "messages",
-            "data_classification",
-            "region",
-            "allowed_fallback_aliases",
-            "profile_snapshots",
+            "release_id",
         }
+        assert payload["release_id"] == release_id
         return httpx.Response(
             200,
             json={"model_alias": "balanced", "fallback_used": False, "completion": {"choices": []}},
@@ -108,6 +105,7 @@ def test_worker_gateway_client_sends_routing_data_but_never_provider_credentials
                 messages=[{"role": "user", "content": "hello"}],
                 data_classification=DataClassification.INTERNAL,
                 region="cn-north-1",
+                release_id=release_id,
             )
         )
     )

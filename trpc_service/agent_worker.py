@@ -157,6 +157,7 @@ class AgentWorker:
             region=route.region,
             allowed_fallback_aliases=route.allowed_fallback_aliases,
             profile_snapshots=route.profile_snapshots,
+            release_id=route.release_id,
         ).complete(request.messages)
         if result.fallback_used and self._fallback_auditor is not None:
             try:
@@ -199,25 +200,8 @@ class HttpGatewayClient:
                 "/internal/v1/llm-completions",
                 json={
                     "tenant_id": request.tenant_id,
-                    "model_alias": request.model_alias,
                     "messages": request.messages,
-                    "data_classification": request.data_classification,
-                    "region": request.region,
-                    "allowed_fallback_aliases": sorted(request.allowed_fallback_aliases),
-                    "profile_snapshots": [
-                        {
-                            "tenant_id": profile.tenant_id,
-                            "alias": profile.alias,
-                            "provider_model": profile.provider_model,
-                            "endpoint_url": profile.endpoint_url,
-                            "secret_ref": profile.secret_ref,
-                            "data_classification": profile.data_classification,
-                            "region": profile.region,
-                            "fallback_aliases": profile.fallback_aliases,
-                            "requests_per_minute": profile.requests_per_minute,
-                        }
-                        for profile in request.profile_snapshots
-                    ],
+                    "release_id": request.release_id,
                 },
             )
             if response.status_code >= 400:

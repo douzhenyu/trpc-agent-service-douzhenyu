@@ -63,6 +63,7 @@ class GatewayRequest:
     region: str
     allowed_fallback_aliases: frozenset[str] = frozenset()
     profile_snapshots: tuple[ModelProfile, ...] = ()
+    release_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -506,6 +507,7 @@ class GatewayModel:
         region: str,
         allowed_fallback_aliases: frozenset[str] = frozenset(),
         profile_snapshots: tuple[ModelProfile, ...] = (),
+        release_id: str | None = None,
     ) -> None:
         self._gateway = gateway
         self._tenant_id = tenant_id
@@ -514,6 +516,7 @@ class GatewayModel:
         self._region = region
         self._allowed_fallback_aliases = allowed_fallback_aliases
         self._profile_snapshots = profile_snapshots
+        self._release_id = release_id
 
     async def complete(self, messages: list[dict[str, str]]) -> GatewayResult:
         return await self._gateway.complete(
@@ -525,6 +528,7 @@ class GatewayModel:
                 region=self._region,
                 allowed_fallback_aliases=self._allowed_fallback_aliases,
                 profile_snapshots=self._profile_snapshots,
+                release_id=self._release_id,
             )
         )
 
@@ -570,12 +574,8 @@ class GatewayCompletionPayload(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     tenant_id: str = Field(min_length=36, max_length=36)
-    model_alias: str = Field(min_length=1, max_length=63)
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
-    data_classification: DataClassification
-    region: str = Field(min_length=2, max_length=63)
-    allowed_fallback_aliases: list[str] = Field(default_factory=list, max_length=10)
-    profile_snapshots: list[ModelProfile] = Field(default_factory=list, max_length=11)
+    release_id: str = Field(min_length=36, max_length=36)
 
 
 class GatewayCompletionResponse(BaseModel):
@@ -609,6 +609,7 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
             provider_client,
             policy=OpaOutboundPolicy(opa_client),
         )
+        application.state.database = database
         try:
             yield
         finally:
@@ -642,17 +643,10 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
     @application.post("/internal/v1/llm-completions", response_model=GatewayCompletionResponse)
     async def complete(payload: GatewayCompletionPayload) -> GatewayCompletionResponse:
         try:
-            result = await application.state.gateway.complete(
-                GatewayRequest(
-                    tenant_id=payload.tenant_id,
-                    model_alias=payload.model_alias,
-                    messages=payload.messages,
-                    data_classification=payload.data_classification,
-                    region=payload.region,
-                    allowed_fallback_aliases=frozenset(payload.allowed_fallback_aliases),
-                    profile_snapshots=tuple(payload.profile_snapshots),
-                )
+            request = await _released_request(
+                application.state.database, payload.tenant_id, payload.release_id, payload.messages
             )
+            result = await application.state.gateway.complete(request)
         except ModelGatewayError as error:
             raise HTTPException(status_code=409, detail=error.code) from error
         return GatewayCompletionResponse(
@@ -662,6 +656,46 @@ def create_app(settings: GatewayRuntimeSettings | None = None) -> FastAPI:
         )
 
     return application
+
+
+async def _released_request(
+    database: Database, tenant_id: str, release_id: str, messages: list[dict[str, str]]
+) -> GatewayRequest:
+    try:
+        tenant_uuid, release_uuid = UUID(tenant_id), UUID(release_id)
+    except ValueError as error:
+        raise ModelGatewayError("RELEASE_NOT_FOUND") from error
+    async with database.tenant_transaction(tenant_uuid) as connection:
+        row = await connection.fetchrow(
+            """SELECT model_alias,data_classification,region,fallback_aliases,model_profiles
+            FROM tenant.agent_release WHERE tenant_id=$1 AND id=$2""",
+            tenant_uuid,
+            release_uuid,
+        )
+    if row is None or not row["model_profiles"]:
+        raise ModelGatewayError("RELEASE_NOT_FOUND")
+    snapshots = tuple(
+        ModelProfile(
+            tenant_id=str(item["tenant_id"]), alias=str(item["alias"]),
+            provider_model=str(item["provider_model"]), endpoint_url=str(item["endpoint_url"]),
+            secret_ref=str(item["secret_ref"]),
+            data_classification=DataClassification(str(item["data_classification"])),
+            region=str(item["region"]),
+            fallback_aliases=tuple(str(alias) for alias in item["fallback_aliases"]),
+            requests_per_minute=int(item["requests_per_minute"]),
+        )
+        for item in row["model_profiles"]
+    )
+    return GatewayRequest(
+        tenant_id=tenant_id,
+        model_alias=str(row["model_alias"]),
+        messages=messages,
+        data_classification=DataClassification(str(row["data_classification"])),
+        region=str(row["region"]),
+        allowed_fallback_aliases=frozenset(str(alias) for alias in row["fallback_aliases"]),
+        profile_snapshots=snapshots,
+        release_id=release_id,
+    )
 
 
 app = create_app()
