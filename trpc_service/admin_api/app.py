@@ -16,6 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from trpc_service.admin_api.agents import create_agent_router
 from trpc_service.admin_api.audit import insert_audit, write_audit
+from trpc_service.admin_api.audit_query import create_audit_query_router
 from trpc_service.admin_api.auth import (
     Principal,
     begin_oidc_flow,
@@ -111,6 +112,7 @@ def create_app(
     application.include_router(create_model_profile_router(db))
     application.include_router(create_tool_router(db))
     application.include_router(create_tool_approval_router(db))
+    application.include_router(create_audit_query_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
