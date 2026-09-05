@@ -322,6 +322,74 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenant_id}/audit-events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Query Audit Events */
+        get: operations["query_audit_events_api_v1_tenants__tenant_id__audit_events_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/audit-events/{event_id}/corrections": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Correct Audit Event */
+        post: operations["correct_audit_event_api_v1_tenants__tenant_id__audit_events__event_id__corrections_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/audit-manifests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Audit Manifest */
+        post: operations["create_audit_manifest_api_v1_tenants__tenant_id__audit_manifests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/audit-manifests/verification": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Verify Audit Manifests */
+        get: operations["verify_audit_manifests_api_v1_tenants__tenant_id__audit_manifests_verification_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenant_id}/budget-alerts": {
         parameters: {
             query?: never;
@@ -913,44 +981,6 @@ export interface components {
          * @enum {string}
          */
         ApprovalStatus: "PENDING" | "APPROVED" | "DENIED" | "EXPIRED" | "CONSUMED";
-        /** AuditEventList */
-        AuditEventList: {
-            /** Items */
-            items: components["schemas"]["AuditEventResponse"][];
-            /** Next Cursor */
-            next_cursor?: string | null;
-        };
-        /** AuditEventResponse */
-        AuditEventResponse: {
-            /** Action */
-            action: string;
-            /** Actor */
-            actor: string;
-            /** Auth Method */
-            auth_method: string;
-            /** Decision */
-            decision: string;
-            /** Details */
-            details: {
-                [key: string]: unknown;
-            };
-            /**
-             * Id
-             * Format: uuid
-             */
-            id: string;
-            /**
-             * Occurred At
-             * Format: date-time
-             */
-            occurred_at: string;
-            /** Target Id */
-            target_id: string | null;
-            /** Target Type */
-            target_type: string | null;
-            /** Tenant Id */
-            tenant_id: string | null;
-        };
         /** BudgetAdjustmentRequest */
         BudgetAdjustmentRequest: {
             /** Delta Micros */
@@ -1050,6 +1080,11 @@ export interface components {
             unknown_policy: string;
             /** Version */
             version: number;
+        };
+        /** CorrectionRequest */
+        CorrectionRequest: {
+            /** Explanation */
+            explanation: string;
         };
         /**
          * DataClassification
@@ -1529,6 +1564,87 @@ export interface components {
             /** Error Type */
             type: string;
         };
+        /** AuditEventList */
+        trpc_service__admin_api__audit_query__AuditEventList: {
+            /** Events */
+            events: components["schemas"]["trpc_service__admin_api__audit_query__AuditEventResponse"][];
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+        };
+        /** AuditEventResponse */
+        trpc_service__admin_api__audit_query__AuditEventResponse: {
+            /** Action */
+            action: string;
+            /** Actor */
+            actor: string;
+            /** Auth Method */
+            auth_method: string;
+            /** Chain Index */
+            chain_index: number | null;
+            /** Decision */
+            decision: string;
+            /** Event Hash */
+            event_hash: string | null;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Target Id */
+            target_id: string | null;
+            /** Target Type */
+            target_type: string | null;
+            /** Tenant Id */
+            tenant_id: string | null;
+            /** Trace Id */
+            trace_id: string | null;
+        };
+        /** AuditEventList */
+        trpc_service__admin_api__schemas__AuditEventList: {
+            /** Items */
+            items: components["schemas"]["trpc_service__admin_api__schemas__AuditEventResponse"][];
+            /** Next Cursor */
+            next_cursor?: string | null;
+        };
+        /** AuditEventResponse */
+        trpc_service__admin_api__schemas__AuditEventResponse: {
+            /** Action */
+            action: string;
+            /** Actor */
+            actor: string;
+            /** Auth Method */
+            auth_method: string;
+            /** Decision */
+            decision: string;
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Occurred At
+             * Format: date-time
+             */
+            occurred_at: string;
+            /** Target Id */
+            target_id: string | null;
+            /** Target Type */
+            target_type: string | null;
+            /** Tenant Id */
+            tenant_id: string | null;
+        };
     };
     responses: never;
     parameters: never;
@@ -1557,7 +1673,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["AuditEventList"];
+                    "application/json": components["schemas"]["trpc_service__admin_api__schemas__AuditEventList"];
                 };
             };
             /** @description Invalid request */
@@ -3803,6 +3919,266 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    query_audit_events_api_v1_tenants__tenant_id__audit_events_get: {
+        parameters: {
+            query?: {
+                actor?: string | null;
+                target_type?: string | null;
+                target_id?: string | null;
+                trace_id?: string | null;
+                since?: string | null;
+                until?: string | null;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["trpc_service__admin_api__audit_query__AuditEventList"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    correct_audit_event_api_v1_tenants__tenant_id__audit_events__event_id__corrections_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_audit_manifest_api_v1_tenants__tenant_id__audit_manifests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    verify_audit_manifests_api_v1_tenants__tenant_id__audit_manifests_verification_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
             /** @description Internal error */
