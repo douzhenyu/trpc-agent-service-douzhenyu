@@ -391,6 +391,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenant_id}/mcp-servers": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Register Mcp Server */
+        put: operations["register_mcp_server_api_v1_tenants__tenant_id__mcp_servers_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenant_id}/model-prices": {
         parameters: {
             query?: never;
@@ -443,6 +460,92 @@ export interface paths {
         head?: never;
         /** Update Profile */
         patch: operations["update_profile_api_v1_tenants__tenant_id__model_profiles__alias__patch"];
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/tool-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Approvals */
+        get: operations["list_approvals_api_v1_tenants__tenant_id__tool_approvals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/tool-approvals/{approval_id}/decisions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Approval */
+        post: operations["decide_approval_api_v1_tenants__tenant_id__tool_approvals__approval_id__decisions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/tool-call-reconciliation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Open Calls */
+        get: operations["list_open_calls_api_v1_tenants__tenant_id__tool_call_reconciliation_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/tool-call-reconciliation/{call_id}/resolutions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Resolve Call */
+        post: operations["resolve_call_api_v1_tenants__tenant_id__tool_call_reconciliation__call_id__resolutions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/tools": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tools */
+        get: operations["list_tools_api_v1_tenants__tenant_id__tools_get"];
+        /** Register Tool */
+        put: operations["register_tool_api_v1_tenants__tenant_id__tools_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
 }
@@ -745,6 +848,71 @@ export interface components {
              */
             kind: "DRAFT" | "LEGACY";
         };
+        /** ApprovalDecisionRequest */
+        ApprovalDecisionRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "APPROVE" | "DENY";
+        };
+        /** ApprovalList */
+        ApprovalList: {
+            /** Approvals */
+            approvals: components["schemas"]["ApprovalResponse"][];
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+        };
+        /** ApprovalResponse */
+        ApprovalResponse: {
+            /**
+             * Approval Id
+             * Format: uuid
+             */
+            approval_id: string;
+            /** Decided At */
+            decided_at: unknown | null;
+            /** Decided By */
+            decided_by: string | null;
+            /** Expires At */
+            expires_at: unknown;
+            /** Params */
+            params: {
+                [key: string]: unknown;
+            };
+            /** Params Hash */
+            params_hash: string;
+            /** Policy Version */
+            policy_version: string;
+            /** Release Id */
+            release_id: string;
+            /** Requested At */
+            requested_at: unknown;
+            /** Requested By */
+            requested_by: string;
+            /** Requester Role */
+            requester_role: string;
+            /** Side Effect */
+            side_effect: string;
+            status: components["schemas"]["ApprovalStatus"];
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Tool Name */
+            tool_name: string;
+            /** Tool Version */
+            tool_version: number;
+        };
+        /**
+         * ApprovalStatus
+         * @enum {string}
+         */
+        ApprovalStatus: "PENDING" | "APPROVED" | "DENIED" | "EXPIRED" | "CONSUMED";
         /** AuditEventList */
         AuditEventList: {
             /** Items */
@@ -883,6 +1051,11 @@ export interface components {
             /** Version */
             version: number;
         };
+        /**
+         * DataClassification
+         * @enum {string}
+         */
+        DataClassification: "PUBLIC" | "INTERNAL" | "CONFIDENTIAL" | "RESTRICTED";
         /** DraftValidationIssue */
         DraftValidationIssue: {
             /**
@@ -996,6 +1169,15 @@ export interface components {
             items: components["schemas"]["LedgerEntryResponse"][];
             /** Next Cursor */
             next_cursor?: string | null;
+        };
+        /** McpServerRegistration */
+        McpServerRegistration: {
+            /** Server Name */
+            server_name: string;
+            /** Server Version */
+            server_version: number;
+            /** Tools */
+            tools: components["schemas"]["ToolDefinitionUpsert"][];
         };
         /** ModelPriceEntry */
         ModelPriceEntry: {
@@ -1154,6 +1336,16 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** ResolutionRequest */
+        ResolutionRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "CONFIRMED_EXECUTED" | "CONFIRMED_NOT_EXECUTED";
+            /** Note */
+            note?: string | null;
+        };
         /** SessionResponse */
         SessionResponse: {
             /**
@@ -1234,6 +1426,100 @@ export interface components {
             /** Version */
             version: number;
         };
+        /** ToolDefinitionList */
+        ToolDefinitionList: {
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Tools */
+            tools: components["schemas"]["ToolDefinitionResponse"][];
+        };
+        /** ToolDefinitionResponse */
+        ToolDefinitionResponse: {
+            /** Cost Per Call Micros */
+            cost_per_call_micros: number;
+            data_classification: components["schemas"]["DataClassification"];
+            /** Description */
+            description: string;
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Mcp Server */
+            mcp_server: string | null;
+            /** Name */
+            name: string;
+            /** Output Schema */
+            output_schema: {
+                [key: string]: unknown;
+            };
+            /** Scopes */
+            scopes: string[];
+            side_effect: components["schemas"]["ToolSideEffect"];
+            source: components["schemas"]["ToolSource"];
+            /** Supports Idempotency */
+            supports_idempotency: boolean;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Timeout Seconds */
+            timeout_seconds: number;
+            /** Version */
+            version: number;
+        };
+        /** ToolDefinitionUpsert */
+        ToolDefinitionUpsert: {
+            /**
+             * Cost Per Call Micros
+             * @default 0
+             */
+            cost_per_call_micros: number;
+            data_classification: components["schemas"]["DataClassification"];
+            /** Description */
+            description: string;
+            /** Input Schema */
+            input_schema: {
+                [key: string]: unknown;
+            };
+            /** Name */
+            name: string;
+            /** Output Schema */
+            output_schema: {
+                [key: string]: unknown;
+            };
+            /**
+             * Scopes
+             * @default []
+             */
+            scopes: string[];
+            side_effect: components["schemas"]["ToolSideEffect"];
+            /**
+             * Supports Idempotency
+             * @default false
+             */
+            supports_idempotency: boolean;
+            /**
+             * Timeout Seconds
+             * @default 30
+             */
+            timeout_seconds: number;
+            /** Version */
+            version: number;
+        };
+        /**
+         * ToolSideEffect
+         * @enum {string}
+         */
+        ToolSideEffect: "READ_ONLY" | "IDEMPOTENT_WRITE" | "NON_IDEMPOTENT_WRITE" | "HIGH_RISK";
+        /**
+         * ToolSource
+         * @enum {string}
+         */
+        ToolSource: "DECLARED" | "MCP";
         /** ValidationError */
         ValidationError: {
             /** Location */
@@ -3821,6 +4107,77 @@ export interface operations {
             };
         };
     };
+    register_mcp_server_api_v1_tenants__tenant_id__mcp_servers_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["McpServerRegistration"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolDefinitionList"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     set_model_prices_api_v1_tenants__tenant_id__model_prices_put: {
         parameters: {
             query?: never;
@@ -4255,6 +4612,419 @@ export interface operations {
             };
             /** @description Version precondition failed */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_approvals_api_v1_tenants__tenant_id__tool_approvals_get: {
+        parameters: {
+            query?: {
+                status?: string | null;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalList"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    decide_approval_api_v1_tenants__tenant_id__tool_approvals__approval_id__decisions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_open_calls_api_v1_tenants__tenant_id__tool_call_reconciliation_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    }[];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resolve_call_api_v1_tenants__tenant_id__tool_call_reconciliation__call_id__resolutions_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+                call_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolutionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: string;
+                    };
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_tools_api_v1_tenants__tenant_id__tools_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolDefinitionList"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    register_tool_api_v1_tenants__tenant_id__tools_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ToolDefinitionUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolDefinitionResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
