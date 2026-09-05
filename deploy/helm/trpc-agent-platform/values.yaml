@@ -72,6 +72,12 @@ zeroTrust:
       istio: egressgateway
     port: 15008
 
+sandbox:
+  enabled: true
+  runtimeClassName: gvisor
+  handler: runsc
+  manageRuntimeClass: true
+
 components:
   admin-api:
     enabled: true

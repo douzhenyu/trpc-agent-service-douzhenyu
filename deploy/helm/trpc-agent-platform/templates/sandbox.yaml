@@ -1,0 +1,63 @@
+{{- if .Values.sandbox.enabled }}
+{{- $root := . }}
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-manager
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: code-sandbox
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["create", "get", "list", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log", "pods/status"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-manager
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: code-sandbox
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-manager
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "trpc-agent-platform.fullname" $ }}-agent-worker
+    namespace: {{ $.Release.Namespace }}
+{{- if .Values.zeroTrust.sharedResources }}
+---
+apiVersion: node.k8s.io/v1
+kind: RuntimeClass
+metadata:
+  name: {{ .Values.sandbox.runtimeClassName }}
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: code-sandbox
+handler: {{ .Values.sandbox.handler }}
+{{- end }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-sandbox-deny-egress
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: code-sandbox
+spec:
+  podSelector:
+    matchLabels:
+      platform.trpc/sandbox: "true"
+  policyTypes:
+    - Egress
+  egress: []
+{{- end }}

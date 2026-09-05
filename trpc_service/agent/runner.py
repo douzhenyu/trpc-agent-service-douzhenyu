@@ -213,6 +213,7 @@ class ReleasePinnedRunnerRuntime:
         policies: PolicyRulesResolver | None = None,
         tool_invoker: ToolInvocationService | None = None,
         tool_resolver: ReleaseToolResolver | None = None,
+        code_executor: Any | None = None,
     ) -> None:
         self.sdk_version = require_pinned_trpc_agent_version(
             installed_version if installed_version is not None else version("trpc-agent-py")
@@ -222,6 +223,7 @@ class ReleasePinnedRunnerRuntime:
         self._policies = policies
         self._tool_invoker = tool_invoker
         self._tool_resolver = tool_resolver
+        self._code_executor = code_executor
         # Dev/test: a dummy key for the Fake LLM. Production: the platform
         # access token the gateway presents to the LLM Gateway's OpenAI-
         # compatible surface, which resolves tenant secret_refs internally.
@@ -282,6 +284,7 @@ class ReleasePinnedRunnerRuntime:
                 for definition in tools
                 if (invoker := self._tool_invoker) is not None
             ],
+            **({"code_executor": self._code_executor} if self._code_executor is not None else {}),
         )
         self._agents[cache_key] = agent
         return agent
