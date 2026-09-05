@@ -75,6 +75,8 @@ async def _exercise_isolation() -> None:
             "policy_bundle",
             "session_event",
             "session_lease",
+            "tool_call",
+            "tool_definition",
         ]
         assert all(row["relrowsecurity"] and row["relforcerowsecurity"] for row in tenant_tables)
         assert all(row["owner"] != "trpc_platform_app" for row in tenant_tables)

@@ -171,7 +171,7 @@ class ReleaseProtocolRegistry:
             agent = self._ag_ui_agents.get(route.release_id)
             if agent is None:
                 agent = AgUiAgent(
-                    self._runtime.agent_for(route),
+                    self._runtime.agent_for(route, await self._runtime.tools_for(route)),
                     app_name=self._runtime.app_name,
                     session_service=self._runtime.session_service_for(route),
                     user_id_extractor=_user_id_extractor,
@@ -183,7 +183,7 @@ class ReleaseProtocolRegistry:
         async with self._lock:
             a2a_app = self._a2a_apps.get(route.release_id)
             if a2a_app is None:
-                agent = self._runtime.agent_for(route)
+                agent = self._runtime.agent_for(route, await self._runtime.tools_for(route))
                 rpc_url = (
                     f"{self._public_base_url}{self._prefix}"
                     f"/a2a/{route.tenant_id}/{route.release_id}"
