@@ -40,6 +40,7 @@ from trpc_service.execution_bus import (
     session_partition_key,
 )
 from trpc_service.ids import uuid7
+from trpc_service.policy_bundles import PolicyBundleRulesResolver, PolicyBundleService
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.sessions import create_session_if_missing
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
@@ -61,6 +62,7 @@ class AgentGatewaySettings(BaseSettings):
     partition_count: int = 8
     llm_gateway_access_key: str = ""
     public_base_url: str = ""
+    policy_signing_key: str = ""
 
     def validate_runtime(self) -> None:
         missing = [
@@ -220,9 +222,17 @@ def create_app(
             database,
             DatabaseDeploymentRouteResolver(database),
         )
+        policy_resolver = (
+            PolicyBundleRulesResolver(
+                PolicyBundleService(database, signing_key=configured.policy_signing_key)
+            )
+            if configured.policy_signing_key
+            else None
+        )
         runner_runtime = ReleasePinnedRunnerRuntime(
             releases=DatabaseReleaseRouteResolver(database),
             llm_gateway_access_key=configured.llm_gateway_access_key,
+            policies=policy_resolver,
         )
         ReleaseProtocolRegistry(
             app=application,

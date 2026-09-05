@@ -11,6 +11,7 @@ class AdminSettings(BaseSettings):
     session_signing_key: SecretStr = SecretStr("")
     session_cookie_name: str = "trpc_platform_session"
     session_cookie_secure: bool = True
+    policy_signing_key: str = ""
     session_ttl_seconds: int = 900
 
     emergency_admin_username: str = "emergency-admin"

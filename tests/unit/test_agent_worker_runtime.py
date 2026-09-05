@@ -36,7 +36,9 @@ from trpc_service.llm_gateway import (
 
 
 class AllowOutboundPolicy:
-    async def allows(self, _request: object, _profile: object) -> bool:
+    async def allows(
+        self, request: GatewayRequest, profile: ModelProfile, effective: DataClassification
+    ) -> bool:
         return True
 
 

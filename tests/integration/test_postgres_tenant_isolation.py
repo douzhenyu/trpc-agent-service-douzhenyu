@@ -72,6 +72,7 @@ async def _exercise_isolation() -> None:
             "member_role",
             "model_price",
             "model_profile",
+            "policy_bundle",
             "session_event",
             "session_lease",
         ]

@@ -75,7 +75,7 @@ jobs:
           --fail-under=90
       - run: >-
           uv run coverage report
-          --include=trpc_service/budgets.py
+          --include=trpc_service/budgets.py,trpc_service/governance.py
           --fail-under=90
       - run: uv run python scripts/export_openapi.py
 
