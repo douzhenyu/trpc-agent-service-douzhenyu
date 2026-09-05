@@ -150,6 +150,23 @@ class SessionLeaseManager:
         if token is None:
             raise SessionLeaseError("SESSION_LEASE_INVALID")
 
+    async def release(self, tenant_id: UUID, session_id: str, owner_id: str) -> None:
+        """Give up the session lease so another worker can acquire it immediately.
+
+        The row is expired rather than deleted so the fencing token keeps its
+        monotonic per-session sequence across park/resume cycles.
+        """
+
+        async with self._database.tenant_transaction(tenant_id) as connection:
+            await connection.execute(
+                """UPDATE tenant.session_lease
+                SET expires_at=now()
+                WHERE tenant_id=$1 AND session_id=$2 AND owner_id=$3""",
+                tenant_id,
+                session_id,
+                owner_id,
+            )
+
 
 async def commit_session_events(
     connection: Connection,

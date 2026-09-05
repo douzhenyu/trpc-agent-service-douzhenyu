@@ -59,6 +59,7 @@ from trpc_service.admin_api.schemas import (
     TenantResponse,
 )
 from trpc_service.admin_api.settings import AdminSettings
+from trpc_service.admin_api.tool_approvals import create_tool_approval_router
 from trpc_service.admin_api.tools import create_tool_router
 from trpc_service.ids import uuid7
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
@@ -109,6 +110,7 @@ def create_app(
         )
     application.include_router(create_model_profile_router(db))
     application.include_router(create_tool_router(db))
+    application.include_router(create_tool_approval_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -124,6 +126,16 @@ def create_app(
         detail_codes = {
             "invalid credentials": "INVALID_CREDENTIALS",
             "identity provider unavailable": "IDENTITY_PROVIDER_UNAVAILABLE",
+            "TOOL_VERSION_CONFLICT": "TOOL_VERSION_CONFLICT",
+            "APPROVAL_ALREADY_DECIDED": "APPROVAL_ALREADY_DECIDED",
+            "APPROVAL_SELF_DENIED": "APPROVAL_SELF_DENIED",
+            "APPROVER_ROLE_REQUIRED": "APPROVER_ROLE_REQUIRED",
+            "APPROVAL_NOT_FOUND": "APPROVAL_NOT_FOUND",
+            "APPROVAL_EXPIRED": "APPROVAL_EXPIRED",
+            "APPROVAL_BINDING_MISMATCH": "APPROVAL_BINDING_MISMATCH",
+            "RECONCILIATION_ALREADY_RESOLVED": "RECONCILIATION_ALREADY_RESOLVED",
+            "RECONCILIATION_CALL_NOT_FOUND": "RECONCILIATION_CALL_NOT_FOUND",
+            "RECONCILIATION_CALL_NOT_UNKNOWN": "RECONCILIATION_CALL_NOT_UNKNOWN",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(

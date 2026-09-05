@@ -68,6 +68,7 @@ async def _exercise_isolation() -> None:
             "budget_alert",
             "budget_period_state",
             "cost_ledger",
+            "execution_checkpoint",
             "member",
             "member_role",
             "model_price",
@@ -75,7 +76,9 @@ async def _exercise_isolation() -> None:
             "policy_bundle",
             "session_event",
             "session_lease",
+            "tool_approval",
             "tool_call",
+            "tool_call_reconciliation",
             "tool_definition",
         ]
         assert all(row["relrowsecurity"] and row["relforcerowsecurity"] for row in tenant_tables)

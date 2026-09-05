@@ -88,9 +88,10 @@ class ToolDefinitionConflict(ValueError):
 class ToolInvocationError(RuntimeError):
     """Stable, tenant-safe tool governance failure carrying an error code."""
 
-    def __init__(self, code: str) -> None:
+    def __init__(self, code: str, *, details: dict[str, Any] | None = None) -> None:
         super().__init__(code)
         self.code = code
+        self.details = details
 
 
 def validate_params(definition: ToolDefinition, params: dict[str, Any]) -> dict[str, Any]:

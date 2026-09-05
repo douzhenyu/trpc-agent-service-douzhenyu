@@ -141,7 +141,7 @@ def create_tool_router(database: Database) -> APIRouter:
         try:
             stored = await _registry().register(definition, created_by=principal.subject)
         except ToolDefinitionConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise HTTPException(status_code=409, detail="TOOL_VERSION_CONFLICT") from error
         async with database.tenant_transaction(tenant_id) as connection:
             await insert_audit(
                 connection,
@@ -187,7 +187,7 @@ def create_tool_router(database: Database) -> APIRouter:
                 created_by=principal.subject,
             )
         except ToolDefinitionConflict as error:
-            raise HTTPException(status_code=409, detail=str(error)) from error
+            raise HTTPException(status_code=409, detail="TOOL_VERSION_CONFLICT") from error
         async with database.tenant_transaction(tenant_id) as connection:
             await insert_audit(
                 connection,
