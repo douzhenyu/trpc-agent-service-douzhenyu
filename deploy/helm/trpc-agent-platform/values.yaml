@@ -76,6 +76,7 @@ sandbox:
   enabled: true
   runtimeClassName: gvisor
   handler: runsc
+  manageRuntimeClass: true
 
 components:
   admin-api:
