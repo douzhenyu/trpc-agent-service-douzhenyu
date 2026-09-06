@@ -1,0 +1,30 @@
+{
+  "query": {
+    "msg_signature": "7da0c9bfd43884152c832ddaac0f63c3097068b4",
+    "timestamp": "1756900000",
+    "nonce": "nonce-1"
+  },
+  "body": {
+    "encrypt": "VuP0Mm7cj+wCqCK0toRAnl6RllNYCv3Q/YcHhQ65NNXsb5lPGYsegkYhdBjadiDyCD+C28YB0JApNqlmveQboXkoPsWBtAAHILRHqvnI35onAgzJb0lg1xuDi0SDZHk8Kxp9P6PnMyreMtOqLUIR+D+bVX2YhKIozOgKjiA78JMxpEGGXvpgCV7kx1VADt9IIB+EtnsMGUKod5F01C26RSDaku57ni79LDBBgVH+XmgBwwDXmmQcqkmlaK8eiI0qip6ms8//fQKIJvCzwc0KOU0RFppaWPDdm67UaGCu5Tl5hvTZKttzWxBwaREyHK+SSxjGNA3GYpoDcWG6mHhpalre9kjhiMT4kMGFix/0LqzOkHslHDD4Mv01sNfBUruQNfDexn3YhWNlSuERoRRFQkU3aKb0MfGl5alXA14r0Iw="
+  },
+  "plaintext": {
+    "msgtype": "text",
+    "msgid": "msg-group-1",
+    "aibotid": "wecom-bot-1",
+    "chattype": "group",
+    "chatid": "wr-room-1",
+    "from": {
+      "userid": "user-li"
+    },
+    "text": {
+      "content": "会议室今天下午有空吗"
+    },
+    "response_url": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response",
+    "timestamp": 1756900001
+  },
+  "test_material": {
+    "token": "wecom-smoke-token",
+    "encoding_aes_key": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+    "receive_id": "wecom-smoke-corpus"
+  }
+}
