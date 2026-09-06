@@ -11,6 +11,7 @@ receive a processing notice first.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from hashlib import sha256
@@ -105,8 +106,11 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         configured.validate_runtime()
         active_database = database or Database(configured.database_url)
-        if database is None:
-            await active_database.open()
+        # The database may be unreachable when the pod first starts (zero-trust
+        # network policies, migration timing). Serve health endpoints, keep
+        # retrying in the background, and fail closed per callback until the
+        # connection succeeds.
+        connect_task = asyncio.create_task(_connect_database(active_database))
         registry = ChannelBindingRegistry(DatabaseBindingStore(active_database))
         application.state.registry = registry
         application.state.inbound = inbound or ChannelInboundService(
@@ -135,6 +139,7 @@ def create_app(
         try:
             yield
         finally:
+            connect_task.cancel()
             await application.state.runner.close()
             if database is None:
                 await active_database.close()
@@ -219,6 +224,10 @@ def create_app(
             accepted = await inbound.ingest(tenant_id=tenant_id, event=signed)
         except InboundError as error:
             return PlainTextResponse(error.code, status_code=409)
+        except RuntimeError:
+            # Database still unreachable: fail closed rather than process an
+            # execution whose reply cannot be tracked.
+            return PlainTextResponse("DATABASE_UNAVAILABLE", status_code=503)
         if accepted.deduplicated:
             return PlainTextResponse("")
         runner: ReleasePinnedRunnerRuntime = application.state.runner
@@ -242,6 +251,15 @@ def create_app(
         return PlainTextResponse("")
 
     return application
+
+
+async def _connect_database(database: Database) -> None:
+    while True:
+        try:
+            await database.open()
+            return
+        except Exception:
+            await asyncio.sleep(2.0)
 
 
 async def _deliver(
