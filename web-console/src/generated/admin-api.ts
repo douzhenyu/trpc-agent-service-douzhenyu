@@ -442,6 +442,58 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenant_id}/channel-bindings": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Bindings */
+        get: operations["list_bindings_api_v1_tenants__tenant_id__channel_bindings_get"];
+        /** Register Binding */
+        put: operations["register_binding_api_v1_tenants__tenant_id__channel_bindings_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/channel-bindings/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Resolve Binding */
+        get: operations["resolve_binding_api_v1_tenants__tenant_id__channel_bindings_resolve_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/channel-bindings/{binding_id}/status-changes": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Change Status */
+        post: operations["change_status_api_v1_tenants__tenant_id__channel_bindings__binding_id__status_changes_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenant_id}/cost-ledger": {
         parameters: {
             query?: never;
@@ -981,6 +1033,10 @@ export interface components {
          * @enum {string}
          */
         ApprovalStatus: "PENDING" | "APPROVED" | "DENIED" | "EXPIRED" | "CONSUMED";
+        /** BindingStatusChange */
+        BindingStatusChange: {
+            status: components["schemas"]["ChannelBindingStatus"];
+        };
         /** BudgetAdjustmentRequest */
         BudgetAdjustmentRequest: {
             /** Delta Micros */
@@ -1080,6 +1136,65 @@ export interface components {
             unknown_policy: string;
             /** Version */
             version: number;
+        };
+        /** ChannelBindingList */
+        ChannelBindingList: {
+            /** Bindings */
+            bindings: components["schemas"]["ChannelBindingResponse"][];
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+        };
+        /** ChannelBindingResponse */
+        ChannelBindingResponse: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /**
+             * Binding Id
+             * Format: uuid
+             */
+            binding_id: string;
+            /** Channel Type */
+            channel_type: string;
+            /** Environment */
+            environment: string;
+            /** External Bot Id */
+            external_bot_id: string;
+            /** Secret Ref */
+            secret_ref: string;
+            /** Status */
+            status: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+        };
+        /**
+         * ChannelBindingStatus
+         * @enum {string}
+         */
+        ChannelBindingStatus: "ACTIVE" | "DISABLED";
+        /** ChannelBindingUpsert */
+        ChannelBindingUpsert: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /** Channel Type */
+            channel_type: string;
+            /** Environment */
+            environment: string;
+            /** External Bot Id */
+            external_bot_id: string;
+            /** Secret Ref */
+            secret_ref: string;
         };
         /** CorrectionRequest */
         CorrectionRequest: {
@@ -4389,6 +4504,277 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["BudgetResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_bindings_api_v1_tenants__tenant_id__channel_bindings_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelBindingList"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    register_binding_api_v1_tenants__tenant_id__channel_bindings_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelBindingUpsert"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelBindingResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    resolve_binding_api_v1_tenants__tenant_id__channel_bindings_resolve_get: {
+        parameters: {
+            query: {
+                channel_type: string;
+                external_bot_id: string;
+            };
+            header?: never;
+            path: {
+                tenant_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelBindingResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    change_status_api_v1_tenants__tenant_id__channel_bindings__binding_id__status_changes_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                tenant_id: string;
+                binding_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BindingStatusChange"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelBindingResponse"];
                 };
             };
             /** @description Authentication failed */

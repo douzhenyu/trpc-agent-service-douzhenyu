@@ -27,6 +27,7 @@ from trpc_service.admin_api.auth import (
     verify_emergency_password,
 )
 from trpc_service.admin_api.budgets import create_budget_router
+from trpc_service.admin_api.channel_bindings import create_channel_binding_router
 from trpc_service.admin_api.database import Database, record_to_dict
 from trpc_service.admin_api.http_contract import ETAG_HEADER, error_responses
 from trpc_service.admin_api.idempotency import (
@@ -113,6 +114,7 @@ def create_app(
     application.include_router(create_tool_router(db))
     application.include_router(create_tool_approval_router(db))
     application.include_router(create_audit_query_router(db))
+    application.include_router(create_channel_binding_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -138,6 +140,9 @@ def create_app(
             "RECONCILIATION_ALREADY_RESOLVED": "RECONCILIATION_ALREADY_RESOLVED",
             "RECONCILIATION_CALL_NOT_FOUND": "RECONCILIATION_CALL_NOT_FOUND",
             "RECONCILIATION_CALL_NOT_UNKNOWN": "RECONCILIATION_CALL_NOT_UNKNOWN",
+            "CHANNEL_BINDING_CONFLICT": "CHANNEL_BINDING_CONFLICT",
+            "SECRET_REF_REJECTED": "SECRET_REF_REJECTED",
+            "CHANNEL_BINDING_NOT_FOUND": "CHANNEL_BINDING_NOT_FOUND",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(

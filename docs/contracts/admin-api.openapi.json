@@ -884,6 +884,18 @@
         "title": "ApprovalStatus",
         "type": "string"
       },
+      "BindingStatusChange": {
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/ChannelBindingStatus"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "BindingStatusChange",
+        "type": "object"
+      },
       "BudgetAdjustmentRequest": {
         "additionalProperties": false,
         "properties": {
@@ -1162,6 +1174,127 @@
           "version"
         ],
         "title": "BudgetResponse",
+        "type": "object"
+      },
+      "ChannelBindingList": {
+        "properties": {
+          "bindings": {
+            "items": {
+              "$ref": "#/components/schemas/ChannelBindingResponse"
+            },
+            "title": "Bindings",
+            "type": "array"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tenant_id",
+          "bindings"
+        ],
+        "title": "ChannelBindingList",
+        "type": "object"
+      },
+      "ChannelBindingResponse": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "binding_id": {
+            "format": "uuid",
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "channel_type": {
+            "title": "Channel Type",
+            "type": "string"
+          },
+          "environment": {
+            "title": "Environment",
+            "type": "string"
+          },
+          "external_bot_id": {
+            "title": "External Bot Id",
+            "type": "string"
+          },
+          "secret_ref": {
+            "title": "Secret Ref",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding_id",
+          "tenant_id",
+          "channel_type",
+          "external_bot_id",
+          "application_id",
+          "environment",
+          "secret_ref",
+          "status"
+        ],
+        "title": "ChannelBindingResponse",
+        "type": "object"
+      },
+      "ChannelBindingStatus": {
+        "enum": [
+          "ACTIVE",
+          "DISABLED"
+        ],
+        "title": "ChannelBindingStatus",
+        "type": "string"
+      },
+      "ChannelBindingUpsert": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "channel_type": {
+            "pattern": "^(FAKE|WECOM|FEISHU)$",
+            "title": "Channel Type",
+            "type": "string"
+          },
+          "environment": {
+            "pattern": "^(DEVELOPMENT|STAGING|PRODUCTION)$",
+            "title": "Environment",
+            "type": "string"
+          },
+          "external_bot_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "External Bot Id",
+            "type": "string"
+          },
+          "secret_ref": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Secret Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "channel_type",
+          "external_bot_id",
+          "application_id",
+          "environment",
+          "secret_ref"
+        ],
+        "title": "ChannelBindingUpsert",
         "type": "object"
       },
       "CorrectionRequest": {
@@ -6800,6 +6933,374 @@
         "summary": "Adjust Budget",
         "tags": [
           "budgets"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/channel-bindings": {
+      "get": {
+        "operationId": "list_bindings_api_v1_tenants__tenant_id__channel_bindings_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelBindingList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "List Bindings",
+        "tags": [
+          "channels"
+        ]
+      },
+      "put": {
+        "operationId": "register_binding_api_v1_tenants__tenant_id__channel_bindings_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChannelBindingUpsert"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelBindingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Register Binding",
+        "tags": [
+          "channels"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/channel-bindings/resolve": {
+      "get": {
+        "operationId": "resolve_binding_api_v1_tenants__tenant_id__channel_bindings_resolve_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "channel_type",
+            "required": true,
+            "schema": {
+              "title": "Channel Type",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "external_bot_id",
+            "required": true,
+            "schema": {
+              "title": "External Bot Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelBindingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Resolve Binding",
+        "tags": [
+          "channels"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/channel-bindings/{binding_id}/status-changes": {
+      "post": {
+        "operationId": "change_status_api_v1_tenants__tenant_id__channel_bindings__binding_id__status_changes_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "binding_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Binding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BindingStatusChange"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChannelBindingResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Change Status",
+        "tags": [
+          "channels"
         ]
       }
     },
