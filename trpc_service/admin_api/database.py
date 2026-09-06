@@ -69,6 +69,8 @@ class Database:
         self._engine: AsyncEngine | None = None
 
     async def open(self) -> None:
+        if self._engine is not None:
+            return
         self._engine = create_async_engine(sqlalchemy_url(self._url), pool_size=10)
         async with self._engine.connect() as connection:
             await connection.execute(text("SELECT 1"))

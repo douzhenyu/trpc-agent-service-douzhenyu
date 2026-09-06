@@ -1,0 +1,30 @@
+{
+  "query": {
+    "msg_signature": "ce490a2e09500486d7c21c5673c3edb29af1108d",
+    "timestamp": "1756900000",
+    "nonce": "nonce-1"
+  },
+  "body": {
+    "encrypt": "Wiwt4GP1OWx0oxZ47lvkMvINuM153yVrko3UUU2GR5SwB9C4ihZb1dADq9pqWBtfqOWV2m3x4vSYExucIfpyUZSpvLGauV1Ekm1om2F01bhsUqHJlEgKtIs3DEa36Pl6XG+BIfhKFm+as97VxoT+ScpsRvWMfuWJYUyrqXSw4I0zN5gmzO+SJLOKCO2Y4NaY08snv8JUKzSSyEuLDzew5sVFi15WCGSoK/lXMOPQzc+GxinPFdQocENuk9J035rGAeYLO/6uDdYLiOPcsGelqA6aEsupKAVIeafRUBW3355Zga4+wvitIPxZbfIncMO90Ugoi3JuYaamee9I5Mi0F3bmAAzOVJxxSTgN4Wp6mu+AU5+bwTBWZD5394DWwC7oRlpNolZ2Bhu3f49fZqbgNxV7ESaqfYrk0FncSdF+51g="
+  },
+  "plaintext": {
+    "msgtype": "text",
+    "msgid": "msg-single-1",
+    "aibotid": "wecom-bot-1",
+    "chattype": "single",
+    "chatid": "",
+    "from": {
+      "userid": "user-zhang"
+    },
+    "text": {
+      "content": "帮我看下今天的日程"
+    },
+    "response_url": "https://qyapi.weixin.qq.com/cgi-bin/aibot/response",
+    "timestamp": 1756900000
+  },
+  "test_material": {
+    "token": "wecom-smoke-token",
+    "encoding_aes_key": "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQ",
+    "receive_id": "wecom-smoke-corpus"
+  }
+}

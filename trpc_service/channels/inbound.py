@@ -180,6 +180,40 @@ class ChannelInboundService:
 
         return f"im:{binding.channel_type}:{binding.binding_id}:{external_user_id}"
 
+    async def signed_event(
+        self,
+        *,
+        tenant_id: str,
+        channel_type: str,
+        external_bot_id: str,
+        message_key: str,
+        text: str,
+        external_user_id: str,
+    ) -> dict[str, str]:
+        """Build the internal ledger event with its integrity signature.
+
+        Protocol adapters verify their own channel signatures first; this
+        signs the normalized fields so the inbound ledger can detect
+        same-key different-payload quarantines downstream.
+        """
+
+        binding = await self._registry.resolve(
+            tenant_id=tenant_id,
+            channel_type=channel_type,
+            external_bot_id=external_bot_id,
+        )
+        if binding is None:
+            raise InboundError("BINDING_NOT_FOUND")
+        material = self._secrets.resolve(binding.secret_ref)
+        return {
+            "channel_type": channel_type,
+            "external_bot_id": external_bot_id,
+            "message_key": message_key,
+            "text": text,
+            "external_user_id": external_user_id,
+            "signature": fake_channel_signature(material, message_key, text, external_user_id),
+        }
+
     async def ingest(self, *, tenant_id: str, event: dict[str, str]) -> AgentExecutionAccepted:
         from datetime import UTC, datetime
 
