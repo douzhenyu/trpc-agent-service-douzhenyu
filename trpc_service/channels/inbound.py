@@ -215,8 +215,6 @@ class ChannelInboundService:
         }
 
     async def ingest(self, *, tenant_id: str, event: dict[str, str]) -> AgentExecutionAccepted:
-        from datetime import UTC, datetime
-
         for field in ("channel_type", "external_bot_id", "message_key", "text", "external_user_id"):
             if not event.get(field):
                 raise InboundError("EVENT_INVALID")
