@@ -182,6 +182,7 @@ def test_alembic_environment_rejects_offline_migrations(
         "trpc_service.migrations.versions.0007_immutable_releases",
         "trpc_service.migrations.versions.0008_release_content_snapshots",
         "trpc_service.migrations.versions.0009_agent_deployments",
+        "trpc_service.migrations.versions.0017_feishu_connection_leases",
     ],
 )
 def test_release_revisions_execute_their_immutable_upgrade_plan(

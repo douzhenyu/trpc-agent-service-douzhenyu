@@ -234,6 +234,26 @@ class ChannelInboundService:
         if not hmac.compare_digest(event.get("signature", ""), expected):
             raise InboundError("SIGNATURE_INVALID")
 
+        return await self.ingest_verified(tenant_id=tenant_id, event=event)
+
+    async def ingest_verified(
+        self, *, tenant_id: str, event: dict[str, str]
+    ) -> AgentExecutionAccepted:
+        """Persist an event after its Channel Adapter verified its native protocol."""
+
+        from datetime import UTC, datetime
+
+        for field in ("channel_type", "external_bot_id", "message_key", "text", "external_user_id"):
+            if not event.get(field):
+                raise InboundError("EVENT_INVALID")
+        binding = await self._registry.resolve(
+            tenant_id=tenant_id,
+            channel_type=event["channel_type"],
+            external_bot_id=event["external_bot_id"],
+        )
+        if binding is None:
+            raise InboundError("BINDING_NOT_FOUND")
+
         payload_hash = inbound_payload_hash(event["text"], event["external_user_id"])
         message = InboundMessage(
             tenant_id=tenant_id,
@@ -254,7 +274,10 @@ class ChannelInboundService:
             return AgentExecutionAccepted(
                 execution_id=UUID(stored.execution_id),
                 release_id=UUID(stored.release_id),
-                session_id=f"channel:{binding.binding_id}:{event['external_user_id']}",
+                session_id=(
+                    f"channel:{binding.binding_id}:"
+                    f"{event.get('session_key', event['external_user_id'])}"
+                ),
                 deduplicated=True,
             )
         if not created and stored.payload_hash != payload_hash:
@@ -293,7 +316,8 @@ class ChannelInboundService:
 
         from trpc_service.agent_gateway import AgentExecutionSubmission
 
-        session_id = f"channel:{binding.binding_id}:{event['external_user_id']}"
+        session_scope = event.get("session_key", event["external_user_id"])
+        session_id = f"channel:{binding.binding_id}:{session_scope}"
         return AgentExecutionSubmission(
             tenant_id=UUID(binding.tenant_id),
             application_id=UUID(binding.application_id),

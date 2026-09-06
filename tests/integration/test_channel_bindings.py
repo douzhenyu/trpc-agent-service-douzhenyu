@@ -19,6 +19,7 @@ from trpc_service.channels.delivery import (
     FakeChannelTransport,
     ReplyDeliveryService,
 )
+from trpc_service.channels.feishu import DatabaseLongConnectionLeaseStore
 from trpc_service.channels.inbound import ChannelInboundService, InboundError
 from trpc_service.channels.store import (
     DatabaseBindingStore,
@@ -54,7 +55,8 @@ async def _prepare_database() -> None:
     connection = await asyncpg.connect(ADMIN_URL)
     try:
         await connection.execute(
-            "TRUNCATE tenant.reply_delivery_attempt, tenant.reply_delivery, "
+            "TRUNCATE tenant.channel_connection_lease, tenant.reply_delivery_attempt, "
+            "tenant.reply_delivery, "
             "tenant.inbound_conflict, tenant.inbound_message, tenant.channel_binding, "
             "tenant.tool_call_reconciliation, tenant.execution_checkpoint, "
             "tenant.tool_approval, tenant.tool_call, tenant.tool_definition, "
@@ -376,5 +378,37 @@ def test_channel_tables_enforce_tenant_isolation() -> None:
                 assert await other.fetchval("SELECT count(*) FROM tenant.reply_delivery") == 0
         finally:
             await other.close()
+
+    asyncio.run(scenario())
+
+
+def test_feishu_long_connection_lease_fences_gateway_instances_on_postgres() -> None:
+    asyncio.run(_prepare_database())
+    tenant_id, _ = asyncio.run(_seed_tenant_with_application())
+
+    async def scenario() -> None:
+        database = Database(APP_URL)
+        await database.open()
+        try:
+            first = DatabaseLongConnectionLeaseStore(database, tenant_id)
+            second = DatabaseLongConnectionLeaseStore(database, tenant_id)
+            acquired = await first.acquire(
+                "feishu:cli_feishu_bot", "gateway-a", now=100.0, ttl_seconds=30.0
+            )
+            assert acquired is not None and acquired.fencing_token == 1
+            assert (
+                await second.acquire(
+                    "feishu:cli_feishu_bot", "gateway-b", now=100.0, ttl_seconds=30.0
+                )
+                is None
+            )
+            await first.release(acquired)
+            takeover = await second.acquire(
+                "feishu:cli_feishu_bot", "gateway-b", now=101.0, ttl_seconds=30.0
+            )
+            assert takeover is not None and takeover.fencing_token == 2
+            assert await first.renew(acquired, now=101.0, ttl_seconds=30.0) is None
+        finally:
+            await database.close()
 
     asyncio.run(scenario())
