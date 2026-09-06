@@ -300,3 +300,6 @@ def _http(application: FastAPI) -> AsyncClient:
         application.state.http = AsyncClient()
     client: AsyncClient = application.state.http
     return client
+
+
+app = create_app()
