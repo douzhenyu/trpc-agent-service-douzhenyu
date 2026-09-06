@@ -56,7 +56,7 @@ class RecordingSubmitter:
 
 @dataclass
 class ScriptedCardClient:
-    responses: list[FeishuCardResponse]
+    responses: list[FeishuCardResponse | TimeoutError]
     requests: list[dict[str, object]] = field(default_factory=list)
     reconciliation: str = "unknown"
 
@@ -70,7 +70,10 @@ class ScriptedCardClient:
                 "idempotency_key": idempotency_key,
             }
         )
-        return self.responses.pop(0)
+        response = self.responses.pop(0)
+        if isinstance(response, TimeoutError):
+            raise response
+        return response
 
     def reconcile_card(self, idempotency_key: str) -> str:
         assert idempotency_key
@@ -267,9 +270,7 @@ def test_card_transport_updates_one_card_with_a_stable_delivery_key_and_throttle
 
 
 def test_timed_out_card_delivery_is_reconciled_without_a_blind_resend() -> None:
-    client = ScriptedCardClient(
-        [FeishuCardResponse(outcome_unknown=True, error_code="TIMEOUT")], reconciliation="delivered"
-    )
+    client = ScriptedCardClient([TimeoutError()], reconciliation="delivered")
     transport = FeishuCardTransport(client=client)
     store = MemoryDeliveryStore()
     service = ReplyDeliveryService(store=store, transport=transport, backoff_seconds=0)
@@ -287,3 +288,66 @@ def test_timed_out_card_delivery_is_reconciled_without_a_blind_resend() -> None:
 
     assert result.status is DeliveryState.DELIVERED
     assert len(client.requests) == 1
+
+
+def test_failed_card_delivery_retries_with_the_same_delivery_key() -> None:
+    client = ScriptedCardClient(
+        [
+            FeishuCardResponse(delivered=False, error_code="FEISHU_CARD_FAILED"),
+            FeishuCardResponse(delivered=True),
+        ]
+    )
+    store = MemoryDeliveryStore()
+    service = ReplyDeliveryService(
+        store=store,
+        transport=FeishuCardTransport(client=client, min_update_interval_seconds=0),
+        backoff_seconds=0,
+    )
+    delivery = asyncio.run(
+        service.enqueue(
+            tenant_id=TENANT,
+            binding_id="binding-feishu-1",
+            execution_id=EXECUTION,
+            external_conversation_id="oc_chat_1",
+            content="最终答案",
+        )
+    )
+
+    result = asyncio.run(service.run(delivery.delivery_id, tenant_id=TENANT))
+
+    assert result.status is DeliveryState.DELIVERED
+    assert result.attempts == 2
+    assert [request["idempotency_key"] for request in client.requests] == [
+        delivery.delivery_id,
+        delivery.delivery_id,
+    ]
+
+
+def test_rate_limited_card_delivery_retries_through_the_delivery_state_machine() -> None:
+    client = ScriptedCardClient(
+        [
+            FeishuCardResponse(rate_limited=True, error_code="FEISHU_CARD_RATE_LIMITED"),
+            FeishuCardResponse(delivered=True),
+        ]
+    )
+    store = MemoryDeliveryStore()
+    service = ReplyDeliveryService(
+        store=store,
+        transport=FeishuCardTransport(client=client, min_update_interval_seconds=0),
+        backoff_seconds=0,
+    )
+    delivery = asyncio.run(
+        service.enqueue(
+            tenant_id=TENANT,
+            binding_id="binding-feishu-1",
+            execution_id=EXECUTION,
+            external_conversation_id="oc_chat_1",
+            content="最终答案",
+        )
+    )
+
+    result = asyncio.run(service.run(delivery.delivery_id, tenant_id=TENANT))
+
+    assert result.status is DeliveryState.DELIVERED
+    assert result.attempts == 2
+    assert len(client.requests) == 2
