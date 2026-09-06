@@ -67,16 +67,11 @@ class ChannelGatewaySettings(BaseSettings):
     stream_min_interval_seconds: float = 2.0
 
     def validate_runtime(self) -> None:
-        missing = [
-            name
-            for name, value in {
-                "DATABASE_URL": self.database_url,
-                "WECOM_TOKEN": self.wecom_token,
-            }.items()
-            if not value
-        ]
-        if missing:
-            raise RuntimeError(f"Channel Gateway configuration is incomplete: {', '.join(missing)}")
+        if not self.database_url:
+            raise RuntimeError("Channel Gateway configuration is incomplete: DATABASE_URL")
+        # WECOM_TOKEN/AES_KEY stay unset until the tenant callback credentials
+        # are provisioned; without them every callback fails closed (signature
+        # verification cannot succeed), which is the safe default.
 
 
 class DatabaseChannelSecretResolver:
