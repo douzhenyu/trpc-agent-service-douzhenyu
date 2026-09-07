@@ -1,0 +1,48 @@
+{{- $channelGateway := index .Values.components "channel-gateway" -}}
+{{- if and .Values.zeroTrust.enabled $channelGateway.enabled .Values.channelGateway.feishuEgress.enabled }}
+apiVersion: networking.istio.io/v1
+kind: ServiceEntry
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" . }}-feishu-api
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: channel-gateway
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  exportTo: ["."]
+  hosts:
+{{ toYaml .Values.channelGateway.feishuEgress.hosts | indent 4 }}
+  location: MESH_EXTERNAL
+  ports:
+    - number: 443
+      name: tls-feishu
+      protocol: TLS
+  resolution: DNS
+---
+apiVersion: networking.istio.io/v1
+kind: VirtualService
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" . }}-feishu-egress
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" . }}
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: channel-gateway
+  annotations:
+    argocd.argoproj.io/sync-wave: "-2"
+spec:
+  hosts:
+{{ toYaml .Values.channelGateway.feishuEgress.hosts | indent 4 }}
+  gateways: [mesh]
+  tls:
+    - match:
+        - port: 443
+          sniHosts:
+{{ toYaml .Values.channelGateway.feishuEgress.hosts | indent 12 }}
+      route:
+        - destination:
+            host: {{ .Values.channelGateway.feishuEgress.service | quote }}
+            port:
+              number: 443
+{{- end }}

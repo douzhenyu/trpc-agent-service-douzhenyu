@@ -55,7 +55,7 @@ spec:
         trpc-agent-platform.io/network-profile: {{ $name }}
     spec:
       serviceAccountName: {{ $name }}
-      automountServiceAccountToken: {{ or (eq $name "agent-worker") (eq $name "agent-gateway") }}
+      automountServiceAccountToken: {{ or (eq $name "agent-worker") (eq $name "agent-gateway") (eq $name "channel-gateway") }}
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -122,8 +122,18 @@ spec:
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:
-                  name: {{ $.Values.agentWorker.databaseSecretName }}
-                  key: {{ $.Values.agentWorker.databaseSecretKey }}
+                  name: {{ $.Values.channelGateway.databaseSecretName }}
+                  key: {{ $.Values.channelGateway.databaseSecretKey }}
+            - name: VAULT_URL
+              value: {{ $.Values.channelGateway.vaultUrl | quote }}
+            - name: VAULT_KUBERNETES_ROLE
+              value: {{ $.Values.channelGateway.vaultKubernetesRole | quote }}
+            - name: FEISHU_LONG_CONNECTIONS
+              value: {{ $.Values.channelGateway.feishuLongConnections | toJson | quote }}
+            - name: GATEWAY_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
 {{- else if eq $name "agent-gateway" }}
           command:
             - /app/.venv/bin/uvicorn

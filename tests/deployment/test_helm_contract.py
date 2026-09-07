@@ -327,7 +327,15 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
             manifest["metadata"]["labels"].get("app.kubernetes.io/component"),
         ): manifest
         for manifest in manifests
-        if manifest["kind"] in {"Deployment", "Rollout", "ServiceAccount", "NetworkPolicy"}
+        if manifest["kind"]
+        in {
+            "Deployment",
+            "Rollout",
+            "ServiceAccount",
+            "NetworkPolicy",
+            "ServiceEntry",
+            "VirtualService",
+        }
     }
 
     for unit in EXPECTED_UNITS:
@@ -338,7 +346,7 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         network_policy = resources[("NetworkPolicy", unit)]
 
         assert pod_spec["serviceAccountName"] == service_account["metadata"]["name"]
-        expects_kubernetes_auth = unit in {"agent-worker", "agent-gateway"}
+        expects_kubernetes_auth = unit in {"agent-worker", "agent-gateway", "channel-gateway"}
         assert service_account["automountServiceAccountToken"] is expects_kubernetes_auth
         assert pod_spec["automountServiceAccountToken"] is expects_kubernetes_auth
         assert pod_spec["securityContext"] == {
@@ -383,6 +391,29 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         "VAULT_URL",
         "VAULT_KUBERNETES_ROLE",
         "OPA_URL",
+    }
+    channel_gateway = resources[("Rollout", "channel-gateway")]
+    channel_container = channel_gateway["spec"]["template"]["spec"]["containers"][0]
+    assert {item["name"] for item in channel_container["env"]} >= {
+        "DATABASE_URL",
+        "VAULT_URL",
+        "VAULT_KUBERNETES_ROLE",
+        "FEISHU_LONG_CONNECTIONS",
+        "GATEWAY_INSTANCE_ID",
+    }
+    feishu_entry = resources[("ServiceEntry", "channel-gateway")]
+    assert feishu_entry["spec"] == {
+        "exportTo": ["."],
+        "hosts": ["open.feishu.cn"],
+        "location": "MESH_EXTERNAL",
+        "ports": [{"number": 443, "name": "tls-feishu", "protocol": "TLS"}],
+        "resolution": "DNS",
+    }
+    feishu_route = resources[("VirtualService", "channel-gateway")]
+    assert feishu_route["spec"]["gateways"] == ["mesh"]
+    assert feishu_route["spec"]["tls"][0]["route"][0]["destination"] == {
+        "host": "istio-egressgateway.istio-egress.svc.cluster.local",
+        "port": {"number": 443},
     }
 
 
