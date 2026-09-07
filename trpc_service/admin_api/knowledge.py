@@ -7,15 +7,17 @@ import json
 from typing import Annotated, Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Header, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException, Query
 
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.auth import Principal, principal_from_request
 from trpc_service.admin_api.database import Database, record_to_dict
 from trpc_service.admin_api.http_contract import error_responses
 from trpc_service.admin_api.idempotency import remember, replay_for
+from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.schemas import (
     KnowledgeBaseCreate,
+    KnowledgeBaseList,
     KnowledgeBaseResponse,
     KnowledgeDeploymentCreate,
     KnowledgeDeploymentResponse,
@@ -102,6 +104,61 @@ def create_knowledge_router(database: Database) -> APIRouter:
                 response=result,
             )
         return result
+
+    @router.get(
+        "",
+        response_model=KnowledgeBaseList,
+        responses=error_responses(401, 403),
+    )
+    async def list_bases(
+        tenant_id: UUID,
+        principal: Annotated[Principal, Depends(principal_from_request)],
+        limit: Annotated[int, Query(ge=1, le=200)] = 50,
+        cursor: str | None = None,
+    ) -> KnowledgeBaseList:
+        await require_tenant_access(
+            database,
+            principal,
+            tenant_id,
+            "read",
+            "knowledge_base.read",
+            target_type="knowledge_base",
+        )
+        conditions = ["tenant_id=$1"]
+        args: list[Any] = [tenant_id]
+        if cursor is not None:
+            try:
+                after = decode_cursor(cursor)
+            except ValueError as error:
+                raise HTTPException(status_code=400, detail="INVALID_CURSOR") from error
+            args.append(after)
+            conditions.append(f"id < ${len(args)}")
+        args.append(limit + 1)
+        async with database.tenant_transaction(tenant_id) as connection:
+            rows = await connection.fetch(
+                f"""SELECT tenant_id,id,slug,name,version,created_at
+                FROM tenant.knowledge_base
+                WHERE {" AND ".join(conditions)}
+                ORDER BY id DESC LIMIT ${len(args)}""",
+                *args,
+            )
+        has_more = len(rows) > limit
+        rows = rows[:limit]
+        return KnowledgeBaseList(
+            tenant_id=tenant_id,
+            items=[
+                KnowledgeBaseResponse(
+                    id=row["id"],
+                    tenant_id=row["tenant_id"],
+                    slug=row["slug"],
+                    name=row["name"],
+                    version=row["version"],
+                    created_at=row["created_at"],
+                )
+                for row in rows
+            ],
+            next_cursor=encode_cursor(rows[-1]["id"]) if has_more and rows else None,
+        )
 
     @router.post(
         "/{base_id}/revisions",

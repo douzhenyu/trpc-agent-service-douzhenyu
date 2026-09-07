@@ -40,6 +40,7 @@ from trpc_service.admin_api.idempotency import (
 from trpc_service.admin_api.im_subjects import create_im_subject_router
 from trpc_service.admin_api.knowledge import create_knowledge_router
 from trpc_service.admin_api.model_profiles import create_model_profile_router
+from trpc_service.admin_api.ops import create_ops_router
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.policies import create_policy_router
 from trpc_service.admin_api.preconditions import parse_if_match
@@ -127,6 +128,7 @@ def create_app(
     application.include_router(create_audit_query_router(db))
     application.include_router(create_channel_binding_router(db))
     application.include_router(create_im_subject_router(db))
+    application.include_router(create_ops_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -192,6 +194,10 @@ def create_app(
             ): "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED",
             "EVAL_RUN_REQUIRED": "EVAL_RUN_REQUIRED",
             "EVAL_RUN_FAILED": "EVAL_RUN_FAILED",
+            "DEAD_LETTER_NOT_FOUND": "DEAD_LETTER_NOT_FOUND",
+            "DEAD_LETTER_NOT_RETRYABLE": "DEAD_LETTER_NOT_RETRYABLE",
+            "INVALID_OPS_CURSOR": "INVALID_OPS_CURSOR",
+            "INVALID_CURSOR": "INVALID_CURSOR",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(
