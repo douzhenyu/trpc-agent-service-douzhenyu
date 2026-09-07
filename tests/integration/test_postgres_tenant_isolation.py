@@ -68,6 +68,7 @@ async def _exercise_isolation() -> None:
             "budget_alert",
             "budget_period_state",
             "channel_binding",
+            "channel_connection_lease",
             "cost_ledger",
             "execution_checkpoint",
             "inbound_conflict",

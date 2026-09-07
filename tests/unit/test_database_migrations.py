@@ -21,9 +21,10 @@ def test_alembic_migrations_resolve_to_one_head() -> None:
         "script_location", str(Path(database_migrations.__file__).with_name("migrations"))
     )
 
-    assert ScriptDirectory.from_config(config).get_heads() == [
-        "0018_merge_feishu_and_knowledge_heads",
-    ]
+    script = ScriptDirectory.from_config(config)
+
+    assert script.get_heads() == ["0018_merge_feishu_knowledge"]
+    assert all(len(revision.revision) <= 32 for revision in script.walk_revisions())
 
 
 def test_migration_statements_keep_the_role_block_intact() -> None:

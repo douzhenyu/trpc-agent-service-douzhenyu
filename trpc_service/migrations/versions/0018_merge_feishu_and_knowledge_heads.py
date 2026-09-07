@@ -1,6 +1,6 @@
 """Merge Feishu connection leases and Knowledge Revisions schema heads."""
 
-revision = "0018_merge_feishu_and_knowledge_heads"
+revision = "0018_merge_feishu_knowledge"
 down_revision = ("0017_feishu_connection_leases", "0017_knowledge_revisions")
 branch_labels = None
 depends_on = None
