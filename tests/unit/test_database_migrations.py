@@ -4,12 +4,26 @@ import asyncio
 import importlib
 import runpy
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Any
 
 import pytest
 from alembic import context
+from alembic.config import Config
+from alembic.script import ScriptDirectory
 
 from trpc_service import database_migrations
+
+
+def test_alembic_migrations_resolve_to_one_head() -> None:
+    config = Config()
+    config.set_main_option(
+        "script_location", str(Path(database_migrations.__file__).with_name("migrations"))
+    )
+
+    assert ScriptDirectory.from_config(config).get_heads() == [
+        "0018_merge_feishu_and_knowledge_heads",
+    ]
 
 
 def test_migration_statements_keep_the_role_block_intact() -> None:
