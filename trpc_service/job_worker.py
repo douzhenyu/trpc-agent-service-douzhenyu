@@ -40,6 +40,8 @@ from trpc_service.execution_bus import (
 )
 from trpc_service.ids import uuid7
 from trpc_service.memory_access import IM_GROUP_MEMORY_POLICY
+from trpc_service.storage_migration import StorageMigrationAdapterFactory, StorageMigrationExecutor
+from trpc_service.storage_migration_worker import StorageMigrationWorker
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
@@ -544,6 +546,7 @@ def create_app(
     settings: JobWorkerSettings | None = None,
     *,
     deletion_executor: DeletionExecutor | None = None,
+    storage_migration_factory: StorageMigrationAdapterFactory | None = None,
 ) -> FastAPI:
     configured = settings or JobWorkerSettings()
 
@@ -572,6 +575,12 @@ def create_app(
             else None
         )
         retention_lifecycle = RetentionSweep(database)
+        migration_worker = (
+            StorageMigrationWorker(database, StorageMigrationExecutor(storage_migration_factory))
+            if storage_migration_factory is not None
+            else None
+        )
+        application.state.storage_migration_worker = migration_worker
 
         async def consume() -> None:
             while True:
@@ -620,6 +629,26 @@ def create_app(
                 await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
 
         retention_task = asyncio.create_task(purge_expired_content())
+
+        async def migrate_storage() -> None:
+            assert migration_worker is not None
+            while True:
+                progressed = False
+                try:
+                    async with database.transaction() as connection:
+                        tenants = await connection.fetch(
+                            "SELECT id FROM platform.tenant WHERE status='ACTIVE' ORDER BY id"
+                        )
+                    for tenant in tenants:
+                        progressed = await migration_worker.run_once(tenant["id"]) or progressed
+                except Exception:
+                    LOGGER.exception("storage migration worker failed")
+                if not progressed:
+                    await asyncio.sleep(configured.projection_poll_interval_seconds)
+
+        migration_task = (
+            asyncio.create_task(migrate_storage()) if migration_worker is not None else None
+        )
         try:
             yield
         finally:
@@ -629,6 +658,8 @@ def create_app(
             if deletion_task is not None:
                 deletion_task.cancel()
             retention_task.cancel()
+            if migration_task is not None:
+                migration_task.cancel()
             await database.close()
 
     application = FastAPI(title="tRPC-Agent Platform job-worker", lifespan=lifespan)

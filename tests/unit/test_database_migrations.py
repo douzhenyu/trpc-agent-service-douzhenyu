@@ -23,7 +23,7 @@ def test_alembic_migrations_resolve_to_one_head() -> None:
 
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["0026_content_lifecycle"]
+    assert script.get_heads() == ["0029_content_lifecycle"]
     assert all(len(revision.revision) <= 32 for revision in script.walk_revisions())
 
 
@@ -198,7 +198,7 @@ def test_alembic_environment_rejects_offline_migrations(
         "trpc_service.migrations.versions.0008_release_content_snapshots",
         "trpc_service.migrations.versions.0009_agent_deployments",
         "trpc_service.migrations.versions.0017_feishu_connection_leases",
-        "trpc_service.migrations.versions.0026_content_lifecycle",
+        "trpc_service.migrations.versions.0029_content_lifecycle",
     ],
 )
 def test_release_revisions_execute_their_immutable_upgrade_plan(

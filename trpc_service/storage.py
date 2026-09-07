@@ -7,6 +7,7 @@ leaving immutable Session Events in an authoritative SQL/object backend.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from enum import StrEnum
@@ -105,6 +106,31 @@ class StorageAdapter(Protocol):
     async def verify_tenant_erased(self, tenant_id: str) -> bool: ...
 
 
+class OnlineMigrationAdapter(StorageAdapter, Protocol):
+    """Data-plane primitives required for a resumable online migration.
+
+    A production adapter implements these against its native snapshot and
+    change-feed APIs.  They deliberately are not exposed through the Admin
+    API: only the migration worker is allowed to copy or replay tenant data.
+    """
+
+    async def snapshot_tenant(self, tenant_id: str) -> tuple[int, dict[str, bytes]]: ...
+
+    async def changes_since(
+        self, tenant_id: str, watermark: int
+    ) -> tuple[int, list[tuple[str, bytes | None]]]: ...
+
+    async def apply_changes(
+        self, tenant_id: str, changes: list[tuple[str, bytes | None]]
+    ) -> None: ...
+
+    async def tenant_fingerprint(self, tenant_id: str) -> tuple[int, str, int]: ...
+
+    async def vector_recall_against(
+        self, source: OnlineMigrationAdapter, tenant_id: str
+    ) -> float: ...
+
+
 class _NamespacedMemoryAdapter:
     """Deterministic test adapter for a tenant-prefixed backend namespace."""
 
@@ -112,9 +138,13 @@ class _NamespacedMemoryAdapter:
 
     def __init__(self) -> None:
         self._objects: dict[tuple[str, str], bytes] = {}
+        self._watermark = 0
+        self._changes: list[tuple[int, str, str, bytes | None]] = []
 
     async def put(self, tenant_id: str, key: str, value: bytes) -> None:
         self._objects[(tenant_id, key)] = value
+        self._watermark += 1
+        self._changes.append((self._watermark, tenant_id, key, value))
 
     async def get(self, tenant_id: str, key: str) -> bytes | None:
         return self._objects.get((tenant_id, key))
@@ -123,10 +153,54 @@ class _NamespacedMemoryAdapter:
         keys = [key for key in self._objects if key[0] == tenant_id]
         for key in keys:
             del self._objects[key]
+        self._watermark += 1
+        self._changes.extend((self._watermark, tenant_id, key[1], None) for key in keys)
         return len(keys)
 
     async def verify_tenant_erased(self, tenant_id: str) -> bool:
         return not any(stored_tenant == tenant_id for stored_tenant, _ in self._objects)
+
+    async def snapshot_tenant(self, tenant_id: str) -> tuple[int, dict[str, bytes]]:
+        return self._watermark, {
+            key: value
+            for (stored_tenant, key), value in self._objects.items()
+            if stored_tenant == tenant_id
+        }
+
+    async def changes_since(
+        self, tenant_id: str, watermark: int
+    ) -> tuple[int, list[tuple[str, bytes | None]]]:
+        return self._watermark, [
+            (key, value)
+            for sequence, stored_tenant, key, value in self._changes
+            if stored_tenant == tenant_id and sequence > watermark
+        ]
+
+    async def apply_changes(self, tenant_id: str, changes: list[tuple[str, bytes | None]]) -> None:
+        for key, value in changes:
+            if value is None:
+                self._objects.pop((tenant_id, key), None)
+            else:
+                self._objects[(tenant_id, key)] = value
+
+    async def tenant_fingerprint(self, tenant_id: str) -> tuple[int, str, int]:
+        _, snapshot = await self.snapshot_tenant(tenant_id)
+        digest = hashlib.sha256()
+        for key, value in sorted(snapshot.items()):
+            digest.update(key.encode())
+            digest.update(b"\0")
+            digest.update(value)
+            digest.update(b"\0")
+        return len(snapshot), digest.hexdigest(), self._watermark
+
+    async def vector_recall_against(self, source: OnlineMigrationAdapter, tenant_id: str) -> float:
+        source_watermark, source_objects = await source.snapshot_tenant(tenant_id)
+        del source_watermark
+        _, target_objects = await self.snapshot_tenant(tenant_id)
+        if not source_objects:
+            return 1.0
+        matches = sum(target_objects.get(key) == value for key, value in source_objects.items())
+        return matches / len(source_objects)
 
 
 class InMemorySqlAdapter(_NamespacedMemoryAdapter):
@@ -221,7 +295,12 @@ class DatabaseStorageProfileResolver:
         async with self._database.tenant_transaction(tenant_id) as connection:
             row = await connection.fetchrow(
                 """SELECT tenant_id,alias,classification,worker_pool,encryption_key_ref,backends
-                FROM tenant.storage_profile WHERE tenant_id=$1 AND active""",
+                FROM tenant.storage_profile p WHERE tenant_id=$1 AND active
+                AND NOT EXISTS (
+                  SELECT 1 FROM tenant.storage_migration m
+                  WHERE m.tenant_id=p.tenant_id AND m.target_profile_id=p.id
+                  AND m.state NOT IN ('OBSERVING','COMPLETED')
+                )""",
                 tenant_id,
             )
         if row is None:
