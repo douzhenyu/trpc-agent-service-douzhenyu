@@ -93,6 +93,7 @@ async def _exercise_isolation() -> None:
             "session_event",
             "session_lease",
             "session_summary",
+            "storage_profile",
             "tool_approval",
             "tool_call",
             "tool_call_reconciliation",
