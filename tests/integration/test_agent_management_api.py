@@ -106,6 +106,41 @@ async def _seed_tenant_developer(tenant_id: str) -> tuple[str, str]:
     return token, str(user_id)
 
 
+async def _seed_passing_production_eval(
+    tenant_id: str, application_id: str, release_id: str
+) -> None:
+    suite_id, run_id = uuid4(), uuid4()
+    connection = await asyncpg.connect(ADMIN_URL)
+    try:
+        await connection.execute(
+            """INSERT INTO tenant.eval_suite
+            (tenant_id,id,application_id,slug,suite_version,dataset,scorers,thresholds,
+            deterministic_assertions,content_hash,created_by)
+            VALUES ($1,$2,$3,'production-gate',1,'{}'::jsonb,'[]'::jsonb,
+            '{"quality_min":0,"latency_ms_max":999999,"cost_micros_max":999999}'::jsonb,
+            '[]'::jsonb,$4,'test-suite')""",
+            tenant_id,
+            suite_id,
+            application_id,
+            "0" * 64,
+        )
+        await connection.execute(
+            """INSERT INTO tenant.eval_run
+            (tenant_id,id,application_id,suite_id,release_id,environment,sdk_version,
+            dependency_snapshot,evidence,results,status,content_hash,created_by)
+            VALUES ($1,$2,$3,$4,$5,'PRODUCTION','1.1.19','{}'::jsonb,'{}'::jsonb,
+            '{"status":"PASSED"}'::jsonb,'PASSED',$6,'test-run')""",
+            tenant_id,
+            run_id,
+            application_id,
+            suite_id,
+            release_id,
+            "1" * 64,
+        )
+    finally:
+        await connection.close()
+
+
 def test_platform_admin_can_create_and_read_a_tenant_agent_application() -> None:
     asyncio.run(_prepare_database())
     with TestClient(create_app(_settings())) as client:
@@ -1008,6 +1043,10 @@ def test_environment_deployments_require_production_approval_and_route_sessions_
         )
         assert stale_rollback.status_code == 412
 
+        asyncio.run(
+            _seed_passing_production_eval(tenant_id, application["id"], second_release["id"])
+        )
+
         production = client.post(
             deployments_url,
             headers={**developer, "Idempotency-Key": str(uuid4())},
@@ -1123,6 +1162,8 @@ def test_agent_release_and_deployment_commands_replay_idempotently() -> None:
             == release.json()["id"]
         )
         assert client.get(releases_url, headers=developer).json()["items"] == [release.json()]
+
+        asyncio.run(_seed_passing_production_eval(tenant_id, application_id, release.json()["id"]))
 
         deployments_url = f"{applications_url}/{application_id}/deployments"
         production_key = str(uuid4())
