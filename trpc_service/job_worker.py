@@ -257,10 +257,11 @@ async def _upsert_summary(
     event_range: SessionEventRange,
     events: list[Any],
 ) -> None:
+    source_from_version, content = _summary_projection(events)
     await connection.execute(
         """INSERT INTO tenant.session_summary
         (tenant_id,session_id,source_from_version,source_version,content)
-        VALUES ($1,$2,1,$3,$4)
+        VALUES ($1,$2,$3,$4,$5)
         ON CONFLICT (tenant_id,session_id) DO UPDATE SET
           source_from_version=EXCLUDED.source_from_version,
           source_version=EXCLUDED.source_version,
@@ -269,8 +270,9 @@ async def _upsert_summary(
         WHERE tenant.session_summary.source_version < EXCLUDED.source_version""",
         tenant_id,
         session_id,
+        source_from_version,
         event_range.to_version,
-        _projection_content(events),
+        content,
     )
 
 
@@ -312,18 +314,46 @@ async def _insert_memory_projection(
 
 
 def _projection_content(events: list[Any]) -> str:
-    parts: list[str] = []
-    for event in events:
-        payload = event["payload"]
-        value = payload if isinstance(payload, dict) else json.loads(str(payload))
-        content = value.get("content")
-        if content is None:
-            choices = value.get("completion", {}).get("choices", [])
-            if choices and isinstance(choices[0], dict):
-                content = choices[0].get("message", {}).get("content")
-        if content:
-            parts.append(f"{event['kind']}: {content}")
+    parts = [content for event in events if (content := _event_content(event)) is not None]
     return "\n".join(parts)[:16000] or "Session Event projection contained no textual content."
+
+
+def _event_content(event: Any) -> str | None:
+    payload = event["payload"]
+    value = payload if isinstance(payload, dict) else json.loads(str(payload))
+    content = value.get("content")
+    if content is None:
+        choices = value.get("completion", {}).get("choices", [])
+        if choices and isinstance(choices[0], dict):
+            content = choices[0].get("message", {}).get("content")
+    return f"{event['kind']}: {content}" if content else None
+
+
+def _summary_projection(events: list[Any]) -> tuple[int, str]:
+    """Keep the newest complete Event range that fits in Summary storage."""
+
+    fragments: list[tuple[int, str]] = []
+    for event in events:
+        content = _event_content(event)
+        if content is not None:
+            fragments.append((int(event["sequence"]), content))
+    if not fragments:
+        return int(events[0]["sequence"]), "Session Event projection contained no textual content."
+
+    selected: list[tuple[int, str]] = []
+    remaining = 16000
+    for sequence, content in reversed(fragments):
+        separator = 1 if selected else 0
+        available = remaining - separator
+        if available <= 0:
+            break
+        if len(content) > available:
+            selected.append((sequence, content[-available:]))
+            break
+        selected.append((sequence, content))
+        remaining -= len(content) + separator
+    selected.reverse()
+    return selected[0][0], "\n".join(content for _, content in selected)
 
 
 async def _publish_memory_invalidation(

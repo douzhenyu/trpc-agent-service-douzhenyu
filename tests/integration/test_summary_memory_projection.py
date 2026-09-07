@@ -199,6 +199,19 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
             await processor.handle(execution_envelope)
             assert await dispatcher.dispatch_pending() == 1
             assert await consumer.run_once() is True
+
+            third = await submitter.submit(
+                _submission(tenant_id, application_id, f"{'x' * 15_980} LATEST-CONTEXT", "m-3")
+            )
+            assert await dispatcher.dispatch_pending() == 2
+            execution_envelope = next(
+                envelope
+                for envelope in reversed(bus.published)
+                if envelope.data.get("execution_id") == str(third.execution_id)
+            )
+            await processor.handle(execution_envelope)
+            assert await dispatcher.dispatch_pending() == 1
+            assert await consumer.run_once() is True
             await projections.handle(older_projection)
 
             connection = await asyncpg.connect(ADMIN_URL)
@@ -210,9 +223,8 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                     "session-summary-memory",
                 )
                 assert summary is not None
-                assert (summary["source_from_version"], summary["source_version"]) == (1, 4)
-                assert "tea" in summary["content"]
-                assert "coffee" in summary["content"]
+                assert (summary["source_from_version"], summary["source_version"]) == (5, 6)
+                assert "LATEST-CONTEXT" in summary["content"]
                 memories = await connection.fetch(
                     """SELECT id,subject_id,source_session_id,source_from_version,source_to_version,
                     policy_version,is_valid FROM tenant.memory_record
@@ -225,6 +237,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 assert source_ranges == [
                     (1, 2),
                     (3, 4),
+                    (5, 6),
                 ]
                 assert all(row["subject_id"] == "im:FEISHU:binding-1:alice" for row in memories)
                 assert all(row["source_session_id"] == "session-summary-memory" for row in memories)
@@ -270,7 +283,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 )
                 assert valid is False
                 assert audit_action == "memory.corrected"
-                assert int(invalidations) >= 3
+                assert int(invalidations) >= 4
                 await connection.execute(
                     """UPDATE platform.session_projection_delivery SET status='DEAD_LETTER',
                     completed_at=NULL WHERE outbox_id=(SELECT id FROM platform.outbox_record
