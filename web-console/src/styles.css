@@ -173,3 +173,41 @@ li {
     flex-direction: column;
   }
 }
+
+.ops-section {
+  margin-top: 1.25rem;
+  border-top: 1px solid #e2e2e2;
+  padding-top: 0.75rem;
+}
+.ops-hint {
+  color: #666;
+  font-size: 0.9rem;
+}
+.ops-empty {
+  color: #888;
+}
+.ops-error {
+  color: #8f2d2d;
+}
+.ops-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.85rem;
+}
+.ops-table th,
+.ops-cell {
+  border: 1px solid #e2e2e2;
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  word-break: break-all;
+}
+.ops-table thead th {
+  background: #f6f6f6;
+}
+.ops-actions {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  padding: 0;
+}

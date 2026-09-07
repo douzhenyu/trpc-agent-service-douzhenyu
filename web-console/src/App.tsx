@@ -16,6 +16,7 @@ import {
 } from "./api";
 import { AgentWorkspace } from "./AgentWorkspace";
 import { ModelProfilesWorkspace } from "./ModelProfilesWorkspace";
+import { OpsConsole } from "./OpsConsole";
 import { StorageProfilesWorkspace } from "./StorageProfilesWorkspace";
 import "./styles.css";
 
@@ -274,6 +275,7 @@ export default function App() {
             </section>
           </>
         )}
+        <OpsConsole tenants={state.tenants} />
         <AgentWorkspace tenants={state.tenants} />
         <ModelProfilesWorkspace tenants={state.tenants} />
         <StorageProfilesWorkspace tenants={state.tenants} />

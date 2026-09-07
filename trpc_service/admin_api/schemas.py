@@ -478,6 +478,14 @@ class KnowledgeBaseResponse(BaseModel):
     created_at: datetime
 
 
+class KnowledgeBaseList(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID
+    items: list[KnowledgeBaseResponse]
+    next_cursor: str | None = None
+
+
 class KnowledgeSource(BaseModel):
     source_ref: str = Field(min_length=1, max_length=512)
     content: str = Field(min_length=1, max_length=1_000_000)
