@@ -89,6 +89,7 @@ from trpc_service.governance import DataClassification, scan_messages
 from trpc_service.llm_gateway import VaultSecretProvider
 from trpc_service.memory_access import SubjectMemoryReader, memory_policy_for_session_scope
 from trpc_service.runtime_health import RuntimeHealthResponse
+from trpc_service.telemetry import install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 logger = logging.getLogger(__name__)
@@ -500,6 +501,7 @@ def create_app(
         )
         return PlainTextResponse("")
 
+    install_telemetry(application, "channel-gateway")
     return application
 
 

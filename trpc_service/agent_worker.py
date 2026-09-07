@@ -38,6 +38,11 @@ from trpc_service.sessions import (
     commit_session_events,
 )
 from trpc_service.storage import DatabaseStorageProfileResolver
+from trpc_service.telemetry import (
+    EXECUTION_OUTCOMES,
+    install_telemetry,
+    linked_span,
+)
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
@@ -328,6 +333,23 @@ class AgentExecutionProcessor:
 
     async def handle(self, envelope: ExecutionEnvelope) -> None:
         data = ExecutionRequestedData.model_validate(envelope.data)
+        with linked_span(
+            "agent_worker.execute",
+            envelope.trace_parent,
+            {
+                "tenant.id": data.tenant_id,
+                "execution.id": data.execution_id,
+                "session.id": data.session_id,
+            },
+        ):
+            try:
+                await self._handle(data, envelope)
+            except ModelGatewayError:
+                EXECUTION_OUTCOMES.labels(service="agent-worker", outcome="FAILED").inc()
+                raise
+            EXECUTION_OUTCOMES.labels(service="agent-worker", outcome="SUCCEEDED").inc()
+
+    async def _handle(self, data: ExecutionRequestedData, envelope: ExecutionEnvelope) -> None:
         tenant_id = UUID(data.tenant_id)
         session_id = data.session_id
         storage = await self._storage_profiles.resolve(tenant_id)
@@ -607,6 +629,7 @@ def create_app(
             completion=result.completion,
         )
 
+    install_telemetry(application, "agent-worker")
     return application
 
 

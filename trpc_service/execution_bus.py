@@ -52,6 +52,7 @@ class ExecutionRequestedData(BaseModel):
     environment: str
     session_id: str
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
+    trace_parent: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class SessionEventsCommittedData(BaseModel):
@@ -297,6 +298,12 @@ class OutboxDispatcher:
                     data_classification=(
                         str(row["data_classification"])
                         if row["data_classification"] is not None
+                        else None
+                    ),
+                    trace_parent=(
+                        str(row["payload"]["trace_parent"])
+                        if isinstance(row["payload"], dict)
+                        and isinstance(row["payload"].get("trace_parent"), str)
                         else None
                     ),
                 )

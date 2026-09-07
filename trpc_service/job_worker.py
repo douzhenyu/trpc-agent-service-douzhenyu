@@ -42,6 +42,7 @@ from trpc_service.ids import uuid7
 from trpc_service.memory_access import IM_GROUP_MEMORY_POLICY
 from trpc_service.storage_migration import StorageMigrationAdapterFactory, StorageMigrationExecutor
 from trpc_service.storage_migration_worker import StorageMigrationWorker
+from trpc_service.telemetry import install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
@@ -714,6 +715,7 @@ def create_app(
     ) -> dict[str, bool]:
         return await correct_memory(tenant_id, memory_id, payload, operation_token)
 
+    install_telemetry(application, "job-worker")
     return application
 
 

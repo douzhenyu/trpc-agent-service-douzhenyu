@@ -43,6 +43,7 @@ from trpc_service.ids import uuid7
 from trpc_service.policy_bundles import PolicyBundleRulesResolver, PolicyBundleService
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.sessions import create_session_if_missing
+from trpc_service.telemetry import current_traceparent, install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
@@ -88,6 +89,7 @@ class AgentExecutionSubmission(BaseModel):
     memory_policy_version: str = Field(default="policy:none", min_length=1, max_length=128)
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
     message_id: str | None = Field(default=None, min_length=1, max_length=256)
+    trace_parent: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AgentExecutionAccepted(BaseModel):
@@ -189,6 +191,7 @@ class AgentExecutionSubmitter:
                 environment=submission.environment,
                 session_id=submission.session_id,
                 messages=submission.messages,
+                trace_parent=submission.trace_parent,
             )
             await insert_outbox_record(
                 connection,
@@ -294,6 +297,9 @@ def create_app(
     async def submit_execution(
         submission: AgentExecutionSubmission, response: Response
     ) -> AgentExecutionAccepted:
+        inbound = current_traceparent()
+        if inbound is not None and submission.trace_parent is None:
+            submission = submission.model_copy(update={"trace_parent": inbound})
         submitter = cast(AgentExecutionSubmitter, application.state.submitter)
         try:
             accepted = await submitter.submit(submission)
@@ -302,4 +308,5 @@ def create_app(
         response.status_code = 200 if accepted.deduplicated else 202
         return accepted
 
+    install_telemetry(application, "agent-gateway")
     return application
