@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -18,6 +19,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
 from trpc_service.execution_bus import ExecutionEnvelope, ExecutionRequestedData
+from trpc_service.knowledge import DatabaseKnowledgeDeploymentResolver
 from trpc_service.llm_gateway import (
     DataClassification,
     GatewayCompletionClient,
@@ -48,6 +50,7 @@ class ReleaseRoute:
     allowed_fallback_aliases: frozenset[str]
     profile_snapshots: tuple[ModelProfile, ...] = ()
     instructions: str = ""
+    knowledge_refs: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +76,12 @@ class ReleaseRouteResolver(Protocol):
 class DeploymentRouteResolver(Protocol):
     async def resolve(
         self, tenant_id: str, application_id: str, environment: str, session_id: str
+    ) -> str | None: ...
+
+
+class KnowledgeDeploymentResolver(Protocol):
+    async def resolve(
+        self, tenant_id: str, base_id: str, environment: str, session_id: str
     ) -> str | None: ...
 
 
@@ -166,6 +175,9 @@ class DatabaseReleaseRouteResolver:
             allowed_fallback_aliases=frozenset(str(alias) for alias in row["fallback_aliases"]),
             profile_snapshots=snapshots,
             instructions=str(snapshot.get("instructions") or ""),
+            knowledge_refs=tuple(
+                str(reference) for reference in snapshot.get("knowledge_refs", [])
+            ),
         )
         self._routes[cache_key] = route
         return route
@@ -299,12 +311,16 @@ class AgentExecutionProcessor:
         releases: ReleaseRouteResolver,
         leases: SessionLeaseManager,
         owner_id: str,
+        knowledge_deployments: KnowledgeDeploymentResolver | None = None,
     ) -> None:
         self._worker = worker
         self._database = database
         self._releases = releases
         self._leases = leases
         self._owner_id = owner_id
+        self._knowledge_deployments = knowledge_deployments or DatabaseKnowledgeDeploymentResolver(
+            database
+        )
 
     async def handle(self, envelope: ExecutionEnvelope) -> None:
         data = ExecutionRequestedData.model_validate(envelope.data)
@@ -316,6 +332,24 @@ class AgentExecutionProcessor:
         route = await self._releases.resolve(data.tenant_id, data.release_id)
         if route is None:
             raise ModelGatewayError("RELEASE_NOT_FOUND")
+        knowledge_revision_ids: list[str] = []
+        if route.knowledge_refs:
+            for base_id in route.knowledge_refs:
+                revision_id = await self._knowledge_deployments.resolve(
+                    data.tenant_id, base_id, data.environment, session_id
+                )
+                if revision_id is None:
+                    raise ModelGatewayError("KNOWLEDGE_DEPLOYMENT_NOT_FOUND")
+                knowledge_revision_ids.append(revision_id)
+            async with self._database.tenant_transaction(tenant_id) as connection:
+                await connection.execute(
+                    """UPDATE tenant.agent_execution
+                    SET knowledge_revision_ids=CAST($3 AS jsonb),updated_at=now()
+                    WHERE tenant_id=$1 AND id=$2""",
+                    tenant_id,
+                    UUID(data.execution_id),
+                    json.dumps(knowledge_revision_ids),
+                )
         result = await self._worker.complete(
             AgentExecutionRequest(
                 data.tenant_id,
@@ -337,6 +371,7 @@ class AgentExecutionProcessor:
                     "model_alias": result.model_alias,
                     "fallback_used": result.fallback_used,
                     "completion": result.completion,
+                    "knowledge_revision_ids": knowledge_revision_ids,
                 },
             ),
         ]
