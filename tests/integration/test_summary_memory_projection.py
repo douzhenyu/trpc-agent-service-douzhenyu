@@ -229,7 +229,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 assert all(row["subject_id"] == "im:FEISHU:binding-1:alice" for row in memories)
                 assert all(row["source_session_id"] == "session-summary-memory" for row in memories)
                 assert all(row["policy_version"] == "policy:7" for row in memories)
-                memory_id, second_memory_id = memories[0]["id"], memories[1]["id"]
+                memory_id = memories[0]["id"]
             finally:
                 await connection.close()
 
@@ -250,12 +250,6 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                     json={"actor": "memory-admin", "reason": "source was corrected"},
                 )
                 assert corrected.status_code == 200, corrected.text
-                deleted = client.post(
-                    f"/internal/v1/tenants/{tenant_id}/memories/{second_memory_id}/deletions",
-                    headers={"X-Job-Worker-Operator-Token": "memory-operator"},
-                    json={"actor": "memory-admin", "reason": "retention request"},
-                )
-                assert deleted.status_code == 200, deleted.text
             connection = await asyncpg.connect(ADMIN_URL)
             try:
                 valid = await connection.fetchval(
@@ -276,20 +270,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 )
                 assert valid is False
                 assert audit_action == "memory.corrected"
-                deleted_count = await connection.fetchval(
-                    "SELECT count(*) FROM tenant.memory_record WHERE tenant_id=$1 AND id=$2",
-                    UUID(tenant_id),
-                    second_memory_id,
-                )
-                deleted_audit = await connection.fetchval(
-                    """SELECT action FROM platform.audit_event WHERE tenant_id=$1 AND target_id=$2
-                    ORDER BY occurred_at DESC LIMIT 1""",
-                    UUID(tenant_id),
-                    str(second_memory_id),
-                )
-                assert int(invalidations) >= 4
-                assert int(deleted_count) == 0
-                assert deleted_audit == "memory.deleted"
+                assert int(invalidations) >= 3
                 await connection.execute(
                     """UPDATE platform.session_projection_delivery SET status='DEAD_LETTER',
                     completed_at=NULL WHERE outbox_id=(SELECT id FROM platform.outbox_record

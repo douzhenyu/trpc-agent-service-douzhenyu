@@ -177,42 +177,6 @@ class SummaryMemoryJobWorker:
             tenant_id, memory_id, actor=actor, reason=reason, action="memory.corrected"
         )
 
-    async def delete_memory(
-        self, tenant_id: str, memory_id: UUID, *, actor: str, reason: str
-    ) -> bool:
-        """Erase derived Memory while preserving its source Session Events and audit evidence."""
-
-        if not 1 <= len(actor) <= 256 or not 1 <= len(reason) <= 512:
-            raise ValueError("MEMORY_CORRECTION_INVALID")
-        parsed_tenant_id = UUID(tenant_id)
-        async with self._database.tenant_transaction(parsed_tenant_id) as connection:
-            deleted = await connection.fetchrow(
-                """DELETE FROM tenant.memory_record WHERE tenant_id=$1 AND id=$2
-                RETURNING source_session_id""",
-                parsed_tenant_id,
-                memory_id,
-            )
-            if deleted is None:
-                return False
-            await _publish_memory_invalidation(
-                connection,
-                tenant_id=parsed_tenant_id,
-                memory_id=str(memory_id),
-                session_id=str(deleted["source_session_id"]),
-                reason="DELETED",
-            )
-            await insert_audit(
-                connection,
-                Principal(subject=actor, auth_method="oidc", roles=frozenset()),
-                "memory.deleted",
-                "ALLOW",
-                target_type="memory",
-                target_id=str(memory_id),
-                tenant_id=parsed_tenant_id,
-                details={"reason": reason},
-            )
-        return True
-
     async def _invalidate_memory(
         self, tenant_id: str, memory_id: UUID, *, actor: str, reason: str, action: str
     ) -> bool:
@@ -587,19 +551,16 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
         assert isinstance(consumer, SessionProjectionConsumer)
         return await consumer.metrics()
 
-    async def invalidate(
+    async def correct_memory(
         tenant_id: UUID,
         memory_id: UUID,
         payload: MemoryInvalidationRequest,
         operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
-        *,
-        action: str,
     ) -> dict[str, bool]:
         require_operator(operation_token)
         projections = application.state.projections
         assert isinstance(projections, SummaryMemoryJobWorker)
-        operation = projections.correct_memory if action == "correct" else projections.delete_memory
-        invalidated = await operation(
+        invalidated = await projections.correct_memory(
             str(tenant_id), memory_id, actor=payload.actor, reason=payload.reason
         )
         if not invalidated:
@@ -613,16 +574,7 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
         payload: MemoryInvalidationRequest,
         operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> dict[str, bool]:
-        return await invalidate(tenant_id, memory_id, payload, operation_token, action="correct")
-
-    @application.post("/internal/v1/tenants/{tenant_id}/memories/{memory_id}/deletions")
-    async def delete_memory_endpoint(
-        tenant_id: UUID,
-        memory_id: UUID,
-        payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
-    ) -> dict[str, bool]:
-        return await invalidate(tenant_id, memory_id, payload, operation_token, action="delete")
+        return await correct_memory(tenant_id, memory_id, payload, operation_token)
 
     return application
 
