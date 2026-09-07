@@ -71,6 +71,7 @@ async def _exercise_isolation() -> None:
             "channel_connection_lease",
             "cost_ledger",
             "execution_checkpoint",
+            "im_subject_association",
             "inbound_conflict",
             "inbound_message",
             "knowledge_base",

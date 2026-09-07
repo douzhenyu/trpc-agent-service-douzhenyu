@@ -102,6 +102,7 @@ def test_normalization_maps_single_and_group_messages() -> None:
         "message_key": "msg-single-1",
         "text": "帮我看下今天的日程",
         "external_user_id": "user-zhang",
+        "session_key": "direct:user-zhang",
     }
     group = parse_event(
         json.dumps(
@@ -117,6 +118,25 @@ def test_normalization_maps_single_and_group_messages() -> None:
         )
     )
     assert group.chattype == "group" and group.chatid == "wr-room-1"
+    assert normalize_to_inbound(group)["session_key"] == "group:wr-room-1"
+
+
+def test_group_normalization_rejects_a_missing_stable_chat_id() -> None:
+    event = parse_event(
+        json.dumps(
+            {
+                "msgtype": "text",
+                "msgid": "msg-group-without-chat-id",
+                "aibotid": "wecom-bot-1",
+                "chattype": "group",
+                "from": {"userid": "user-li"},
+                "text": {"content": "hello"},
+            }
+        )
+    )
+
+    with pytest.raises(WeComProtocolError, match="WECOM_GROUP_CHAT_ID_REQUIRED"):
+        normalize_to_inbound(event)
 
 
 def test_revoke_events_are_recognized() -> None:

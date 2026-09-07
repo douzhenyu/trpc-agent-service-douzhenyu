@@ -180,12 +180,21 @@ def normalize_to_inbound(event: WeComEvent) -> dict[str, str]:
     service so it is derived from the same binding secret material.
     """
 
+    if event.chattype == "group":
+        if not event.chatid:
+            raise WeComProtocolError("WECOM_GROUP_CHAT_ID_REQUIRED")
+        session_key = f"group:{event.chatid}"
+    elif event.chattype == "single":
+        session_key = f"direct:{event.from_userid}"
+    else:
+        raise WeComProtocolError("WECOM_EVENT_INVALID")
     return {
         "channel_type": "WECOM",
         "external_bot_id": event.aibotid,
         "message_key": event.msgid,
         "text": event.text_content,
         "external_user_id": event.from_userid,
+        "session_key": session_key,
     }
 
 

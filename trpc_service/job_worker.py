@@ -36,6 +36,7 @@ from trpc_service.execution_bus import (
     session_partition_key,
 )
 from trpc_service.ids import uuid7
+from trpc_service.memory_access import IM_GROUP_MEMORY_POLICY
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
@@ -285,7 +286,7 @@ async def _insert_memory_projection(
     events: list[Any],
 ) -> None:
     subject_id = execution["subject_id"]
-    if subject_id is None:
+    if subject_id is None or execution["memory_policy_version"] == IM_GROUP_MEMORY_POLICY:
         return
     memory_id = await connection.fetchval(
         """INSERT INTO tenant.memory_record
