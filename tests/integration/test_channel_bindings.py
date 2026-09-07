@@ -196,12 +196,26 @@ def test_im_subject_associations_require_explicit_verification_and_are_audited()
                 "related_subject_id": second_subject,
                 "verification_reference": "ticket:identity-proof-42",
             },
+            headers={"Idempotency-Key": "associate-create-1"},
         )
         assert created.status_code == 200, created.text
         assert {created.json()["subject_id"], created.json()["related_subject_id"]} == {
             first_subject,
             second_subject,
         }
+        assert created.headers["etag"] == '"1"'
+
+        replayed = client.put(
+            f"/api/v1/tenants/{tenant_id}/im-subject-associations",
+            json={
+                "subject_id": first_subject,
+                "related_subject_id": second_subject,
+                "verification_reference": "ticket:identity-proof-42",
+            },
+            headers={"Idempotency-Key": "associate-create-1"},
+        )
+        assert replayed.status_code == 200
+        assert replayed.headers["idempotency-replayed"] == "true"
 
         invalid = client.put(
             f"/api/v1/tenants/{tenant_id}/im-subject-associations",
@@ -210,14 +224,36 @@ def test_im_subject_associations_require_explicit_verification_and_are_audited()
                 "related_subject_id": first_subject,
                 "verification_reference": "ticket:identity-proof-42",
             },
+            headers={"Idempotency-Key": "associate-invalid-1"},
         )
         assert invalid.status_code == 422
+
+        updated = client.put(
+            f"/api/v1/tenants/{tenant_id}/im-subject-associations",
+            json={
+                "subject_id": first_subject,
+                "related_subject_id": second_subject,
+                "verification_reference": "ticket:identity-proof-43",
+            },
+            headers={"Idempotency-Key": "associate-update-1", "If-Match": '"1"'},
+        )
+        assert updated.status_code == 200, updated.text
+        assert updated.headers["etag"] == '"2"'
 
         deleted = client.delete(
             f"/api/v1/tenants/{tenant_id}/im-subject-associations",
             params={"subject_id": second_subject, "related_subject_id": first_subject},
+            headers={"Idempotency-Key": "associate-delete-1", "If-Match": '"2"'},
         )
         assert deleted.status_code == 204, deleted.text
+
+        deleted_replay = client.delete(
+            f"/api/v1/tenants/{tenant_id}/im-subject-associations",
+            params={"subject_id": second_subject, "related_subject_id": first_subject},
+            headers={"Idempotency-Key": "associate-delete-1", "If-Match": '"2"'},
+        )
+        assert deleted_replay.status_code == 204, deleted_replay.text
+        assert deleted_replay.headers["idempotency-replayed"] == "true"
 
     async def verify() -> None:
         connection = await asyncpg.connect(ADMIN_URL)
@@ -233,6 +269,7 @@ def test_im_subject_associations_require_explicit_verification_and_are_audited()
             )
             assert association_count == 0
             assert [row["action"] for row in audit_actions] == [
+                "im_subject.associate",
                 "im_subject.associate",
                 "im_subject.revoke",
             ]

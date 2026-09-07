@@ -7,6 +7,7 @@ CREATE TABLE tenant.im_subject_association (
   verification_reference text NOT NULL CHECK (length(verification_reference) BETWEEN 1 AND 256),
   verified_by text NOT NULL CHECK (length(verified_by) BETWEEN 1 AND 256),
   verified_at timestamptz NOT NULL DEFAULT now(),
+  version integer NOT NULL DEFAULT 1 CHECK (version >= 1),
   PRIMARY KEY (tenant_id, subject_id, related_subject_id),
   CHECK (subject_id < related_subject_id)
 );
