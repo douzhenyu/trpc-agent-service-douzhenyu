@@ -2,14 +2,17 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
-from collections.abc import Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
-from typing import Protocol
+from typing import Any, Protocol
 from uuid import UUID
+
+from httpx import AsyncClient, TimeoutException
 
 from trpc_service.admin_api.database import Database
 from trpc_service.agent_gateway import AgentExecutionAccepted
@@ -24,6 +27,12 @@ class FeishuAdapterError(RuntimeError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
+
+
+class FeishuSecretResolver(Protocol):
+    """Resolve a tenant-scoped Feishu credential from its opaque vault reference."""
+
+    def resolve(self, tenant_id: str, secret_ref: str) -> str | Awaitable[str]: ...
 
 
 @dataclass(frozen=True)
@@ -44,6 +53,18 @@ class LongConnectionLeaseStore(Protocol):
     ) -> LongConnectionLease | None: ...
 
     async def release(self, lease: LongConnectionLease) -> None: ...
+
+
+class FeishuLongConnectionSource(Protocol):
+    """Provider SDK boundary for one Feishu long-connection application stream."""
+
+    async def consume(
+        self,
+        app_id: str,
+        on_event: Callable[[Mapping[str, object]], Awaitable[None]],
+    ) -> None: ...
+
+    async def close(self) -> None: ...
 
 
 class MemoryLongConnectionLeaseStore:
@@ -84,6 +105,50 @@ class MemoryLongConnectionLeaseStore:
     async def release(self, lease: LongConnectionLease) -> None:
         if self._leases.get(lease.connection_key) == lease:
             self._leases.pop(lease.connection_key)
+
+
+class FeishuLongConnectionSupervisor:
+    """Own, renew and release one SDK long connection under a fenced lease."""
+
+    def __init__(
+        self,
+        *,
+        adapter: FeishuChannelAdapter,
+        source: FeishuLongConnectionSource,
+        app_id: str,
+        on_accepted: Callable[[AgentExecutionAccepted, Mapping[str, object]], Awaitable[None]],
+        renew_interval_seconds: float = 10.0,
+    ) -> None:
+        self._adapter = adapter
+        self._source = source
+        self._app_id = app_id
+        self._on_accepted = on_accepted
+        self._renew_interval_seconds = renew_interval_seconds
+
+    async def run(self) -> None:
+        await self._adapter.acquire_long_connection(self._app_id)
+        renew_task = asyncio.create_task(self._renew())
+        try:
+            await self._source.consume(self._app_id, self._receive)
+        finally:
+            renew_task.cancel()
+            await self._adapter.release_long_connection()
+
+    async def _receive(self, payload: Mapping[str, object]) -> None:
+        accepted = await self._adapter.receive_long_connection_event(payload)
+        if accepted.deduplicated:
+            return
+        await self._on_accepted(accepted, payload)
+
+    async def _renew(self) -> None:
+        try:
+            while True:
+                await asyncio.sleep(self._renew_interval_seconds)
+                await self._adapter.renew_long_connection()
+        except FeishuAdapterError:
+            # Losing the lease fences this instance before it can consume more
+            # events; the SDK source must then disconnect.
+            await self._source.close()
 
 
 class DatabaseLongConnectionLeaseStore:
@@ -176,6 +241,83 @@ class FeishuCardClient(Protocol):
     def reconcile_card(self, idempotency_key: str) -> str: ...
 
 
+class HttpFeishuCardClient:
+    """Feishu IM card client with stable logical-delivery identity.
+
+    The Feishu API creates a message once and subsequently patches that same
+    message.  The delivery id is carried as the API ``uuid`` so a retry can be
+    reconciled without creating another user-visible card.
+    """
+
+    def __init__(
+        self,
+        http: AsyncClient,
+        *,
+        tenant_access_token: str,
+        api_base_url: str = "https://open.feishu.cn",
+    ) -> None:
+        self._http = http
+        self._tenant_access_token = tenant_access_token
+        self._api_base_url = api_base_url.rstrip("/")
+        self._message_ids: dict[str, str] = {}
+
+    async def upsert_card(
+        self, *, conversation_id: str, card: dict[str, object], idempotency_key: str
+    ) -> FeishuCardResponse:
+        message_id = self._message_ids.get(idempotency_key)
+        headers = {"Authorization": f"Bearer {self._tenant_access_token}"}
+        content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
+        try:
+            if message_id is not None:
+                response = await self._http.patch(
+                    f"{self._api_base_url}/open-apis/im/v1/messages/{message_id}",
+                    headers=headers,
+                    json={"msg_type": "interactive", "content": content},
+                    timeout=10.0,
+                )
+            else:
+                receive_id_type, receive_id = _feishu_receive_id(conversation_id)
+                response = await self._http.post(
+                    f"{self._api_base_url}/open-apis/im/v1/messages",
+                    params={"receive_id_type": receive_id_type},
+                    headers=headers,
+                    json={
+                        "receive_id": receive_id,
+                        "msg_type": "interactive",
+                        "content": content,
+                        "uuid": idempotency_key,
+                    },
+                    timeout=10.0,
+                )
+        except (TimeoutError, TimeoutException):
+            raise
+        except Exception:
+            return FeishuCardResponse(error_code="FEISHU_CARD_REQUEST_FAILED")
+        if response.status_code == 429:
+            return FeishuCardResponse(rate_limited=True, error_code="FEISHU_CARD_RATE_LIMITED")
+        if not 200 <= response.status_code < 300:
+            return FeishuCardResponse(error_code=f"FEISHU_CARD_HTTP_{response.status_code}")
+        try:
+            payload: Any = response.json()
+            if not isinstance(payload, dict) or payload.get("code", 0) != 0:
+                return FeishuCardResponse(error_code="FEISHU_CARD_API_FAILED")
+            data = payload.get("data")
+            returned_id = data.get("message_id") if isinstance(data, dict) else None
+        except ValueError:
+            return FeishuCardResponse(error_code="FEISHU_CARD_RESPONSE_INVALID")
+        if message_id is None:
+            if not isinstance(returned_id, str) or not returned_id:
+                return FeishuCardResponse(error_code="FEISHU_CARD_RESPONSE_INVALID")
+            self._message_ids[idempotency_key] = returned_id
+        return FeishuCardResponse(delivered=True)
+
+    def reconcile_card(self, idempotency_key: str) -> str:
+        # The create request carries this same value as Feishu's UUID.  It is
+        # therefore safe to retry a timed-out request: Feishu deduplicates it
+        # instead of creating another visible card.
+        return "delivered" if idempotency_key in self._message_ids else "not_delivered"
+
+
 class FeishuCardTransport:
     """Render reply updates as interactive cards without token-by-token sends."""
 
@@ -205,7 +347,7 @@ class FeishuCardTransport:
                 card=render_feishu_card(delivery.content),
                 idempotency_key=delivery.delivery_id,
             )
-        except TimeoutError:
+        except (TimeoutError, TimeoutException):
             return ChannelTransportOutcome(
                 False, outcome_unknown=True, error_code="FEISHU_CARD_TIMEOUT"
             )
@@ -229,6 +371,18 @@ def render_feishu_card(content: str) -> dict[str, object]:
         "config": {"wide_screen_mode": True},
         "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
     }
+
+
+def _feishu_receive_id(conversation_id: str) -> tuple[str, str]:
+    """Decode the typed conversation identity persisted with a delivery."""
+
+    try:
+        receive_id_type, receive_id = conversation_id.split(":", 1)
+    except ValueError as error:
+        raise ValueError("FEISHU_CONVERSATION_INVALID") from error
+    if receive_id_type not in {"chat_id", "open_id"} or not receive_id:
+        raise ValueError("FEISHU_CONVERSATION_INVALID")
+    return receive_id_type, receive_id
 
 
 def feishu_webhook_signature(*, token: str, timestamp: str, nonce: str, body: bytes) -> str:
@@ -280,7 +434,7 @@ class FeishuChannelAdapter:
         )
         if not hmac.compare_digest(signature, expected):
             raise FeishuAdapterError("FEISHU_SIGNATURE_INVALID")
-        event = normalize_feishu_message(payload, binding)
+        event = normalize_feishu_message(payload)
         try:
             return await self._inbound.ingest_verified(tenant_id=self._tenant_id, event=event)
         except InboundError as error:
@@ -326,7 +480,7 @@ class FeishuChannelAdapter:
         binding = await self._binding_for(copied)
         if self._lease.connection_key != self._connection_key(binding.external_bot_id):
             raise FeishuAdapterError("FEISHU_LONG_CONNECTION_APP_MISMATCH")
-        event = normalize_feishu_message(copied, binding)
+        event = normalize_feishu_message(copied)
         try:
             return await self._inbound.ingest_verified(tenant_id=self._tenant_id, event=event)
         except InboundError as error:
@@ -348,9 +502,7 @@ class FeishuChannelAdapter:
         return f"feishu:{self._tenant_id}:{app_id}"
 
 
-def normalize_feishu_message(
-    payload: Mapping[str, object], binding: ChannelBinding
-) -> dict[str, str]:
+def normalize_feishu_message(payload: Mapping[str, object]) -> dict[str, str]:
     """Normalize Feishu direct, group and topic text into the common inbound shape."""
 
     header = payload.get("header")

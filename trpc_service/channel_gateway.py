@@ -12,10 +12,15 @@ receive a processing notice first.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import AsyncIterator
+import inspect
+import json
+from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import urlsplit, urlunsplit
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -32,8 +37,19 @@ from trpc_service.agent_worker import (
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
 )
-from trpc_service.channels.bindings import ChannelBindingRegistry
-from trpc_service.channels.delivery import ReplyDeliveryService
+from trpc_service.channels.bindings import ChannelBinding, ChannelBindingRegistry
+from trpc_service.channels.delivery import DeliveryStore, ReplyDeliveryService
+from trpc_service.channels.feishu import (
+    DatabaseLongConnectionLeaseStore,
+    FeishuAdapterError,
+    FeishuCardTransport,
+    FeishuChannelAdapter,
+    FeishuLongConnectionSource,
+    FeishuLongConnectionSupervisor,
+    FeishuSecretResolver,
+    HttpFeishuCardClient,
+    normalize_feishu_message,
+)
 from trpc_service.channels.inbound import ChannelInboundService, InboundError
 from trpc_service.channels.store import (
     DatabaseBindingStore,
@@ -51,6 +67,7 @@ from trpc_service.channels.wecom import (
     WeComStreamSession,
     parse_event,
 )
+from trpc_service.llm_gateway import VaultSecretProvider
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
@@ -66,6 +83,10 @@ class ChannelGatewaySettings(BaseSettings):
     reply_rate_refill_per_second: float = 20 / 60
     stream_min_chars: int = 256
     stream_min_interval_seconds: float = 2.0
+    feishu_api_base_url: str = "https://open.feishu.cn"
+    vault_url: str = ""
+    vault_kubernetes_role: str = "channel-gateway"
+    kubernetes_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
     def validate_runtime(self) -> None:
         if not self.database_url:
@@ -90,15 +111,39 @@ class DatabaseChannelSecretResolver:
         return sha256(secret_ref.encode()).hexdigest()
 
 
+class FixedChannelSecretResolver:
+    """Pass a protocol token already resolved from a binding's vault reference."""
+
+    def __init__(self, token: str) -> None:
+        self._token = token
+
+    def resolve(self, secret_ref: str) -> str:
+        del secret_ref
+        return self._token
+
+
+@dataclass(frozen=True)
+class FeishuLongConnection:
+    """One provider SDK connection that the Channel Gateway must supervise."""
+
+    tenant_id: str
+    app_id: str
+    source: FeishuLongConnectionSource
+
+
 def create_app(
     settings: ChannelGatewaySettings | None = None,
     *,
     runner: ReleasePinnedRunnerRuntime | None = None,
     inbound: ChannelInboundService | None = None,
     deliveries: ReplyDeliveryService | None = None,
+    feishu_secrets: FeishuSecretResolver | None = None,
+    feishu_http: AsyncClient | None = None,
+    feishu_delivery_store: DeliveryStore | None = None,
+    feishu_long_connections: Sequence[FeishuLongConnection] = (),
     database: Database | None = None,
 ) -> FastAPI:
-    """Create the WeCom Channel Gateway data-plane entry."""
+    """Create the Channel Gateway data-plane entry for installed IM adapters."""
 
     configured = settings or ChannelGatewaySettings()
 
@@ -112,6 +157,7 @@ def create_app(
         # connection succeeds.
         connect_task = asyncio.create_task(_connect_database(active_database))
         registry = ChannelBindingRegistry(DatabaseBindingStore(active_database))
+        application.state.database = active_database
         application.state.registry = registry
         application.state.inbound = inbound or ChannelInboundService(
             registry=registry,
@@ -132,15 +178,88 @@ def create_app(
                 ),
             ),
         )
+        vault_client: AsyncClient | None = None
+        resolved_feishu_secrets = feishu_secrets
+        if resolved_feishu_secrets is None and configured.vault_url:
+            jwt = Path(configured.kubernetes_jwt_path).read_text().strip()
+            if not jwt:
+                raise RuntimeError("Kubernetes service account token is empty")
+            vault_client = AsyncClient(base_url=configured.vault_url)
+            resolved_feishu_secrets = VaultSecretProvider(
+                vault_client,
+                kubernetes_jwt=jwt,
+                role=configured.vault_kubernetes_role,
+            )
+        application.state.feishu_secrets = resolved_feishu_secrets
+        application.state.feishu_http = feishu_http
+        application.state.feishu_delivery_store = feishu_delivery_store
         application.state.runner = runner or ReleasePinnedRunnerRuntime(
             releases=DatabaseReleaseRouteResolver(active_database),
             llm_gateway_access_key=configured.llm_gateway_access_key,
         )
+        long_connection_tasks: list[asyncio.Task[None]] = []
+        if feishu_long_connections:
+            if resolved_feishu_secrets is None:
+                raise RuntimeError("FEISHU_SECRET_RESOLUTION_UNAVAILABLE")
+            for connection in feishu_long_connections:
+                adapter = FeishuChannelAdapter(
+                    tenant_id=connection.tenant_id,
+                    registry=registry,
+                    secrets=DatabaseChannelSecretResolver(active_database),
+                    inbound=application.state.inbound,
+                    lease_store=DatabaseLongConnectionLeaseStore(
+                        active_database, connection.tenant_id
+                    ),
+                )
+
+                async def on_accepted(
+                    accepted: Any,
+                    payload: Mapping[str, object],
+                    *,
+                    tenant_id: str = connection.tenant_id,
+                    app_id: str = connection.app_id,
+                ) -> None:
+                    if accepted.deduplicated:
+                        return
+                    event = normalize_feishu_message(payload)
+                    binding = await registry.resolve(
+                        tenant_id=tenant_id, channel_type="FEISHU", external_bot_id=app_id
+                    )
+                    if binding is None:
+                        raise FeishuAdapterError("FEISHU_BINDING_NOT_FOUND")
+                    access_token = await _resolve_feishu_secret(
+                        resolved_feishu_secrets,
+                        tenant_id,
+                        _secret_ref_with_field(binding, "tenant-access-token"),
+                    )
+                    await _execute_feishu_reply(
+                        application,
+                        configured,
+                        tenant_id=tenant_id,
+                        binding=binding,
+                        accepted=accepted,
+                        event=event,
+                        tenant_access_token=access_token,
+                    )
+
+                supervisor = FeishuLongConnectionSupervisor(
+                    adapter=adapter,
+                    source=connection.source,
+                    app_id=connection.app_id,
+                    on_accepted=on_accepted,
+                )
+                long_connection_tasks.append(asyncio.create_task(_run_supervisor(supervisor)))
         try:
             yield
         finally:
             connect_task.cancel()
+            for task in long_connection_tasks:
+                task.cancel()
+            if long_connection_tasks:
+                await asyncio.gather(*long_connection_tasks, return_exceptions=True)
             await application.state.runner.close()
+            if vault_client is not None:
+                await vault_client.aclose()
             if database is None:
                 await active_database.close()
 
@@ -250,6 +369,67 @@ def create_app(
         )
         return PlainTextResponse("")
 
+    @application.post("/internal/v1/feishu/callback/{tenant_id}/{bot_id}")
+    async def receive_feishu_callback(
+        tenant_id: str,
+        bot_id: str,
+        request: Request,
+    ) -> Response:
+        raw_body = await request.body()
+        inbound: ChannelInboundService = application.state.inbound
+        registry: ChannelBindingRegistry = application.state.registry
+        try:
+            payload = json.loads(raw_body)
+            if not isinstance(payload, dict):
+                raise FeishuAdapterError("FEISHU_PAYLOAD_INVALID")
+            event = normalize_feishu_message(payload)
+            if event["external_bot_id"] != bot_id:
+                raise FeishuAdapterError("FEISHU_BINDING_NOT_FOUND")
+        except FeishuAdapterError as error:
+            return PlainTextResponse(error.code, status_code=400)
+        binding = await registry.resolve(
+            tenant_id=tenant_id, channel_type="FEISHU", external_bot_id=bot_id
+        )
+        if binding is None:
+            return PlainTextResponse("FEISHU_BINDING_NOT_FOUND", status_code=400)
+        secrets: FeishuSecretResolver | None = application.state.feishu_secrets
+        if secrets is None:
+            return PlainTextResponse("FEISHU_SECRET_RESOLUTION_UNAVAILABLE", status_code=503)
+        try:
+            verification_token = await _resolve_feishu_secret(
+                secrets, tenant_id, binding.secret_ref
+            )
+            tenant_access_token = await _resolve_feishu_secret(
+                secrets, tenant_id, _secret_ref_with_field(binding, "tenant-access-token")
+            )
+        except Exception:
+            return PlainTextResponse("FEISHU_SECRET_RESOLUTION_FAILED", status_code=503)
+        adapter = FeishuChannelAdapter(
+            tenant_id=tenant_id,
+            registry=registry,
+            secrets=FixedChannelSecretResolver(verification_token),
+            inbound=inbound,
+            lease_store=DatabaseLongConnectionLeaseStore(application.state.database, tenant_id),
+        )
+        try:
+            accepted = await adapter.receive_webhook(request.headers, raw_body)
+        except FeishuAdapterError as error:
+            return PlainTextResponse(error.code, status_code=400)
+        except RuntimeError:
+            return PlainTextResponse("DATABASE_UNAVAILABLE", status_code=503)
+        if accepted.deduplicated:
+            return PlainTextResponse("")
+        await _execute_feishu_reply(
+            application,
+            configured,
+            tenant_id=tenant_id,
+            binding=binding,
+            accepted=accepted,
+            event=event,
+            tenant_access_token=tenant_access_token,
+        )
+        return PlainTextResponse("")
+
     return application
 
 
@@ -260,6 +440,61 @@ async def _connect_database(database: Database) -> None:
             return
         except Exception:
             await asyncio.sleep(2.0)
+
+
+async def _run_supervisor(supervisor: FeishuLongConnectionSupervisor) -> None:
+    """Keep a standby gateway eligible to take over after lease loss or disconnect."""
+
+    while True:
+        try:
+            await supervisor.run()
+        except FeishuAdapterError as error:
+            if error.code != "FEISHU_LONG_CONNECTION_LEASE_HELD":
+                raise
+        await asyncio.sleep(2.0)
+
+
+async def _execute_feishu_reply(
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    *,
+    tenant_id: str,
+    binding: ChannelBinding,
+    accepted: Any,
+    event: dict[str, str],
+    tenant_access_token: str,
+) -> None:
+    deliveries = ReplyDeliveryService(
+        store=application.state.feishu_delivery_store
+        or DatabaseDeliveryStore(application.state.database),
+        transport=FeishuCardTransport(
+            client=HttpFeishuCardClient(
+                application.state.feishu_http or _http(application),
+                tenant_access_token=tenant_access_token,
+                api_base_url=configured.feishu_api_base_url,
+            )
+        ),
+    )
+    runner: ReleasePinnedRunnerRuntime = application.state.runner
+    reply = await runner.complete(
+        RunnerExecutionCommand(
+            tenant_id=tenant_id,
+            application_id=binding.application_id,
+            execution_id=str(accepted.execution_id),
+            release_id=str(accepted.release_id),
+            session_id=accepted.session_id,
+            user_id=event["external_user_id"],
+            message=event["text"],
+        )
+    )
+    await _deliver_feishu(
+        tenant_id=tenant_id,
+        binding_id=binding.binding_id,
+        execution_id=accepted.execution_id,
+        event=event,
+        content=reply.content,
+        deliveries=deliveries,
+    )
 
 
 async def _deliver(
@@ -306,6 +541,56 @@ async def _deliver(
         content=content,
     )
     await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
+
+
+async def _deliver_feishu(
+    *,
+    tenant_id: str,
+    binding_id: str,
+    execution_id: Any,
+    event: dict[str, str],
+    content: str,
+    deliveries: ReplyDeliveryService,
+) -> None:
+    delivery = await deliveries.enqueue(
+        tenant_id=tenant_id,
+        binding_id=binding_id,
+        execution_id=str(execution_id),
+        external_conversation_id=_feishu_conversation(event),
+        content=content,
+    )
+    await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
+
+
+def _feishu_conversation(event: dict[str, str]) -> str:
+    """Preserve the API receive-id type with the persisted delivery."""
+
+    session_key = event["session_key"]
+    if session_key.startswith("direct:"):
+        return f"open_id:{event['external_user_id']}"
+    if session_key.startswith("group:"):
+        return f"chat_id:{session_key.removeprefix('group:')}"
+    if session_key.startswith("thread:"):
+        _, chat_id, _ = session_key.split(":", 2)
+        return f"chat_id:{chat_id}"
+    raise RuntimeError("FEISHU_CONVERSATION_INVALID")
+
+
+async def _resolve_feishu_secret(
+    resolver: FeishuSecretResolver, tenant_id: str, secret_ref: str
+) -> str:
+    value = resolver.resolve(tenant_id, secret_ref)
+    resolved = await value if inspect.isawaitable(value) else value
+    if not isinstance(resolved, str) or not resolved:
+        raise RuntimeError("FEISHU_SECRET_RESOLUTION_FAILED")
+    return resolved
+
+
+def _secret_ref_with_field(binding: ChannelBinding, field: str) -> str:
+    """Keep the binding path tenant-scoped while selecting a vault credential field."""
+
+    parsed = urlsplit(binding.secret_ref)
+    return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, parsed.query, field))
 
 
 def _http(application: FastAPI) -> AsyncClient:
