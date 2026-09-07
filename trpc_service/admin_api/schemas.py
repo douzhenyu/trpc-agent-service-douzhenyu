@@ -7,6 +7,8 @@ from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from trpc_service.storage import StorageBackend
+
 
 class HealthResponse(BaseModel):
     """Stable public health contract consumed by the Web Console."""
@@ -106,6 +108,33 @@ ModelEndpoint = Annotated[
 ]
 ModelRegion = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{1,62}$", max_length=63)]
 DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+
+
+class StorageProfileCreate(BaseModel):
+    alias: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    classification: DataClassification
+    worker_pool: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    encryption_key_ref: SecretReference
+    backends: list[StorageBackend] = Field(min_length=4, max_length=5)
+    activate: bool = False
+
+
+class StorageProfileResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    alias: str
+    classification: DataClassification
+    worker_pool: str
+    encryption_key_ref: SecretReference
+    backends: list[StorageBackend]
+    active: bool
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class StorageProfileList(BaseModel):
+    items: list[StorageProfileResponse]
 
 
 class ModelProfileCreate(BaseModel):

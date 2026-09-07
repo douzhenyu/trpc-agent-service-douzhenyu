@@ -37,6 +37,7 @@ from trpc_service.sessions import (
     SessionLeaseManager,
     commit_session_events,
 )
+from trpc_service.storage import DatabaseStorageProfileResolver
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
@@ -312,6 +313,7 @@ class AgentExecutionProcessor:
         leases: SessionLeaseManager,
         owner_id: str,
         knowledge_deployments: KnowledgeDeploymentResolver | None = None,
+        worker_pool: str = "shared-workers",
     ) -> None:
         self._worker = worker
         self._database = database
@@ -321,11 +323,16 @@ class AgentExecutionProcessor:
         self._knowledge_deployments = knowledge_deployments or DatabaseKnowledgeDeploymentResolver(
             database
         )
+        self._storage_profiles = DatabaseStorageProfileResolver(database)
+        self._worker_pool = worker_pool
 
     async def handle(self, envelope: ExecutionEnvelope) -> None:
         data = ExecutionRequestedData.model_validate(envelope.data)
         tenant_id = UUID(data.tenant_id)
         session_id = data.session_id
+        storage = await self._storage_profiles.resolve(tenant_id)
+        if storage is not None and storage.worker_pool != self._worker_pool:
+            raise ModelGatewayError("STORAGE_WORKER_POOL_MISMATCH")
         if await self._execution_status(tenant_id, envelope.message_id) == "SUCCEEDED":
             return
         grant: LeaseGrant = await self._leases.acquire(tenant_id, session_id, self._owner_id)
@@ -418,6 +425,7 @@ class AgentWorkerSettings(BaseSettings):
     environment: str = "PRODUCTION"
     code_executor_kind: str = "SANDBOX"
     docker_socket_mounted: bool = False
+    worker_pool: str = "shared-workers"
 
     def validate_runtime(self) -> None:
         missing = [
@@ -496,7 +504,11 @@ class WorkerExecutionResponse(BaseModel):
 
 
 def create_app(
-    settings: AgentWorkerSettings | None = None, *, worker: AgentWorker | None = None
+    settings: AgentWorkerSettings | None = None,
+    *,
+    worker: AgentWorker | None = None,
+    storage_profiles: DatabaseStorageProfileResolver | None = None,
+    worker_pool: str = "shared-workers",
 ) -> FastAPI:
     """Create the credential-free internal Agent execution process boundary."""
 
@@ -504,6 +516,8 @@ def create_app(
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         if worker is not None:
             application.state.worker = worker
+            application.state.storage_profiles = storage_profiles
+            application.state.worker_pool = worker_pool
             yield
             return
         configured = settings or AgentWorkerSettings()
@@ -511,6 +525,8 @@ def create_app(
         database = Database(configured.database_url)
         gateway_client = httpx.AsyncClient(base_url=configured.llm_gateway_url)
         await database.open()
+        application.state.storage_profiles = DatabaseStorageProfileResolver(database)
+        application.state.worker_pool = configured.worker_pool
         application.state.worker = AgentWorker(
             HttpGatewayClient(gateway_client),
             DatabaseReleaseRouteResolver(database),
@@ -545,9 +561,18 @@ def create_app(
     async def ready() -> RuntimeHealthResponse:
         return health()
 
+    async def enforce_storage_worker_pool(tenant_id: UUID) -> None:
+        resolver: DatabaseStorageProfileResolver | None = application.state.storage_profiles
+        if resolver is None:
+            return
+        router = await resolver.resolve(tenant_id)
+        if router is not None and router.worker_pool != application.state.worker_pool:
+            raise ModelGatewayError("STORAGE_WORKER_POOL_MISMATCH")
+
     @application.post("/internal/v1/agent-executions", response_model=WorkerExecutionResponse)
     async def execute(payload: WorkerExecutionPayload) -> WorkerExecutionResponse:
         try:
+            await enforce_storage_worker_pool(payload.tenant_id)
             result = await application.state.worker.complete(
                 AgentExecutionRequest(
                     tenant_id=str(payload.tenant_id),
@@ -566,6 +591,7 @@ def create_app(
     @application.post("/internal/v1/deployment-executions", response_model=WorkerExecutionResponse)
     async def execute_deployment(payload: DeploymentExecutionPayload) -> WorkerExecutionResponse:
         try:
+            await enforce_storage_worker_pool(payload.tenant_id)
             result = await application.state.worker.complete_for_deployment(
                 str(payload.tenant_id),
                 str(payload.application_id),

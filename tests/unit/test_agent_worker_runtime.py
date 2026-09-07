@@ -33,6 +33,12 @@ from trpc_service.llm_gateway import (
     OpaOutboundPolicy,
     VaultSecretProvider,
 )
+from trpc_service.storage import (
+    AdapterKind,
+    StorageBackend,
+    StorageProfile,
+    StorageRouter,
+)
 
 
 class AllowOutboundPolicy:
@@ -65,6 +71,14 @@ class FakeWorker:
         assert session_id == "stable-session"
         assert messages == [{"role": "user", "content": "hello"}]
         return GatewayResult("balanced", False, {"choices": []})
+
+
+class FixedStorageProfileResolver:
+    def __init__(self, router: StorageRouter) -> None:
+        self.router = router
+
+    async def resolve(self, _tenant_id: object) -> StorageRouter:
+        return self.router
 
 
 class MutableDeploymentResolver:
@@ -131,6 +145,45 @@ def test_worker_execution_api_accepts_only_release_and_messages_and_surfaces_fal
     assert response.status_code == 200
     assert response.json()["model_alias"] == "economy"
     assert response.json()["fallback_used"] is True
+
+
+def test_worker_public_boundary_rejects_a_profile_for_another_worker_pool() -> None:
+    tenant_id, release_id = str(uuid4()), str(uuid4())
+    router = StorageRouter(
+        StorageProfile(
+            tenant_id=tenant_id,
+            alias="restricted-store",
+            classification=DataClassification.RESTRICTED,
+            worker_pool="tenant-restricted-workers",
+            encryption_key_ref=f"vault://tenant/{tenant_id}/storage#encryption_key",
+            backends=tuple(
+                StorageBackend(
+                    kind=kind,
+                    endpoint=f"https://{kind.value.lower()}.example.test",
+                    dedicated=True,
+                    secret_ref=f"vault://tenant/{tenant_id}/storage#{kind.value.lower()}",
+                )
+                for kind in AdapterKind
+            ),
+        )
+    )
+    with TestClient(
+        create_app(
+            worker=FakeWorker(),
+            storage_profiles=FixedStorageProfileResolver(router),  # type: ignore[arg-type]
+            worker_pool="shared-workers",
+        )
+    ) as client:
+        response = client.post(
+            "/internal/v1/agent-executions",
+            json={
+                "tenant_id": tenant_id,
+                "release_id": release_id,
+                "messages": [{"role": "user", "content": "hello"}],
+            },
+        )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "STORAGE_WORKER_POOL_MISMATCH"
 
 
 def test_worker_deployment_execution_api_and_health_endpoints_are_publicly_available() -> None:

@@ -109,6 +109,8 @@ spec:
                   key: {{ $.Values.agentWorker.databaseSecretKey }}
             - name: LLM_GATEWAY_URL
               value: {{ $.Values.agentWorker.llmGatewayUrl | quote }}
+            - name: WORKER_POOL
+              value: {{ $.Values.agentWorker.workerPool | quote }}
 {{- else if eq $name "channel-gateway" }}
           command:
             - /app/.venv/bin/uvicorn

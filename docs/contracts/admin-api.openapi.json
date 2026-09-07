@@ -1,6 +1,17 @@
 {
   "components": {
     "schemas": {
+      "AdapterKind": {
+        "enum": [
+          "SQL",
+          "REDIS",
+          "VECTOR",
+          "OBJECT",
+          "EXTERNAL_MEMORY"
+        ],
+        "title": "AdapterKind",
+        "type": "string"
+      },
       "AgentApplicationCreate": {
         "properties": {
           "description": {
@@ -2581,6 +2592,185 @@
           "roles"
         ],
         "title": "SessionResponse",
+        "type": "object"
+      },
+      "StorageBackend": {
+        "description": "A credential-free backend declaration held in a Storage Profile.",
+        "properties": {
+          "dedicated": {
+            "title": "Dedicated",
+            "type": "boolean"
+          },
+          "endpoint": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/AdapterKind"
+          },
+          "secret_ref": {
+            "maxLength": 384,
+            "minLength": 1,
+            "title": "Secret Ref",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "endpoint",
+          "dedicated",
+          "secret_ref"
+        ],
+        "title": "StorageBackend",
+        "type": "object"
+      },
+      "StorageProfileCreate": {
+        "properties": {
+          "activate": {
+            "default": false,
+            "title": "Activate",
+            "type": "boolean"
+          },
+          "alias": {
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Alias",
+            "type": "string"
+          },
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/StorageBackend"
+            },
+            "maxItems": 5,
+            "minItems": 4,
+            "title": "Backends",
+            "type": "array"
+          },
+          "classification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "encryption_key_ref": {
+            "maxLength": 384,
+            "pattern": "^vault://tenant/[0-9a-f-]{36}/[a-z0-9][a-z0-9/_-]{0,255}#[A-Za-z0-9_.-]{1,64}$",
+            "title": "Encryption Key Ref",
+            "type": "string"
+          },
+          "worker_pool": {
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Worker Pool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "alias",
+          "classification",
+          "worker_pool",
+          "encryption_key_ref",
+          "backends"
+        ],
+        "title": "StorageProfileCreate",
+        "type": "object"
+      },
+      "StorageProfileList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/StorageProfileResponse"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "StorageProfileList",
+        "type": "object"
+      },
+      "StorageProfileResponse": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "alias": {
+            "title": "Alias",
+            "type": "string"
+          },
+          "backends": {
+            "items": {
+              "$ref": "#/components/schemas/StorageBackend"
+            },
+            "title": "Backends",
+            "type": "array"
+          },
+          "classification": {
+            "enum": [
+              "PUBLIC",
+              "INTERNAL",
+              "CONFIDENTIAL",
+              "RESTRICTED"
+            ],
+            "title": "Classification",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "encryption_key_ref": {
+            "maxLength": 384,
+            "pattern": "^vault://tenant/[0-9a-f-]{36}/[a-z0-9][a-z0-9/_-]{0,255}#[A-Za-z0-9_.-]{1,64}$",
+            "title": "Encryption Key Ref",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          },
+          "worker_pool": {
+            "title": "Worker Pool",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "alias",
+          "classification",
+          "worker_pool",
+          "encryption_key_ref",
+          "backends",
+          "active",
+          "version",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "StorageProfileResponse",
         "type": "object"
       },
       "SubjectAssociationRequest": {
@@ -9443,6 +9633,270 @@
         "summary": "Update Profile",
         "tags": [
           "model-profiles"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/storage-profiles": {
+      "get": {
+        "operationId": "list_profiles_api_v1_tenants__tenant_id__storage_profiles_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageProfileList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "List Profiles",
+        "tags": [
+          "storage-profiles"
+        ]
+      },
+      "post": {
+        "operationId": "create_profile_api_v1_tenants__tenant_id__storage_profiles_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StorageProfileCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response",
+            "headers": {
+              "ETag": {
+                "description": "Quoted current resource version",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Create Profile",
+        "tags": [
+          "storage-profiles"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/storage-profiles/active": {
+      "get": {
+        "operationId": "active_profile_api_v1_tenants__tenant_id__storage_profiles_active_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StorageProfileResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Active Profile",
+        "tags": [
+          "storage-profiles"
         ]
       }
     },

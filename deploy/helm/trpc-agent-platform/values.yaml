@@ -49,6 +49,7 @@ agentWorker:
   databaseSecretName: trpc-platform-database-app
   databaseSecretKey: url
   llmGatewayUrl: http://agent-gateway:8000
+  workerPool: shared-workers
 
 agentGateway:
   databaseSecretName: trpc-platform-database-app

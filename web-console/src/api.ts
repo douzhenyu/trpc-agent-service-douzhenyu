@@ -26,6 +26,9 @@ export type AgentDeploymentRollback =
 export type ModelProfile = components["schemas"]["ModelProfileResponse"];
 export type ModelProfileCreate = components["schemas"]["ModelProfileCreate"];
 export type ModelProfileUpdate = components["schemas"]["ModelProfileUpdate"];
+export type StorageProfile = components["schemas"]["StorageProfileResponse"];
+export type StorageProfileCreate =
+  components["schemas"]["StorageProfileCreate"];
 
 const client = createClient<paths>({
   baseUrl: globalThis.location.origin,
@@ -117,6 +120,37 @@ export async function createModelProfile(
   );
   if (!response.ok || !data)
     throw apiError(response, "无法保存模型配置档", error);
+  return data;
+}
+
+export async function getStorageProfiles(
+  tenantId: string,
+): Promise<StorageProfile[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/storage-profiles",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取存储配置档", error);
+  return data.items;
+}
+
+export async function createStorageProfile(
+  tenantId: string,
+  payload: StorageProfileCreate,
+): Promise<StorageProfile> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/storage-profiles",
+    {
+      params: {
+        path: { tenant_id: tenantId },
+        header: { "Idempotency-Key": idempotencyKey() },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法保存存储配置档", error);
   return data;
 }
 
