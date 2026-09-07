@@ -641,6 +641,9 @@ def normalize_feishu_message(payload: Mapping[str, object]) -> dict[str, str]:
     sender_id = sender.get("sender_id") if isinstance(sender, Mapping) else None
     external_user_id = sender_id.get("open_id") if isinstance(sender_id, Mapping) else None
     content = message.get("content") if isinstance(message, Mapping) else None
+    message_type = message.get("message_type") if isinstance(message, Mapping) else None
+    if message_type in {"file", "image", "media", "audio", "video"}:
+        raise FeishuAdapterError("FEISHU_ATTACHMENT_REQUIRES_ARTIFACT_SCAN")
     try:
         decoded = json.loads(content) if isinstance(content, str) else None
     except json.JSONDecodeError as error:
@@ -658,7 +661,7 @@ def normalize_feishu_message(payload: Mapping[str, object]) -> dict[str, str]:
         or not isinstance(text, str)
         or not text
         or not isinstance(message, Mapping)
-        or message.get("message_type") != "text"
+        or message_type != "text"
         or chat_type not in {"p2p", "group"}
     ):
         raise FeishuAdapterError("FEISHU_EVENT_INVALID")

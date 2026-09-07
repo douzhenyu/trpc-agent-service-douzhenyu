@@ -834,7 +834,7 @@ def test_channel_gateway_executes_a_verified_feishu_webhook_and_delivers_a_card(
     assert response.status_code == 200
     assert len(submitter.submissions) == 1
     assert runner.commands[0].session_id == "session:2fc01fae-08d1-50c6-9594-930d7b2c902f"
-    assert len(card_requests) == 1
+    assert len(card_requests) == 2
     assert card_requests[0]["url"] == (
         "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
     )
@@ -845,7 +845,16 @@ def test_channel_gateway_executes_a_verified_feishu_webhook_and_delivers_a_card(
         "msg_type": "interactive",
         "content": (
             '{"config":{"wide_screen_mode":true},"elements":['
-            '{"tag":"div","text":{"tag":"lark_md","content":"飞书回复"}}]}'
+            '{"tag":"div","text":{"tag":"lark_md","content":"处理中"}}]}'
         ),
     }
     assert isinstance(card_body["uuid"], str)
+    assert card_requests[1]["url"] == "https://open.feishu.cn/open-apis/im/v1/messages/om_reply_1"
+    updated_body = cast(dict[str, object], card_requests[1]["body"])
+    assert updated_body == {
+        "msg_type": "interactive",
+        "content": (
+            '{"config":{"wide_screen_mode":true},"elements":['
+            '{"tag":"div","text":{"tag":"lark_md","content":"飞书回复"}}]}'
+        ),
+    }

@@ -26,6 +26,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.auth import Principal
 from trpc_service.admin_api.database import Connection, Database
+from trpc_service.artifacts import ArtifactLifecycleWorker
 from trpc_service.execution_bus import (
     JOB_WORKER_SOURCE,
     MEMORY_INVALIDATED_EVENT,
@@ -514,6 +515,8 @@ class JobWorkerSettings(BaseSettings):
 
     database_url: str = ""
     projection_poll_interval_seconds: float = 0.5
+    artifact_lifecycle_interval_seconds: float = 3600
+    artifact_access_key: str = ""
     operator_token: str = ""
 
     def validate_runtime(self) -> None:
@@ -522,6 +525,10 @@ class JobWorkerSettings(BaseSettings):
         if self.projection_poll_interval_seconds <= 0:
             raise RuntimeError(
                 "Job Worker configuration is invalid: PROJECTION_POLL_INTERVAL_SECONDS"
+            )
+        if self.artifact_lifecycle_interval_seconds <= 0:
+            raise RuntimeError(
+                "Job Worker configuration is invalid: ARTIFACT_LIFECYCLE_INTERVAL_SECONDS"
             )
 
 
@@ -537,6 +544,11 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
         consumer = SessionProjectionConsumer(database, projections)
         application.state.projections = projections
         application.state.consumer = consumer
+        lifecycle = (
+            ArtifactLifecycleWorker(database, access_key=configured.artifact_access_key.encode())
+            if configured.artifact_access_key
+            else None
+        )
 
         async def consume() -> None:
             while True:
@@ -549,10 +561,23 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
                     await asyncio.sleep(configured.projection_poll_interval_seconds)
 
         consume_task = asyncio.create_task(consume())
+
+        async def purge_artifacts() -> None:
+            assert lifecycle is not None
+            while True:
+                try:
+                    await lifecycle.run_once()
+                except Exception:
+                    LOGGER.exception("artifact lifecycle worker failed")
+                await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
+
+        lifecycle_task = asyncio.create_task(purge_artifacts()) if lifecycle is not None else None
         try:
             yield
         finally:
             consume_task.cancel()
+            if lifecycle_task is not None:
+                lifecycle_task.cancel()
             await database.close()
 
     application = FastAPI(title="tRPC-Agent Platform job-worker", lifespan=lifespan)
