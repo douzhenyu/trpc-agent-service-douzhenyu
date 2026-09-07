@@ -198,6 +198,7 @@ def test_alembic_environment_rejects_offline_migrations(
         "trpc_service.migrations.versions.0008_release_content_snapshots",
         "trpc_service.migrations.versions.0009_agent_deployments",
         "trpc_service.migrations.versions.0017_feishu_connection_leases",
+        "trpc_service.migrations.versions.0029_eval_suites",
         "trpc_service.migrations.versions.0030_content_lifecycle",
     ],
 )
