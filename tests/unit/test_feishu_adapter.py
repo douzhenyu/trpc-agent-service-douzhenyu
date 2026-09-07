@@ -6,11 +6,14 @@ import asyncio
 import hashlib
 import hmac
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 from uuid import UUID
 
 import pytest
+from fastapi.testclient import TestClient
+from httpx import AsyncClient, MockTransport, Response
 
 from trpc_service.agent_gateway import AgentExecutionAccepted
 from trpc_service.channels.bindings import ChannelBinding, ChannelBindingRegistry
@@ -24,6 +27,8 @@ from trpc_service.channels.feishu import (
     FeishuCardResponse,
     FeishuCardTransport,
     FeishuChannelAdapter,
+    FeishuLongConnectionSupervisor,
+    HttpFeishuCardClient,
     LongConnectionLeaseStore,
 )
 from trpc_service.channels.inbound import ChannelInboundService, MemoryInboundStore
@@ -232,6 +237,48 @@ def test_long_connection_lease_prevents_another_gateway_from_consuming() -> None
     assert second_submitter.submissions == []
 
 
+def test_long_connection_supervisor_owns_and_releases_the_sdk_event_stream() -> None:
+    from trpc_service.channels.feishu import MemoryLongConnectionLeaseStore
+
+    class Source:
+        def __init__(self) -> None:
+            self.apps: list[str] = []
+            self.closed = False
+
+        async def consume(self, app_id: str, on_event: Any) -> None:
+            self.apps.append(app_id)
+            await on_event(json.loads(_webhook_body()))
+            await on_event(json.loads(_webhook_body()))
+
+        async def close(self) -> None:
+            self.closed = True
+
+    leases = MemoryLongConnectionLeaseStore()
+    adapter, submitter = _adapter(lease_store=leases)
+    source = Source()
+    accepted: list[AgentExecutionAccepted] = []
+
+    async def record(result: AgentExecutionAccepted, payload: Mapping[str, object]) -> None:
+        assert "event" in payload
+        accepted.append(result)
+
+    asyncio.run(
+        FeishuLongConnectionSupervisor(
+            adapter=adapter,
+            source=source,
+            app_id="cli_feishu_bot",
+            on_accepted=record,
+            renew_interval_seconds=3600,
+        ).run()
+    )
+
+    assert source.apps == ["cli_feishu_bot"]
+    assert not source.closed
+    assert len(accepted) == len(submitter.submissions) == 1
+    other, _ = _adapter(lease_store=leases, owner_id="gateway-b")
+    assert asyncio.run(other.acquire_long_connection("cli_feishu_bot")).fencing_token == 2
+
+
 def test_card_transport_updates_one_card_with_a_stable_delivery_key_and_throttles() -> None:
     clock = [0.0]
     client = ScriptedCardClient(
@@ -351,3 +398,216 @@ def test_rate_limited_card_delivery_retries_through_the_delivery_state_machine()
     assert result.status is DeliveryState.DELIVERED
     assert result.attempts == 2
     assert len(client.requests) == 2
+
+
+def test_http_card_client_creates_then_updates_one_stable_feishu_message() -> None:
+    requests: list[dict[str, object]] = []
+
+    def handler(request: Any) -> Response:
+        requests.append(
+            {
+                "method": request.method,
+                "path": request.url.path,
+                "params": dict(request.url.params),
+                "body": json.loads(request.content),
+                "authorization": request.headers["Authorization"],
+            }
+        )
+        if request.method == "POST":
+            return Response(200, json={"code": 0, "data": {"message_id": "om_reply_1"}})
+        return Response(200, json={"code": 0, "data": {}})
+
+    client = HttpFeishuCardClient(
+        AsyncClient(transport=MockTransport(handler)),
+        tenant_access_token="tenant-token",
+        api_base_url="https://feishu.test",
+    )
+
+    first = asyncio.run(
+        client.upsert_card(
+            conversation_id="chat_id:oc_chat_1",
+            card={"elements": []},
+            idempotency_key="delivery-1",
+        )
+    )
+    second = asyncio.run(
+        client.upsert_card(
+            conversation_id="chat_id:oc_chat_1",
+            card={"elements": [{"tag": "div"}]},
+            idempotency_key="delivery-1",
+        )
+    )
+
+    assert first.delivered and second.delivered
+    assert requests == [
+        {
+            "method": "POST",
+            "path": "/open-apis/im/v1/messages",
+            "params": {"receive_id_type": "chat_id"},
+            "body": {
+                "receive_id": "oc_chat_1",
+                "msg_type": "interactive",
+                "content": '{"elements":[]}',
+                "uuid": "delivery-1",
+            },
+            "authorization": "Bearer tenant-token",
+        },
+        {
+            "method": "PATCH",
+            "path": "/open-apis/im/v1/messages/om_reply_1",
+            "params": {},
+            "body": {
+                "msg_type": "interactive",
+                "content": '{"elements":[{"tag":"div"}]}',
+            },
+            "authorization": "Bearer tenant-token",
+        },
+    ]
+
+
+def test_channel_gateway_registers_the_feishu_webhook_entry() -> None:
+    from trpc_service.channel_gateway import ChannelGatewaySettings, create_app
+
+    app = create_app(ChannelGatewaySettings(database_url="postgresql://example.test/platform"))
+    routes = {
+        (str(path), frozenset(methods))
+        for route in app.routes
+        if isinstance((path := getattr(route, "path", None)), str)
+        and isinstance((methods := getattr(route, "methods", None)), set)
+    }
+
+    assert (
+        "/internal/v1/feishu/callback/{tenant_id}/{bot_id}",
+        frozenset({"POST"}),
+    ) in routes
+
+
+def test_channel_gateway_executes_a_verified_feishu_webhook_and_delivers_a_card() -> None:
+    from trpc_service.admin_api.database import Database
+    from trpc_service.agent.runner import RunnerExecutionCommand, RunnerExecutionReply
+    from trpc_service.channel_gateway import ChannelGatewaySettings, create_app
+
+    class OpenDatabase:
+        async def open(self) -> None:
+            return None
+
+        async def close(self) -> None:
+            return None
+
+    class Secrets:
+        def resolve(self, tenant_id: str, secret_ref: str) -> str:
+            assert tenant_id == TENANT
+            if secret_ref.endswith("#verification-token"):
+                return "verification-token"
+            assert secret_ref.endswith("#tenant-access-token")
+            return "tenant-access-token"
+
+    @dataclass
+    class Runner:
+        commands: list[RunnerExecutionCommand] = field(default_factory=list)
+
+        async def complete(self, command: RunnerExecutionCommand) -> RunnerExecutionReply:
+            self.commands.append(command)
+            return RunnerExecutionReply(
+                tenant_id=TENANT,
+                execution_id=EXECUTION,
+                session_id=command.session_id,
+                release_id=RELEASE,
+                model_alias="test",
+                invocation_id="invoke-1",
+                sdk_version="test",
+                platform_version="test",
+                content="飞书回复",
+            )
+
+        async def close(self) -> None:
+            return None
+
+    registry = ChannelBindingRegistry.in_memory()
+    binding = ChannelBinding(
+        tenant_id=TENANT,
+        binding_id="binding-feishu-1",
+        channel_type="FEISHU",
+        external_bot_id="cli_feishu_bot",
+        application_id=APPLICATION,
+        environment="PRODUCTION",
+        secret_ref="vault://tenant/11111111/channels/feishu/cli_feishu_bot#verification-token",
+    )
+    asyncio.run(registry.register(binding))
+    submitter = RecordingSubmitter()
+    inbound = ChannelInboundService(
+        registry=registry,
+        secrets=StaticSecrets(),
+        submitter=submitter,
+        store=MemoryInboundStore(),
+    )
+    card_requests: list[dict[str, object]] = []
+
+    def card_handler(request: Any) -> Response:
+        card_requests.append(
+            {
+                "url": str(request.url),
+                "authorization": request.headers["Authorization"],
+                "body": json.loads(request.content),
+            }
+        )
+        return Response(200, json={"code": 0, "data": {"message_id": "om_reply_1"}})
+
+    runner = Runner()
+    app = create_app(
+        ChannelGatewaySettings(database_url="postgresql://example.test/platform"),
+        database=cast(Database, OpenDatabase()),
+        inbound=inbound,
+        runner=cast(Any, runner),
+        feishu_secrets=Secrets(),
+        feishu_http=AsyncClient(transport=MockTransport(card_handler)),
+        feishu_delivery_store=MemoryDeliveryStore(),
+    )
+    body = _webhook_body()
+    material = b"verification-token"
+    timestamp, nonce = "1710000000", "nonce-1"
+    signature = hmac.new(
+        material, timestamp.encode() + nonce.encode() + body, hashlib.sha256
+    ).hexdigest()
+
+    with TestClient(app) as client:
+        app.state.registry = registry
+        wrong_route = client.post(
+            f"/internal/v1/feishu/callback/{TENANT}/another-bot",
+            content=body,
+            headers={
+                "X-Lark-Request-Timestamp": timestamp,
+                "X-Lark-Request-Nonce": nonce,
+                "X-Lark-Signature": signature,
+            },
+        )
+        assert wrong_route.status_code == 400
+        assert submitter.submissions == []
+        response = client.post(
+            f"/internal/v1/feishu/callback/{TENANT}/cli_feishu_bot",
+            content=body,
+            headers={
+                "X-Lark-Request-Timestamp": timestamp,
+                "X-Lark-Request-Nonce": nonce,
+                "X-Lark-Signature": signature,
+            },
+        )
+
+    assert response.status_code == 200
+    assert len(submitter.submissions) == 1
+    assert runner.commands[0].session_id == "channel:binding-feishu-1:direct:ou_user_1"
+    assert len(card_requests) == 1
+    assert card_requests[0]["url"] == (
+        "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"
+    )
+    assert card_requests[0]["authorization"] == "Bearer tenant-access-token"
+    card_body = cast(dict[str, object], card_requests[0]["body"])
+    assert {key: value for key, value in card_body.items() if key != "uuid"} == {
+        "receive_id": "ou_user_1",
+        "msg_type": "interactive",
+        "content": (
+            '{"config":{"wide_screen_mode":true},"elements":['
+            '{"tag":"div","text":{"tag":"lark_md","content":"飞书回复"}}]}'
+        ),
+    }
+    assert isinstance(card_body["uuid"], str)
