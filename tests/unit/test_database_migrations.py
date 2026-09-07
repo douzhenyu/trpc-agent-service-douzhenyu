@@ -23,7 +23,7 @@ def test_alembic_migrations_resolve_to_one_head() -> None:
 
     script = ScriptDirectory.from_config(config)
 
-    assert script.get_heads() == ["0025_storage_claims"]
+    assert script.get_heads() == ["0028_storage_rollback_catchup"]
     assert all(len(revision.revision) <= 32 for revision in script.walk_revisions())
 
 

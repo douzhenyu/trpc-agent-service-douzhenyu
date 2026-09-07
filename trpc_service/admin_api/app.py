@@ -63,6 +63,7 @@ from trpc_service.admin_api.schemas import (
     TenantResponse,
 )
 from trpc_service.admin_api.settings import AdminSettings
+from trpc_service.admin_api.storage_migrations import create_storage_migration_router
 from trpc_service.admin_api.storage_profiles import create_storage_profile_router
 from trpc_service.admin_api.tool_approvals import create_tool_approval_router
 from trpc_service.admin_api.tools import create_tool_router
@@ -115,6 +116,7 @@ def create_app(
         )
     application.include_router(create_model_profile_router(db))
     application.include_router(create_storage_profile_router(db))
+    application.include_router(create_storage_migration_router(db))
     application.include_router(create_knowledge_router(db))
     application.include_router(create_tool_router(db))
     application.include_router(create_tool_approval_router(db))
@@ -154,6 +156,26 @@ def create_app(
             "DEDICATED_STORAGE_REQUIRED": "DEDICATED_STORAGE_REQUIRED",
             "STORAGE_MIGRATION_REQUIRED": "STORAGE_MIGRATION_REQUIRED",
             "STORAGE_RESOURCE_ALREADY_CLAIMED": "STORAGE_RESOURCE_ALREADY_CLAIMED",
+            "STORAGE_MIGRATION_NOT_FOUND": "STORAGE_MIGRATION_NOT_FOUND",
+            "STORAGE_MIGRATION_APPROVAL_REQUIRED": "STORAGE_MIGRATION_APPROVAL_REQUIRED",
+            "STORAGE_MIGRATION_SELF_APPROVAL_DENIED": "STORAGE_MIGRATION_SELF_APPROVAL_DENIED",
+            "STORAGE_MIGRATION_OBSERVATION_REQUIRED": "STORAGE_MIGRATION_OBSERVATION_REQUIRED",
+            "STORAGE_MIGRATION_INVALID_PROFILES": "STORAGE_MIGRATION_INVALID_PROFILES",
+            "STORAGE_MIGRATION_INVALID_TRANSITION": "STORAGE_MIGRATION_INVALID_TRANSITION",
+            "STORAGE_MIGRATION_VALIDATION_FAILED": "STORAGE_MIGRATION_VALIDATION_FAILED",
+            (
+                "STORAGE_MIGRATION_APPROVAL_ALREADY_DECIDED"
+            ): "STORAGE_MIGRATION_APPROVAL_ALREADY_DECIDED",
+            "STORAGE_MIGRATION_ROLLBACK_UNAVAILABLE": "STORAGE_MIGRATION_ROLLBACK_UNAVAILABLE",
+            (
+                "STORAGE_MIGRATION_ROLLBACK_ALREADY_REQUESTED"
+            ): "STORAGE_MIGRATION_ROLLBACK_ALREADY_REQUESTED",
+            (
+                "STORAGE_MIGRATION_ROLLBACK_APPROVAL_DENIED"
+            ): "STORAGE_MIGRATION_ROLLBACK_APPROVAL_DENIED",
+            (
+                "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED"
+            ): "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(

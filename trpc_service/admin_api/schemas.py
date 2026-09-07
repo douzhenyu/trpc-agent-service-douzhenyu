@@ -8,6 +8,7 @@ from uuid import UUID
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
 from trpc_service.storage import StorageBackend
+from trpc_service.storage_migration import StorageMigrationState
 
 
 class HealthResponse(BaseModel):
@@ -135,6 +136,51 @@ class StorageProfileResponse(BaseModel):
 
 class StorageProfileList(BaseModel):
     items: list[StorageProfileResponse]
+
+
+class StorageMigrationCreate(BaseModel):
+    target_profile_id: UUID
+    observation_seconds: int = Field(default=300, ge=60, le=86_400)
+
+
+class StorageMigrationApproval(BaseModel):
+    decision: Literal["APPROVE", "DENY"]
+
+
+class StorageMigrationRollbackApproval(BaseModel):
+    decision: Literal["REQUEST", "APPROVE", "DENY"]
+
+
+class StorageMigrationAdvance(BaseModel):
+    """Operator-only control-plane transition; workers own data-plane phases."""
+
+    operation: Literal["SWITCH", "COMPLETE"]
+
+
+class StorageMigrationResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    source_profile_id: UUID
+    target_profile_id: UUID
+    state: StorageMigrationState
+    approval_status: Literal["PENDING", "APPROVED", "DENIED"]
+    requested_by: str
+    approved_by: str | None
+    approved_at: datetime | None
+    rollback_approval_status: Literal["NONE", "PENDING", "APPROVED", "DENIED"]
+    rollback_requested_by: str | None
+    rollback_approved_by: str | None
+    rollback_approved_at: datetime | None
+    validation: dict[str, Any]
+    observation_seconds: int
+    observation_ends_at: datetime | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class StorageMigrationList(BaseModel):
+    items: list[StorageMigrationResponse]
 
 
 class ModelProfileCreate(BaseModel):
