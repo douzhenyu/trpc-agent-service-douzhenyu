@@ -246,3 +246,9 @@ observability:
     enabled: false
   prometheusRule:
     enabled: false
+
+failover:
+  region: cn-east
+  # When true (warm-standby region), ingress units fence themselves off:
+  # agent/channel gateways answer 503 STANDBY_FENCED instead of serving.
+  standbyMode: false
