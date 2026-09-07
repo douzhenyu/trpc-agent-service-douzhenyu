@@ -115,7 +115,8 @@ async def _seed_release_stack(knowledge_base_id: UUID | None = None) -> tuple[st
             """INSERT INTO tenant.agent_release
             (tenant_id,id,application_id,model_alias,data_classification,region,
             fallback_aliases,model_profiles,release_version,draft_snapshot)
-            VALUES ($1,$2,$3,'primary-alias','CONFIDENTIAL','cn-test','[]'::jsonb,$4::jsonb,1,$5::jsonb)""",
+            VALUES ($1,$2,$3,'primary-alias','CONFIDENTIAL','cn-test',
+            '[]'::jsonb,$4::jsonb,1,$5::jsonb)""",
             tenant_id,
             release_id,
             application_id,
@@ -159,7 +160,8 @@ async def _seed_knowledge_deployment(tenant_id: str, base_id: UUID) -> str:
             "0" * 64,
         )
         await connection.execute(
-            "INSERT INTO tenant.knowledge_revision_build (tenant_id,revision_id,status) VALUES ($1,$2,'BUILDING')",
+            """INSERT INTO tenant.knowledge_revision_build (tenant_id,revision_id,status)
+            VALUES ($1,$2,'BUILDING')""",
             UUID(tenant_id),
             revision_id,
         )
