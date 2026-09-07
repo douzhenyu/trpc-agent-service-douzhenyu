@@ -157,6 +157,21 @@ def test_smoke_database_fixture_satisfies_admin_api_first_install() -> None:
         "app-password",
     }
     assert set(resources[("Secret", "trpc-platform-database-app")]["stringData"]) == {"url"}
+    assert set(resources[("Secret", "trpc-platform-artifact-access")]["stringData"]) == {"value"}
+    rendered_workloads = {
+        manifest["metadata"]["labels"]["app.kubernetes.io/component"]: manifest
+        for manifest in render_chart()
+        if manifest["kind"] == "Rollout"
+    }
+    for component in ("channel-gateway", "job-worker"):
+        container = rendered_workloads[component]["spec"]["template"]["spec"]["containers"][0]
+        artifact_access_key = next(
+            item for item in container["env"] if item["name"] == "ARTIFACT_ACCESS_KEY"
+        )
+        assert artifact_access_key["valueFrom"]["secretKeyRef"] == {
+            "name": "trpc-platform-artifact-access",
+            "key": "value",
+        }
     assert {
         "SESSION_SIGNING_KEY",
         "OIDC_ENABLED",
