@@ -135,3 +135,40 @@ jobs:
       - run: uv run pytest tests/deployment/test_kubernetes_smoke.py -v -s
         env:
           RUN_KUBERNETES_SMOKE: "1"
+
+  supply-chain:
+    runs-on: ubuntu-latest
+    needs: quality
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.28"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Lockfile integrity
+        run: uv sync --locked
+      - name: Generate SBOM (CycloneDX)
+        run: |
+          uv export --format cyclonedx-json --no-hashes --output-file sbom.cdx.json
+          uv export --format requirements-txt --no-hashes --output-file requirements.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sbom
+          path: sbom.cdx.json
+      - name: Dependency vulnerability audit
+        run: uv run --with pip-audit pip-audit -r requirements.txt --strict
+      - name: Secret scan
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Web console supply chain
+        working-directory: web-console
+        run: |
+          npm ci
+          npm audit --omit=dev --audit-level=high
