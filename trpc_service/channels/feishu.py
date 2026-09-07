@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import hashlib
 import hmac
 import json
+import logging
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass
 from time import monotonic
-from typing import Any, Protocol
+from typing import Any, Protocol, cast
 from uuid import UUID
 
 from httpx import AsyncClient, TimeoutException
@@ -19,6 +21,8 @@ from trpc_service.agent_gateway import AgentExecutionAccepted
 from trpc_service.channels.bindings import ChannelBinding, ChannelBindingRegistry
 from trpc_service.channels.delivery import ChannelTransportOutcome, ReplyDelivery
 from trpc_service.channels.inbound import ChannelInboundService, InboundError, SecretResolver
+
+logger = logging.getLogger(__name__)
 
 
 class FeishuAdapterError(RuntimeError):
@@ -65,6 +69,129 @@ class FeishuLongConnectionSource(Protocol):
     ) -> None: ...
 
     async def close(self) -> None: ...
+
+
+class LarkChannelRuntime(Protocol):
+    """The small, public portion of ``lark_channel.FeishuChannel`` we use."""
+
+    def on_raw_event(
+        self, event_type: str, handler: Callable[[Mapping[str, object]], object]
+    ) -> object: ...
+
+    async def connect(self) -> None: ...
+
+    async def disconnect(self) -> None: ...
+
+
+LarkChannelFactory = Callable[[str, str], LarkChannelRuntime]
+
+
+class LarkChannelLongConnectionSource:
+    """Adapt the official SDK's WebSocket transport to the Gateway boundary.
+
+    ``lark-channel-sdk`` invokes raw-event callbacks from its own background
+    event loop. Gateway ledger and database work must stay on FastAPI's loop,
+    so the callback is explicitly bridged back before it reaches the adapter.
+    The app secret is resolved for every new socket, allowing Vault rotation to
+    take effect on a reconnect without persisting a credential in process
+    configuration.
+    """
+
+    def __init__(
+        self,
+        *,
+        app_secret: Callable[[], Awaitable[str]],
+        channel_factory: LarkChannelFactory | None = None,
+    ) -> None:
+        self._app_secret = app_secret
+        self._channel_factory = channel_factory or _new_lark_channel
+        self._channel: LarkChannelRuntime | None = None
+        self._closed = False
+        self._inflight: set[concurrent.futures.Future[None]] = set()
+
+    async def consume(
+        self,
+        app_id: str,
+        on_event: Callable[[Mapping[str, object]], Awaitable[None]],
+    ) -> None:
+        gateway_loop = asyncio.get_running_loop()
+        secret = await self._app_secret()
+        if not secret:
+            raise FeishuAdapterError("FEISHU_SECRET_RESOLUTION_FAILED")
+        channel = self._channel_factory(app_id, secret)
+        self._channel = channel
+        self._closed = False
+
+        def receive(payload: Mapping[str, object]) -> None:
+            if self._closed:
+                return
+            event = _ensure_lark_app_id(payload, app_id)
+            future: concurrent.futures.Future[None] = asyncio.run_coroutine_threadsafe(
+                _deliver_lark_event(on_event, event), gateway_loop
+            )
+            self._inflight.add(future)
+            future.add_done_callback(self._complete_event)
+
+        channel.on_raw_event("im.message.receive_v1", receive)
+        try:
+            # The official client owns its socket in a worker thread and this
+            # coroutine remains pending until close()/disconnect().
+            await channel.connect()
+        finally:
+            if self._channel is channel:
+                self._channel = None
+
+    async def close(self) -> None:
+        self._closed = True
+        channel = self._channel
+        if channel is not None:
+            await channel.disconnect()
+
+    def _complete_event(self, future: concurrent.futures.Future[None]) -> None:
+        self._inflight.discard(future)
+        if future.cancelled():
+            return
+        try:
+            future.result()
+        except Exception:
+            # A single malformed event must not kill the provider transport.
+            # The adapter returns stable protocol errors and the provider will
+            # redeliver when appropriate.
+            logger.exception("Feishu long-connection event processing failed")
+
+
+def _new_lark_channel(app_id: str, app_secret: str) -> LarkChannelRuntime:
+    """Lazily import the official SDK so webhook-only startup stays light."""
+
+    from lark_channel import FeishuChannel  # type: ignore[import-untyped]
+
+    return cast(
+        LarkChannelRuntime, FeishuChannel(app_id=app_id, app_secret=app_secret, transport="ws")
+    )
+
+
+async def _deliver_lark_event(
+    on_event: Callable[[Mapping[str, object]], Awaitable[None]], event: Mapping[str, object]
+) -> None:
+    await on_event(event)
+
+
+def _ensure_lark_app_id(payload: Mapping[str, object], app_id: str) -> dict[str, object]:
+    """Normalize the SDK raw event and pin it to its configured app stream."""
+
+    copied = {str(key): value for key, value in payload.items()}
+    raw_header = copied.get("header")
+    header = (
+        {str(key): value for key, value in raw_header.items()}
+        if isinstance(raw_header, Mapping)
+        else {}
+    )
+    observed_app_id = header.get("app_id")
+    if observed_app_id is not None and observed_app_id != app_id:
+        raise FeishuAdapterError("FEISHU_LONG_CONNECTION_APP_MISMATCH")
+    header["app_id"] = app_id
+    copied["header"] = header
+    return copied
 
 
 class MemoryLongConnectionLeaseStore:

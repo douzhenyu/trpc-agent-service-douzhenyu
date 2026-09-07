@@ -20,6 +20,7 @@ dependencies = [
   "protobuf==6.33.0",
   # Required by the trpc-agent-sdk AG-UI server import chain (graph DSL).
   "langgraph==1.2.11",
+  "lark-channel-sdk==1.4.0",
 ]
 
 [project.scripts]

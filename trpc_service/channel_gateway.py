@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import logging
 from collections.abc import AsyncIterator, Mapping, Sequence
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
@@ -21,10 +22,12 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from httpx import AsyncClient
+from pydantic import BaseModel, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from trpc_service.admin_api.database import Database
@@ -48,6 +51,7 @@ from trpc_service.channels.feishu import (
     FeishuLongConnectionSupervisor,
     FeishuSecretResolver,
     HttpFeishuCardClient,
+    LarkChannelLongConnectionSource,
     normalize_feishu_message,
 )
 from trpc_service.channels.inbound import ChannelInboundService, InboundError
@@ -71,6 +75,15 @@ from trpc_service.llm_gateway import VaultSecretProvider
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
+logger = logging.getLogger(__name__)
+
+
+class FeishuLongConnectionSettings(BaseModel):
+    """A non-secret production connection declaration supplied by Helm."""
+
+    tenant_id: str = Field(min_length=1)
+    app_id: str = Field(min_length=1)
+
 
 class ChannelGatewaySettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="", extra="ignore")
@@ -87,6 +100,8 @@ class ChannelGatewaySettings(BaseSettings):
     vault_url: str = ""
     vault_kubernetes_role: str = "channel-gateway"
     kubernetes_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+    feishu_long_connections: list[FeishuLongConnectionSettings] = Field(default_factory=list)
+    gateway_instance_id: str = ""
 
     def validate_runtime(self) -> None:
         if not self.database_url:
@@ -197,66 +212,49 @@ def create_app(
             releases=DatabaseReleaseRouteResolver(active_database),
             llm_gateway_access_key=configured.llm_gateway_access_key,
         )
+        gateway_owner_id = _gateway_owner_id(configured)
         long_connection_tasks: list[asyncio.Task[None]] = []
         if feishu_long_connections:
             if resolved_feishu_secrets is None:
                 raise RuntimeError("FEISHU_SECRET_RESOLUTION_UNAVAILABLE")
-            for connection in feishu_long_connections:
-                adapter = FeishuChannelAdapter(
-                    tenant_id=connection.tenant_id,
-                    registry=registry,
-                    secrets=DatabaseChannelSecretResolver(active_database),
-                    inbound=application.state.inbound,
-                    lease_store=DatabaseLongConnectionLeaseStore(
-                        active_database, connection.tenant_id
-                    ),
+            long_connection_tasks.append(
+                asyncio.create_task(
+                    _run_feishu_long_connections(
+                        application=application,
+                        configured=configured,
+                        registry=registry,
+                        database=active_database,
+                        connections=feishu_long_connections,
+                        secrets=resolved_feishu_secrets,
+                        owner_id=gateway_owner_id,
+                    )
                 )
-
-                async def on_accepted(
-                    accepted: Any,
-                    payload: Mapping[str, object],
-                    *,
-                    tenant_id: str = connection.tenant_id,
-                    app_id: str = connection.app_id,
-                ) -> None:
-                    if accepted.deduplicated:
-                        return
-                    event = normalize_feishu_message(payload)
-                    binding = await registry.resolve(
-                        tenant_id=tenant_id, channel_type="FEISHU", external_bot_id=app_id
+            )
+        elif configured.feishu_long_connections:
+            if resolved_feishu_secrets is None:
+                raise RuntimeError("FEISHU_SECRET_RESOLUTION_UNAVAILABLE")
+            long_connection_tasks.append(
+                asyncio.create_task(
+                    _run_declared_feishu_long_connections(
+                        application=application,
+                        configured=configured,
+                        registry=registry,
+                        database=active_database,
+                        declarations=configured.feishu_long_connections,
+                        secrets=resolved_feishu_secrets,
+                        owner_id=gateway_owner_id,
+                        database_ready=connect_task,
                     )
-                    if binding is None:
-                        raise FeishuAdapterError("FEISHU_BINDING_NOT_FOUND")
-                    access_token = await _resolve_feishu_secret(
-                        resolved_feishu_secrets,
-                        tenant_id,
-                        _secret_ref_with_field(binding, "tenant-access-token"),
-                    )
-                    await _execute_feishu_reply(
-                        application,
-                        configured,
-                        tenant_id=tenant_id,
-                        binding=binding,
-                        accepted=accepted,
-                        event=event,
-                        tenant_access_token=access_token,
-                    )
-
-                supervisor = FeishuLongConnectionSupervisor(
-                    adapter=adapter,
-                    source=connection.source,
-                    app_id=connection.app_id,
-                    on_accepted=on_accepted,
                 )
-                long_connection_tasks.append(asyncio.create_task(_run_supervisor(supervisor)))
+            )
         try:
             yield
         finally:
-            connect_task.cancel()
             for task in long_connection_tasks:
                 task.cancel()
             if long_connection_tasks:
                 await asyncio.gather(*long_connection_tasks, return_exceptions=True)
+            connect_task.cancel()
             await application.state.runner.close()
             if vault_client is not None:
                 await vault_client.aclose()
@@ -442,7 +440,9 @@ async def _connect_database(database: Database) -> None:
             await asyncio.sleep(2.0)
 
 
-async def _run_supervisor(supervisor: FeishuLongConnectionSupervisor) -> None:
+async def _run_supervisor(
+    supervisor: FeishuLongConnectionSupervisor, *, retry_delay_seconds: float = 2.0
+) -> None:
     """Keep a standby gateway eligible to take over after lease loss or disconnect."""
 
     while True:
@@ -450,8 +450,179 @@ async def _run_supervisor(supervisor: FeishuLongConnectionSupervisor) -> None:
             await supervisor.run()
         except FeishuAdapterError as error:
             if error.code != "FEISHU_LONG_CONNECTION_LEASE_HELD":
-                raise
+                logger.warning("Feishu long connection stopped: %s", error.code)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # Provider transport failures (DNS, TLS and handshake errors) are
+            # transient at this boundary. ``supervisor.run`` has released its
+            # fenced lease before this retry, so another replica may take over.
+            logger.exception("Feishu long connection stopped; retrying")
+        await asyncio.sleep(retry_delay_seconds)
+
+
+def _gateway_owner_id(configured: ChannelGatewaySettings) -> str:
+    """Return one stable lease owner for this Gateway process."""
+
+    return configured.gateway_instance_id or f"channel-gateway-{uuid4()}"
+
+
+async def _run_declared_feishu_long_connections(
+    *,
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    registry: ChannelBindingRegistry,
+    database: Database,
+    declarations: Sequence[FeishuLongConnectionSettings],
+    secrets: FeishuSecretResolver,
+    owner_id: str,
+    database_ready: asyncio.Task[None],
+) -> None:
+    """Wait for the database in the background before starting declared SDK streams."""
+
+    await database_ready
+    while True:
+        try:
+            connections = await _configured_feishu_long_connections(
+                registry=registry,
+                declarations=declarations,
+                secrets=secrets,
+            )
+            await _run_feishu_long_connections(
+                application=application,
+                configured=configured,
+                registry=registry,
+                database=database,
+                connections=connections,
+                secrets=secrets,
+                owner_id=owner_id,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            # A binding can be created after a rollout or repaired after an
+            # operator mistake. Keep the declaration alive and retry rather
+            # than permanently abandoning its stream.
+            logger.exception("Declared Feishu long connection is not ready; retrying")
         await asyncio.sleep(2.0)
+
+
+async def _run_feishu_long_connections(
+    *,
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    registry: ChannelBindingRegistry,
+    database: Database,
+    connections: Sequence[FeishuLongConnection],
+    secrets: FeishuSecretResolver,
+    owner_id: str,
+) -> None:
+    """Run all connections for this process while their owner lease remains valid."""
+
+    supervisors = [
+        _feishu_supervisor(
+            application=application,
+            configured=configured,
+            registry=registry,
+            database=database,
+            connection=connection,
+            secrets=secrets,
+            owner_id=owner_id,
+        )
+        for connection in connections
+    ]
+    await asyncio.gather(*(_run_supervisor(supervisor) for supervisor in supervisors))
+
+
+def _feishu_supervisor(
+    *,
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    registry: ChannelBindingRegistry,
+    database: Database,
+    connection: FeishuLongConnection,
+    secrets: FeishuSecretResolver,
+    owner_id: str,
+) -> FeishuLongConnectionSupervisor:
+    adapter = FeishuChannelAdapter(
+        tenant_id=connection.tenant_id,
+        registry=registry,
+        secrets=DatabaseChannelSecretResolver(database),
+        inbound=application.state.inbound,
+        lease_store=DatabaseLongConnectionLeaseStore(database, connection.tenant_id),
+        owner_id=owner_id,
+    )
+
+    async def on_accepted(accepted: Any, payload: Mapping[str, object]) -> None:
+        if accepted.deduplicated:
+            return
+        event = normalize_feishu_message(payload)
+        binding = await registry.resolve(
+            tenant_id=connection.tenant_id,
+            channel_type="FEISHU",
+            external_bot_id=connection.app_id,
+        )
+        if binding is None:
+            raise FeishuAdapterError("FEISHU_BINDING_NOT_FOUND")
+        access_token = await _resolve_feishu_secret(
+            secrets,
+            connection.tenant_id,
+            _secret_ref_with_field(binding, "tenant-access-token"),
+        )
+        await _execute_feishu_reply(
+            application,
+            configured,
+            tenant_id=connection.tenant_id,
+            binding=binding,
+            accepted=accepted,
+            event=event,
+            tenant_access_token=access_token,
+        )
+
+    return FeishuLongConnectionSupervisor(
+        adapter=adapter,
+        source=connection.source,
+        app_id=connection.app_id,
+        on_accepted=on_accepted,
+    )
+
+
+async def _configured_feishu_long_connections(
+    *,
+    registry: ChannelBindingRegistry,
+    declarations: Sequence[FeishuLongConnectionSettings],
+    secrets: FeishuSecretResolver,
+) -> list[FeishuLongConnection]:
+    """Create SDK sources from explicit, RLS-safe deployment declarations."""
+
+    connections: list[FeishuLongConnection] = []
+    for declaration in declarations:
+        binding = await registry.resolve(
+            tenant_id=declaration.tenant_id,
+            channel_type="FEISHU",
+            external_bot_id=declaration.app_id,
+        )
+        if binding is None:
+            raise RuntimeError("FEISHU_BINDING_NOT_FOUND")
+        active_binding: ChannelBinding = binding
+
+        async def app_secret(
+            *,
+            tenant_id: str = declaration.tenant_id,
+            binding: ChannelBinding = active_binding,
+        ) -> str:
+            return await _resolve_feishu_secret(
+                secrets, tenant_id, _secret_ref_with_field(binding, "app-secret")
+            )
+
+        connections.append(
+            FeishuLongConnection(
+                tenant_id=declaration.tenant_id,
+                app_id=declaration.app_id,
+                source=LarkChannelLongConnectionSource(app_secret=app_secret),
+            )
+        )
+    return connections
 
 
 async def _execute_feishu_reply(
