@@ -29,6 +29,9 @@ class RecordingConnection:
             }
         ]
 
+    async def executemany(self, query: str, args: list[tuple[object, ...]]) -> None:
+        self.calls.append((query, tuple(args)))
+
 
 class RecordingDatabase:
     def __init__(self) -> None:
@@ -82,6 +85,9 @@ def test_direct_request_can_query_only_same_tenant_verified_associations() -> No
     assert "tenant.im_subject_association" in query
     assert "association.tenant_id=record.tenant_id" in query
     assert args == (tenant_id, "im:WECOM:binding-1:alice", IM_DIRECT_MEMORY_POLICY, 20)
+    update_query, update_args = database.connection.calls[1]
+    assert "SET last_used_at=now()" in update_query
+    assert update_args == ((tenant_id, "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"),)
 
 
 def test_group_projection_never_writes_member_private_memory() -> None:
