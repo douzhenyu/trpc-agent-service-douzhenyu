@@ -84,6 +84,8 @@ class AgentExecutionSubmission(BaseModel):
     application_id: UUID
     environment: str = Field(pattern=r"^(DEVELOPMENT|STAGING|PRODUCTION)$")
     session_id: str = Field(min_length=1, max_length=512)
+    subject_id: str | None = Field(default=None, min_length=1, max_length=256)
+    memory_policy_version: str = Field(default="policy:none", min_length=1, max_length=128)
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
     message_id: str | None = Field(default=None, min_length=1, max_length=256)
 
@@ -106,6 +108,8 @@ def _payload_hash(submission: AgentExecutionSubmission) -> str:
             "application_id": str(submission.application_id),
             "environment": submission.environment,
             "session_id": submission.session_id,
+            "subject_id": submission.subject_id,
+            "memory_policy_version": submission.memory_policy_version,
             "messages": submission.messages,
         },
         ensure_ascii=False,
@@ -147,9 +151,9 @@ class AgentExecutionSubmitter:
             )
             execution_id = await connection.fetchval(
                 """INSERT INTO tenant.agent_execution
-                (tenant_id,id,application_id,release_id,environment,session_id,message_id,
-                payload_hash)
-                VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                (tenant_id,id,application_id,release_id,environment,session_id,subject_id,
+                memory_policy_version,message_id,payload_hash)
+                VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
                 ON CONFLICT (tenant_id,message_id) DO NOTHING RETURNING id""",
                 submission.tenant_id,
                 uuid7(),
@@ -157,6 +161,8 @@ class AgentExecutionSubmitter:
                 UUID(release_id),
                 submission.environment,
                 submission.session_id,
+                submission.subject_id,
+                submission.memory_policy_version,
                 message_id,
                 payload_hash,
             )

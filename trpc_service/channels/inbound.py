@@ -321,6 +321,9 @@ class ChannelInboundService:
             application_id=UUID(binding.application_id),
             environment=binding.environment,
             session_id=session_id,
+            subject_id=self.subject_for(
+                binding=binding, external_user_id=event["external_user_id"]
+            ),
             messages=[{"role": "user", "content": event["text"]}],
             message_id=message_id,
         )

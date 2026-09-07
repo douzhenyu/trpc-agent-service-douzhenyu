@@ -23,8 +23,10 @@ from trpc_service.ids import uuid7
 ENVELOPE_SPECVERSION = "1.0"
 GATEWAY_SOURCE = "trpc-agent-platform://agent-gateway"
 WORKER_SOURCE = "trpc-agent-platform://agent-worker"
+JOB_WORKER_SOURCE = "trpc-agent-platform://job-worker"
 EXECUTION_REQUESTED_EVENT = "platform.agent-execution.requested.v1"
 SESSION_EVENTS_COMMITTED_EVENT = "platform.session.events.committed.v1"
+MEMORY_INVALIDATED_EVENT = "platform.memory.invalidated.v1"
 
 _REQUIRED_ENVELOPE_FIELDS = (
     "id",
@@ -50,6 +52,19 @@ class ExecutionRequestedData(BaseModel):
     environment: str
     session_id: str
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
+
+
+class SessionEventsCommittedData(BaseModel):
+    """Committed Session Event range consumed only by asynchronous projections."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: str
+    session_id: str
+    execution_id: str
+    from_version: int = Field(ge=0)
+    to_version: int = Field(ge=1)
+    event_kinds: list[str] = Field(min_length=1)
 
 
 @dataclass(frozen=True)
