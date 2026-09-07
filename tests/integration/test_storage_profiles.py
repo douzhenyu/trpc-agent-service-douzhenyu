@@ -128,9 +128,7 @@ def test_storage_profiles_validate_isolation_and_expose_active_worker_pool() -> 
                 "alias": "must-not-share-dedicated-store",
                 "classification": "RESTRICTED",
                 "worker_pool": "tenant-storage-workers",
-                "encryption_key_ref": (
-                    f"vault://tenant/{second_tenant_id}/storage#encryption_key"
-                ),
+                "encryption_key_ref": (f"vault://tenant/{second_tenant_id}/storage#encryption_key"),
                 "backends": _backends(second_tenant_id, dedicated=True),
                 "activate": True,
             },

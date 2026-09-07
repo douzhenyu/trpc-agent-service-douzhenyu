@@ -69,9 +69,7 @@ async def _claim_dedicated_resources(
     """
 
     resources = [
-        (backend.kind.value, backend.endpoint)
-        for backend in payload.backends
-        if backend.dedicated
+        (backend.kind.value, backend.endpoint) for backend in payload.backends if backend.dedicated
     ]
     if payload.worker_pool != "shared-workers":
         resources.append(("WORKER_POOL", payload.worker_pool))
