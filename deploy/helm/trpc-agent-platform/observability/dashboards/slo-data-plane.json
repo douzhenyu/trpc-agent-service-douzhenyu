@@ -1,0 +1,85 @@
+{
+  "title": "数据面 SLO — 99.95% 可用性",
+  "uid": "trpc-slo-data-plane",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "数据面可用性（目标 99.95%）",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.9995 },
+              { "color": "green", "value": 0.9995 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "1 - (sum(rate(platform_http_requests_total{service=~\"agent-gateway|channel-gateway\",status=~\"5..\"}[5m])) / sum(rate(platform_http_requests_total{service=~\"agent-gateway|channel-gateway\"}[5m])))",
+          "legendFormat": "availability"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "错误预算燃烧率（5m 窗口）",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "(sum(rate(platform_http_requests_total{service=~\"agent-gateway|channel-gateway\",status=~\"5..\"}[5m])) / sum(rate(platform_http_requests_total{service=~\"agent-gateway|channel-gateway\"}[5m]))) / 0.0005",
+          "legendFormat": "burn rate"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "HTTP P95 延迟",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le, service) (rate(platform_http_request_seconds_bucket{service=~\"agent-gateway|channel-gateway\"}[5m])))",
+          "legendFormat": "{{service}}"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "执行结果（成功/失败）",
+      "gridPos": { "h": 7, "w": 12, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (outcome) (rate(platform_execution_outcomes_total[5m]))",
+          "legendFormat": "{{outcome}}"
+        }
+      ]
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "回复投递死信重试",
+      "gridPos": { "h": 7, "w": 12, "x": 12, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum(rate(platform_http_requests_total{service=\"channel-gateway\",route=~\".*/dead-letters/.*/retries\"}[1h]))",
+          "legendFormat": "requeues"
+        }
+      ]
+    }
+  ]
+}

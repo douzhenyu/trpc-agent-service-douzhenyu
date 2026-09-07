@@ -654,3 +654,63 @@ def test_version_conflict_blocks_a_stale_worker_result() -> None:
             await database.close()
 
     asyncio.run(scenario())
+
+
+def test_trace_context_flows_from_gateway_to_dispatched_envelope() -> None:
+    """W3C trace context survives the HTTP boundary and the outbox dispatch."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = await _open_database()
+        try:
+            tenant_id, application_id, _release_id = await _seed_release_stack()
+            bus = InMemoryExecutionBus(partition_count=4)
+            app = create_app(
+                AgentGatewaySettings(database_url=APP_URL, dispatch_interval_seconds=0.0),
+                bus=bus,
+            )
+            trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+            with TestClient(app) as client:
+                submitted = client.post(
+                    "/internal/v1/agent-executions",
+                    json={
+                        "tenant_id": tenant_id,
+                        "application_id": application_id,
+                        "environment": "PRODUCTION",
+                        "session_id": "session-trace",
+                        "messages": [{"role": "user", "content": "traced hello"}],
+                        "message_id": "traced-message-1",
+                    },
+                    headers={"traceparent": f"00-{trace_id}-00f067aa0ba902b7-01"},
+                )
+                assert submitted.status_code == 202
+                outbound = submitted.headers["traceparent"]
+                assert outbound.startswith(f"00-{trace_id}-")
+                assert outbound != f"00-{trace_id}-00f067aa0ba902b7-01"
+
+            connection = await asyncpg.connect(ADMIN_URL)
+            try:
+                row = await connection.fetchrow(
+                    "SELECT payload FROM platform.outbox_record WHERE tenant_id=$1",
+                    UUID(tenant_id),
+                )
+                assert row is not None
+                payload = (
+                    json.loads(row["payload"])
+                    if isinstance(row["payload"], str)
+                    else row["payload"]
+                )
+                assert payload["trace_parent"].startswith(f"00-{trace_id}-")
+            finally:
+                await connection.close()
+
+            dispatcher = OutboxDispatcher(database, bus)
+            assert await dispatcher.dispatch_pending() == 1
+            envelope = bus.published[0]
+            assert envelope.trace_parent is not None
+            assert envelope.trace_parent.startswith(f"00-{trace_id}-")
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())

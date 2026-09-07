@@ -21,6 +21,10 @@ dependencies = [
   # Required by the trpc-agent-sdk AG-UI server import chain (graph DSL).
   "langgraph==1.2.11",
   "lark-channel-sdk==1.4.0",
+  "opentelemetry-api==1.39.1",
+  "opentelemetry-sdk==1.39.1",
+  "prometheus-client==0.24.1",
+  "opentelemetry-exporter-otlp-proto-http==1.39.1",
 ]
 
 [project.scripts]

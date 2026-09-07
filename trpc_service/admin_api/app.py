@@ -71,6 +71,7 @@ from trpc_service.admin_api.storage_profiles import create_storage_profile_route
 from trpc_service.admin_api.tool_approvals import create_tool_approval_router
 from trpc_service.admin_api.tools import create_tool_router
 from trpc_service.ids import uuid7
+from trpc_service.telemetry import install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
@@ -695,6 +696,7 @@ def create_app(
             "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
         }
 
+    install_telemetry(application, "admin-api")
     return application
 
 

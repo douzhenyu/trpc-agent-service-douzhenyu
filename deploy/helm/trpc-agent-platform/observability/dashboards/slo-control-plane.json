@@ -1,0 +1,73 @@
+{
+  "title": "控制面 SLO — 99.9% 可用性",
+  "uid": "trpc-slo-control-plane",
+  "schemaVersion": 39,
+  "editable": true,
+  "refresh": "30s",
+  "time": { "from": "now-6h", "to": "now" },
+  "templating": { "list": [] },
+  "panels": [
+    {
+      "id": 1,
+      "type": "stat",
+      "title": "控制面可用性（目标 99.9%）",
+      "gridPos": { "h": 6, "w": 8, "x": 0, "y": 0 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "red", "value": null },
+              { "color": "yellow", "value": 0.999 },
+              { "color": "green", "value": 0.999 }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "expr": "1 - (sum(rate(platform_http_requests_total{service=\"admin-api\",status=~\"5..\"}[5m])) / sum(rate(platform_http_requests_total{service=\"admin-api\"}[5m])))",
+          "legendFormat": "availability"
+        }
+      ]
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "错误预算燃烧率（5m 窗口）",
+      "gridPos": { "h": 6, "w": 8, "x": 8, "y": 0 },
+      "targets": [
+        {
+          "expr": "(sum(rate(platform_http_requests_total{service=\"admin-api\",status=~\"5..\"}[5m])) / sum(rate(platform_http_requests_total{service=\"admin-api\"}[5m]))) / 0.001",
+          "legendFormat": "burn rate"
+        }
+      ]
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "Admin API P95 延迟",
+      "gridPos": { "h": 6, "w": 8, "x": 16, "y": 0 },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(platform_http_request_seconds_bucket{service=\"admin-api\"}[5m])))",
+          "legendFormat": "admin-api"
+        }
+      ]
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "Admin API 请求速率（按路由）",
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 6 },
+      "targets": [
+        {
+          "expr": "sum by (route) (rate(platform_http_requests_total{service=\"admin-api\"}[5m]))",
+          "legendFormat": "{{route}}"
+        }
+      ]
+    }
+  ]
+}

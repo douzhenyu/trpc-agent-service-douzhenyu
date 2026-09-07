@@ -1,0 +1,30 @@
+{{- if .Values.observability.dashboards.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-grafana-dashboards
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: observability
+    # Picked up automatically by the Grafana sidecar in the observability stack.
+    grafana_dashboard: "1"
+data:
+  slo-data-plane.json: |-
+{{ .Files.Get "observability/dashboards/slo-data-plane.json" | indent 4 }}
+  slo-control-plane.json: |-
+{{ .Files.Get "observability/dashboards/slo-control-plane.json" | indent 4 }}
+{{- end }}
+{{- if .Values.observability.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "trpc-agent-platform.fullname" $ }}-slo-alerts
+  labels:
+    app.kubernetes.io/name: {{ include "trpc-agent-platform.name" $ }}
+    app.kubernetes.io/instance: {{ $.Release.Name }}
+    app.kubernetes.io/component: observability
+spec:
+{{ .Files.Get "observability/alerts/platform-slo-alerts.yaml" | indent 2 }}
+{{- end }}
