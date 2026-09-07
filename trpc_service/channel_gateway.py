@@ -46,6 +46,7 @@ from trpc_service.artifacts import (
     ArtifactService,
     DatabaseArtifactAuditSink,
     DatabaseArtifactStore,
+    TenantArtifactRetention,
 )
 from trpc_service.channels.adaptive_reply import (
     ChannelReplyCapabilities,
@@ -235,6 +236,7 @@ def create_app(
                 store=DatabaseArtifactStore(active_database),
                 access_key=configured.artifact_access_key.encode(),
                 audit_sink=DatabaseArtifactAuditSink(active_database),
+                retention_days=TenantArtifactRetention(active_database).days_for,
             )
         if configured.artifact_public_base_url and resolved_artifact_service is None:
             raise RuntimeError("ARTIFACT_ACCESS_KEY_REQUIRED")

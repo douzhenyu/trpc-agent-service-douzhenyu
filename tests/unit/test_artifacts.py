@@ -169,6 +169,34 @@ def test_purge_removes_expired_bytes_and_records_lifecycle_audit() -> None:
     asyncio.run(exercise())
 
 
+def test_approved_tenant_retention_controls_default_artifact_expiry() -> None:
+    now = datetime(2026, 9, 7, tzinfo=UTC)
+
+    async def retention_days(tenant_id: str) -> int:
+        assert tenant_id == "tenant-a"
+        return 12
+
+    async def exercise() -> None:
+        service = ArtifactService(
+            store=MemoryArtifactStore(),
+            access_key=b"unit-test-access-key",
+            clock=lambda: now,
+            retention_days=retention_days,
+        )
+        artifact = await service.create(
+            tenant_id="tenant-a",
+            subject_id="im:WECOM:binding-a:alice",
+            execution_id="execution-a",
+            filename="retained.txt",
+            media_type="text/plain",
+            content=b"retention metadata only",
+            declared_classification=DataClassification.INTERNAL,
+        )
+        assert artifact.expires_at == now + timedelta(days=12)
+
+    asyncio.run(exercise())
+
+
 def test_artifact_download_endpoint_requires_the_subject_bound_capability() -> None:
     from typing import Any, cast
 

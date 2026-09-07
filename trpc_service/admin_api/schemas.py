@@ -7,6 +7,7 @@ from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from trpc_service.content_lifecycle import RetentionPolicy
 from trpc_service.storage import StorageBackend
 
 
@@ -135,6 +136,79 @@ class StorageProfileResponse(BaseModel):
 
 class StorageProfileList(BaseModel):
     items: list[StorageProfileResponse]
+
+
+class RetentionPolicyUpdate(RetentionPolicy):
+    """A complete proposed policy; partial writes must not reset other limits."""
+
+    inbound_payload_days: int
+    session_days: int
+    memory_days: int
+    artifact_days: int
+    idempotency_tombstone_days: int
+    audit_days: int
+    backup_days: int
+
+
+class RetentionPolicyResponse(RetentionPolicy):
+    tenant_id: UUID
+    version: int
+    updated_at: datetime
+
+
+class RetentionPolicyChangeResponse(RetentionPolicy):
+    id: UUID
+    tenant_id: UUID
+    status: Literal["PENDING_APPROVAL", "APPROVED"]
+    initiator: str
+    approver: str | None
+    created_at: datetime
+    approved_at: datetime | None
+
+
+class LegalHoldCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class LegalHoldResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    scope: Literal["TENANT"]
+    reason: str
+    status: Literal["PENDING_APPROVAL", "ACTIVE", "RELEASED"]
+    initiator: str
+    approver: str | None
+    created_at: datetime
+    activated_at: datetime | None
+    released_at: datetime | None
+
+
+class DeletionRequestCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class DeletionProofResponse(BaseModel):
+    backend: str
+    deleted_count: int
+    verified: bool
+    evidence_digest: str
+    completed_at: datetime
+
+
+class DeletionRequestResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    requested_by: str
+    reason: str
+    status: str
+    primary_due_at: datetime
+    backup_due_at: datetime
+    attempts: int
+    next_attempt_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    proofs: list[DeletionProofResponse] = Field(default_factory=list)
 
 
 class ModelProfileCreate(BaseModel):

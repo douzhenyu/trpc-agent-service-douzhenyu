@@ -28,6 +28,7 @@ from trpc_service.admin_api.auth import (
 )
 from trpc_service.admin_api.budgets import create_budget_router
 from trpc_service.admin_api.channel_bindings import create_channel_binding_router
+from trpc_service.admin_api.content_lifecycle import create_content_lifecycle_router
 from trpc_service.admin_api.database import Database, record_to_dict
 from trpc_service.admin_api.http_contract import ETAG_HEADER, error_responses
 from trpc_service.admin_api.idempotency import (
@@ -115,6 +116,7 @@ def create_app(
         )
     application.include_router(create_model_profile_router(db))
     application.include_router(create_storage_profile_router(db))
+    application.include_router(create_content_lifecycle_router(db))
     application.include_router(create_knowledge_router(db))
     application.include_router(create_tool_router(db))
     application.include_router(create_tool_approval_router(db))
@@ -154,6 +156,16 @@ def create_app(
             "DEDICATED_STORAGE_REQUIRED": "DEDICATED_STORAGE_REQUIRED",
             "STORAGE_MIGRATION_REQUIRED": "STORAGE_MIGRATION_REQUIRED",
             "STORAGE_RESOURCE_ALREADY_CLAIMED": "STORAGE_RESOURCE_ALREADY_CLAIMED",
+            "LEGAL_HOLD_ACTIVE": "LEGAL_HOLD_ACTIVE",
+            "LEGAL_HOLD_SELF_APPROVAL": "LEGAL_HOLD_SELF_APPROVAL",
+            "LEGAL_HOLD_NOT_PENDING": "LEGAL_HOLD_NOT_PENDING",
+            "LEGAL_HOLD_NOT_FOUND": "LEGAL_HOLD_NOT_FOUND",
+            "LEGAL_HOLD_NOT_ACTIVE": "LEGAL_HOLD_NOT_ACTIVE",
+            "LEGAL_HOLD_SELF_RELEASE": "LEGAL_HOLD_SELF_RELEASE",
+            "RETENTION_CHANGE_NOT_FOUND": "RETENTION_CHANGE_NOT_FOUND",
+            "RETENTION_CHANGE_NOT_PENDING": "RETENTION_CHANGE_NOT_PENDING",
+            "RETENTION_POLICY_SELF_APPROVAL": "RETENTION_POLICY_SELF_APPROVAL",
+            "DELETION_REQUEST_NOT_FOUND": "DELETION_REQUEST_NOT_FOUND",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(

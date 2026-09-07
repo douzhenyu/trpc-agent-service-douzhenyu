@@ -247,7 +247,11 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 await connection.close()
 
             app = create_job_worker_app(
-                JobWorkerSettings(database_url=APP_URL, operator_token="memory-operator")
+                JobWorkerSettings(
+                    database_url=APP_URL,
+                    operator_token="memory-operator",
+                    content_deletion_enabled=False,
+                )
             )
             with TestClient(app) as client:
                 protected_metrics = client.get("/internal/v1/projection-metrics")
