@@ -81,7 +81,7 @@ async def _prepare_database() -> None:
         await connection.close()
 
 
-async def _seed_release_stack() -> tuple[str, str, str]:
+async def _seed_release_stack(knowledge_base_id: UUID | None = None) -> tuple[str, str, str]:
     tenant_id, application_id, release_id, deployment_id = uuid4(), uuid4(), uuid4(), uuid4()
     connection = await asyncpg.connect(ADMIN_URL)
     try:
@@ -114,12 +114,14 @@ async def _seed_release_stack() -> tuple[str, str, str]:
         await connection.execute(
             """INSERT INTO tenant.agent_release
             (tenant_id,id,application_id,model_alias,data_classification,region,
-            fallback_aliases,model_profiles,release_version)
-            VALUES ($1,$2,$3,'primary-alias','CONFIDENTIAL','cn-test','[]'::jsonb,$4::jsonb,1)""",
+            fallback_aliases,model_profiles,release_version,draft_snapshot)
+            VALUES ($1,$2,$3,'primary-alias','CONFIDENTIAL','cn-test',
+            '[]'::jsonb,$4::jsonb,1,$5::jsonb)""",
             tenant_id,
             release_id,
             application_id,
             json.dumps(model_profiles),
+            json.dumps({"knowledge_refs": [str(knowledge_base_id)]} if knowledge_base_id else {}),
         )
         await connection.execute(
             """INSERT INTO tenant.agent_deployment
@@ -134,6 +136,53 @@ async def _seed_release_stack() -> tuple[str, str, str]:
     finally:
         await connection.close()
     return str(tenant_id), str(application_id), str(release_id)
+
+
+async def _seed_knowledge_deployment(tenant_id: str, base_id: UUID) -> str:
+    revision_id, deployment_id = uuid4(), uuid4()
+    connection = await asyncpg.connect(ADMIN_URL)
+    try:
+        await connection.execute(
+            "INSERT INTO tenant.knowledge_base (tenant_id,id,slug,name) VALUES ($1,$2,$3,$4)",
+            UUID(tenant_id),
+            base_id,
+            f"knowledge-{base_id.hex[:8]}",
+            "Execution Knowledge",
+        )
+        await connection.execute(
+            """INSERT INTO tenant.knowledge_revision
+            (tenant_id,id,base_id,revision_version,source_snapshot,chunking,embedding_model,index_config,content_hash)
+            VALUES ($1,$2,$3,1,'[]'::jsonb,$4::jsonb,'test-embedding','{}'::jsonb,$5)""",
+            UUID(tenant_id),
+            revision_id,
+            base_id,
+            json.dumps({"max_chars": 100, "overlap_chars": 0}),
+            "0" * 64,
+        )
+        await connection.execute(
+            """INSERT INTO tenant.knowledge_revision_build (tenant_id,revision_id,status)
+            VALUES ($1,$2,'BUILDING')""",
+            UUID(tenant_id),
+            revision_id,
+        )
+        await connection.execute(
+            """UPDATE tenant.knowledge_revision_build SET status='READY',validated_at=now()
+            WHERE tenant_id=$1 AND revision_id=$2""",
+            UUID(tenant_id),
+            revision_id,
+        )
+        await connection.execute(
+            """INSERT INTO tenant.knowledge_deployment
+            (tenant_id,id,base_id,environment,revision_id,rollout_percentage,source_kind,created_by)
+            VALUES ($1,$2,$3,'PRODUCTION',$4,100,'DEPLOY','seed')""",
+            UUID(tenant_id),
+            deployment_id,
+            base_id,
+            revision_id,
+        )
+    finally:
+        await connection.close()
+    return str(revision_id)
 
 
 async def _open_database() -> Database:
@@ -394,6 +443,55 @@ def test_duplicate_message_yields_one_execution_and_one_authoritative_event_set(
                     UUID(tenant_id),
                 )
                 assert status == "SUCCEEDED"
+            finally:
+                await connection.close()
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_worker_records_the_deployed_knowledge_revision() -> None:
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = await _open_database()
+        try:
+            base_id = uuid4()
+            tenant_id, application_id, _release_id = await _seed_release_stack(base_id)
+            revision_id = await _seed_knowledge_deployment(tenant_id, base_id)
+            bus = InMemoryExecutionBus(partition_count=2)
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            accepted = await submitter.submit(
+                _submission(
+                    tenant_id,
+                    application_id,
+                    "session-knowledge",
+                    message_id="knowledge-message-1",
+                )
+            )
+            dispatcher = OutboxDispatcher(database, bus)
+            assert await dispatcher.dispatch_pending() == 1
+            processor, _gateway = _processor(database, "worker-knowledge")
+            assert await bus.deliver_once(processor.handle) is True
+            connection = await asyncpg.connect(ADMIN_URL)
+            try:
+                execution = await connection.fetchrow(
+                    """SELECT knowledge_revision_ids FROM tenant.agent_execution
+                    WHERE tenant_id=$1 AND id=$2""",
+                    UUID(tenant_id),
+                    accepted.execution_id,
+                )
+                assert execution is not None
+                assert json.loads(execution["knowledge_revision_ids"]) == [revision_id]
+                event = await connection.fetchrow(
+                    """SELECT payload FROM tenant.session_event
+                    WHERE tenant_id=$1 AND session_id=$2 AND kind='AGENT_REPLY'""",
+                    UUID(tenant_id),
+                    "session-knowledge",
+                )
+                assert event is not None
+                assert json.loads(event["payload"])["knowledge_revision_ids"] == [revision_id]
             finally:
                 await connection.close()
         finally:
