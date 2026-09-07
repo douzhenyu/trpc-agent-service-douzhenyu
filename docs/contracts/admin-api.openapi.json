@@ -298,7 +298,8 @@
           "status": {
             "enum": [
               "PENDING_APPROVAL",
-              "ACTIVE"
+              "ACTIVE",
+              "HALTED"
             ],
             "title": "Status",
             "type": "string"
@@ -1601,6 +1602,379 @@
           "error"
         ],
         "title": "ErrorResponse",
+        "type": "object"
+      },
+      "EvalCanaryObservationCreate": {
+        "properties": {
+          "eval_run_id": {
+            "format": "uuid",
+            "title": "Eval Run Id",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "minProperties": 1,
+            "title": "Metrics",
+            "type": "object"
+          }
+        },
+        "required": [
+          "eval_run_id",
+          "metrics"
+        ],
+        "title": "EvalCanaryObservationCreate",
+        "type": "object"
+      },
+      "EvalCanaryObservationResponse": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "decision": {
+            "enum": [
+              "CONTINUE",
+              "HALTED"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "deployment_id": {
+            "format": "uuid",
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "eval_run_id": {
+            "format": "uuid",
+            "title": "Eval Run Id",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "metrics": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Metrics",
+            "type": "object"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "deployment_id",
+          "eval_run_id",
+          "metrics",
+          "decision",
+          "created_at"
+        ],
+        "title": "EvalCanaryObservationResponse",
+        "type": "object"
+      },
+      "EvalRunCreate": {
+        "properties": {
+          "environment": {
+            "enum": [
+              "DEVELOPMENT",
+              "STAGING",
+              "PRODUCTION"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "evidence": {
+            "additionalProperties": true,
+            "minProperties": 1,
+            "title": "Evidence",
+            "type": "object"
+          },
+          "release_id": {
+            "format": "uuid",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "suite_id": {
+            "format": "uuid",
+            "title": "Suite Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "suite_id",
+          "release_id",
+          "environment",
+          "evidence"
+        ],
+        "title": "EvalRunCreate",
+        "type": "object"
+      },
+      "EvalRunResponse": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "content_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dependency_snapshot": {
+            "additionalProperties": true,
+            "title": "Dependency Snapshot",
+            "type": "object"
+          },
+          "environment": {
+            "enum": [
+              "DEVELOPMENT",
+              "STAGING",
+              "PRODUCTION"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "release_id": {
+            "format": "uuid",
+            "title": "Release Id",
+            "type": "string"
+          },
+          "results": {
+            "additionalProperties": true,
+            "title": "Results",
+            "type": "object"
+          },
+          "sdk_version": {
+            "title": "Sdk Version",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "PASSED",
+              "FAILED"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "suite_id": {
+            "format": "uuid",
+            "title": "Suite Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "application_id",
+          "suite_id",
+          "release_id",
+          "environment",
+          "sdk_version",
+          "dependency_snapshot",
+          "results",
+          "status",
+          "content_hash",
+          "created_at"
+        ],
+        "title": "EvalRunResponse",
+        "type": "object"
+      },
+      "EvalSuiteCreate": {
+        "properties": {
+          "dataset": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dataset",
+            "type": "object"
+          },
+          "deterministic_assertions": {
+            "items": {
+              "enum": [
+                "NO_CROSS_TENANT_LEAK",
+                "NO_SECRET_LEAK",
+                "NO_DISABLED_TOOL"
+              ],
+              "type": "string"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Deterministic Assertions",
+            "type": "array"
+          },
+          "scorers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "maxItems": 20,
+            "minItems": 1,
+            "title": "Scorers",
+            "type": "array"
+          },
+          "slug": {
+            "pattern": "^[a-z0-9][a-z0-9-]{1,62}$",
+            "title": "Slug",
+            "type": "string"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "minProperties": 1,
+            "title": "Thresholds",
+            "type": "object"
+          }
+        },
+        "required": [
+          "slug",
+          "dataset",
+          "scorers",
+          "thresholds",
+          "deterministic_assertions"
+        ],
+        "title": "EvalSuiteCreate",
+        "type": "object"
+      },
+      "EvalSuiteResponse": {
+        "properties": {
+          "application_id": {
+            "format": "uuid",
+            "title": "Application Id",
+            "type": "string"
+          },
+          "content_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "dataset": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dataset",
+            "type": "object"
+          },
+          "deterministic_assertions": {
+            "items": {
+              "enum": [
+                "NO_CROSS_TENANT_LEAK",
+                "NO_SECRET_LEAK",
+                "NO_DISABLED_TOOL"
+              ],
+              "type": "string"
+            },
+            "title": "Deterministic Assertions",
+            "type": "array"
+          },
+          "id": {
+            "format": "uuid",
+            "title": "Id",
+            "type": "string"
+          },
+          "scorers": {
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Scorers",
+            "type": "array"
+          },
+          "slug": {
+            "title": "Slug",
+            "type": "string"
+          },
+          "tenant_id": {
+            "format": "uuid",
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "thresholds": {
+            "additionalProperties": {
+              "anyOf": [
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Thresholds",
+            "type": "object"
+          },
+          "version": {
+            "minimum": 1.0,
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "tenant_id",
+          "application_id",
+          "slug",
+          "version",
+          "dataset",
+          "scorers",
+          "thresholds",
+          "deterministic_assertions",
+          "content_hash",
+          "created_at"
+        ],
+        "title": "EvalSuiteResponse",
         "type": "object"
       },
       "HTTPValidationError": {
@@ -6420,6 +6794,138 @@
         ]
       }
     },
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/eval-canary-observations": {
+      "post": {
+        "operationId": "record_eval_canary_observation_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__eval_canary_observations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalCanaryObservationCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalCanaryObservationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Record Eval Canary Observation",
+        "tags": [
+          "evals"
+        ]
+      }
+    },
     "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/rollback": {
       "post": {
         "operationId": "rollback_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__rollback_post",
@@ -7255,6 +7761,250 @@
         "summary": "Validate Draft",
         "tags": [
           "agents"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/eval-runs": {
+      "post": {
+        "operationId": "create_eval_run_api_v1_tenants__tenant_id__agent_applications__application_id__eval_runs_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalRunCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalRunResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Create Eval Run",
+        "tags": [
+          "evals"
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/eval-suites": {
+      "post": {
+        "operationId": "create_eval_suite_api_v1_tenants__tenant_id__agent_applications__application_id__eval_suites_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "tenant_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Tenant Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "application_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "title": "Application Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "Idempotency-Key",
+            "required": true,
+            "schema": {
+              "title": "Idempotency-Key",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalSuiteCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSuiteResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authentication failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Authorization failed"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Resource not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Command conflict"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Request validation failed"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ErrorResponse"
+                }
+              }
+            },
+            "description": "Internal error"
+          }
+        },
+        "summary": "Create Eval Suite",
+        "tags": [
+          "evals"
         ]
       }
     },

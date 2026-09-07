@@ -36,6 +36,7 @@ from trpc_service.admin_api.schemas import (
     DraftValidationResponse,
 )
 from trpc_service.admin_api.tenant_access import require_tenant_access
+from trpc_service.evals import production_eval_gate_error
 from trpc_service.ids import uuid7
 
 
@@ -779,7 +780,7 @@ def create_agent_router(database: Database) -> APIRouter:
             if application is None:
                 raise HTTPException(status_code=404, detail="Agent application not found")
             deployment = await connection.fetchrow(
-                """SELECT status,initiator,previous_deployment_id,
+                """SELECT status,initiator,release_id,previous_deployment_id,
                 previous_deployment_version,version FROM tenant.agent_deployment
                 WHERE tenant_id=$1 AND id=$2 AND application_id=$3 FOR UPDATE""",
                 tenant_id,
@@ -798,6 +799,14 @@ def create_agent_router(database: Database) -> APIRouter:
                 raise HTTPException(
                     status_code=409, detail="Deployment initiator cannot approve it"
                 )
+            gate_error = await production_eval_gate_error(
+                connection,
+                tenant_id=tenant_id,
+                application_id=application_id,
+                release_id=deployment["release_id"],
+            )
+            if gate_error is not None:
+                raise HTTPException(status_code=409, detail=gate_error)
             current = await connection.fetchrow(
                 """SELECT id,version FROM tenant.agent_deployment
                 WHERE tenant_id=$1 AND application_id=$2 AND environment='PRODUCTION'

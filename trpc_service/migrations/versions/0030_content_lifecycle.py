@@ -4,8 +4,8 @@ from pathlib import Path
 
 from alembic import op
 
-revision = "0029_content_lifecycle"
-down_revision = "0028_storage_rollback_catchup"
+revision = "0030_content_lifecycle"
+down_revision = "0029_eval_suites"
 branch_labels = None
 depends_on = None
 

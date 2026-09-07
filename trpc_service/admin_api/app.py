@@ -30,6 +30,7 @@ from trpc_service.admin_api.budgets import create_budget_router
 from trpc_service.admin_api.channel_bindings import create_channel_binding_router
 from trpc_service.admin_api.content_lifecycle import create_content_lifecycle_router
 from trpc_service.admin_api.database import Database, record_to_dict
+from trpc_service.admin_api.evals import create_eval_router
 from trpc_service.admin_api.http_contract import ETAG_HEADER, error_responses
 from trpc_service.admin_api.idempotency import (
     IdempotencyConflictError,
@@ -111,6 +112,7 @@ def create_app(
     application.state.settings = configured
     application.include_router(create_agent_router(db))
     application.include_router(create_budget_router(db))
+    application.include_router(create_eval_router(db))
     if configured.policy_signing_key:
         application.include_router(
             create_policy_router(db, signing_key=configured.policy_signing_key)
@@ -188,6 +190,8 @@ def create_app(
             (
                 "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED"
             ): "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED",
+            "EVAL_RUN_REQUIRED": "EVAL_RUN_REQUIRED",
+            "EVAL_RUN_FAILED": "EVAL_RUN_FAILED",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(

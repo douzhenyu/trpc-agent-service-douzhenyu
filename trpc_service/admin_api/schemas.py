@@ -364,7 +364,7 @@ class AgentReleaseList(BaseModel):
 
 
 DeploymentEnvironment = Literal["DEVELOPMENT", "STAGING", "PRODUCTION"]
-DeploymentStatus = Literal["PENDING_APPROVAL", "ACTIVE"]
+DeploymentStatus = Literal["PENDING_APPROVAL", "ACTIVE", "HALTED"]
 
 
 class AgentDeploymentCreate(BaseModel):
@@ -396,6 +396,72 @@ class AgentDeploymentResponse(BaseModel):
 class AgentDeploymentList(BaseModel):
     items: list[AgentDeploymentResponse]
     next_cursor: str | None = None
+
+
+EvalAssertion = Literal[
+    "NO_CROSS_TENANT_LEAK",
+    "NO_SECRET_LEAK",
+    "NO_DISABLED_TOOL",
+]
+
+
+class EvalSuiteCreate(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    dataset: dict[str, str]
+    scorers: list[dict[str, Any]] = Field(min_length=1, max_length=20)
+    thresholds: dict[str, float | int] = Field(min_length=1)
+    deterministic_assertions: list[EvalAssertion] = Field(min_length=1, max_length=20)
+
+
+class EvalSuiteResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    slug: str
+    version: int = Field(ge=1)
+    dataset: dict[str, str]
+    scorers: list[dict[str, Any]]
+    thresholds: dict[str, float | int]
+    deterministic_assertions: list[EvalAssertion]
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+
+
+class EvalRunCreate(BaseModel):
+    suite_id: UUID
+    release_id: UUID
+    environment: DeploymentEnvironment
+    evidence: dict[str, Any] = Field(min_length=1)
+
+
+class EvalRunResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    suite_id: UUID
+    release_id: UUID
+    environment: DeploymentEnvironment
+    sdk_version: str
+    dependency_snapshot: dict[str, Any]
+    results: dict[str, Any]
+    status: Literal["PASSED", "FAILED"]
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+
+
+class EvalCanaryObservationCreate(BaseModel):
+    eval_run_id: UUID
+    metrics: dict[str, float | int] = Field(min_length=1)
+
+
+class EvalCanaryObservationResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    deployment_id: UUID
+    eval_run_id: UUID
+    metrics: dict[str, float | int]
+    decision: Literal["CONTINUE", "HALTED"]
+    created_at: datetime
 
 
 class KnowledgeBaseCreate(BaseModel):

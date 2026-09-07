@@ -250,6 +250,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/eval-canary-observations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Eval Canary Observation */
+        post: operations["record_eval_canary_observation_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__eval_canary_observations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/deployments/{deployment_id}/rollback": {
         parameters: {
             query?: never;
@@ -298,6 +315,40 @@ export interface paths {
         put?: never;
         /** Validate Draft */
         post: operations["validate_draft_api_v1_tenants__tenant_id__agent_applications__application_id__draft_validate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/eval-runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Eval Run */
+        post: operations["create_eval_run_api_v1_tenants__tenant_id__agent_applications__application_id__eval_runs_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/tenants/{tenant_id}/agent-applications/{application_id}/eval-suites": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Eval Suite */
+        post: operations["create_eval_suite_api_v1_tenants__tenant_id__agent_applications__application_id__eval_suites_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1163,7 +1214,7 @@ export interface components {
              * Status
              * @enum {string}
              */
-            status: "PENDING_APPROVAL" | "ACTIVE";
+            status: "PENDING_APPROVAL" | "ACTIVE" | "HALTED";
             /**
              * Tenant Id
              * Format: uuid
@@ -1681,6 +1732,194 @@ export interface components {
         /** ErrorResponse */
         ErrorResponse: {
             error: components["schemas"]["ErrorDetail"];
+        };
+        /** EvalCanaryObservationCreate */
+        EvalCanaryObservationCreate: {
+            /**
+             * Eval Run Id
+             * Format: uuid
+             */
+            eval_run_id: string;
+            /** Metrics */
+            metrics: {
+                [key: string]: number;
+            };
+        };
+        /** EvalCanaryObservationResponse */
+        EvalCanaryObservationResponse: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "CONTINUE" | "HALTED";
+            /**
+             * Deployment Id
+             * Format: uuid
+             */
+            deployment_id: string;
+            /**
+             * Eval Run Id
+             * Format: uuid
+             */
+            eval_run_id: string;
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Metrics */
+            metrics: {
+                [key: string]: number;
+            };
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+        };
+        /** EvalRunCreate */
+        EvalRunCreate: {
+            /**
+             * Environment
+             * @enum {string}
+             */
+            environment: "DEVELOPMENT" | "STAGING" | "PRODUCTION";
+            /** Evidence */
+            evidence: {
+                [key: string]: unknown;
+            };
+            /**
+             * Release Id
+             * Format: uuid
+             */
+            release_id: string;
+            /**
+             * Suite Id
+             * Format: uuid
+             */
+            suite_id: string;
+        };
+        /** EvalRunResponse */
+        EvalRunResponse: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dependency Snapshot */
+            dependency_snapshot: {
+                [key: string]: unknown;
+            };
+            /**
+             * Environment
+             * @enum {string}
+             */
+            environment: "DEVELOPMENT" | "STAGING" | "PRODUCTION";
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Release Id
+             * Format: uuid
+             */
+            release_id: string;
+            /** Results */
+            results: {
+                [key: string]: unknown;
+            };
+            /** Sdk Version */
+            sdk_version: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "PASSED" | "FAILED";
+            /**
+             * Suite Id
+             * Format: uuid
+             */
+            suite_id: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+        };
+        /** EvalSuiteCreate */
+        EvalSuiteCreate: {
+            /** Dataset */
+            dataset: {
+                [key: string]: string;
+            };
+            /** Deterministic Assertions */
+            deterministic_assertions: ("NO_CROSS_TENANT_LEAK" | "NO_SECRET_LEAK" | "NO_DISABLED_TOOL")[];
+            /** Scorers */
+            scorers: {
+                [key: string]: unknown;
+            }[];
+            /** Slug */
+            slug: string;
+            /** Thresholds */
+            thresholds: {
+                [key: string]: number;
+            };
+        };
+        /** EvalSuiteResponse */
+        EvalSuiteResponse: {
+            /**
+             * Application Id
+             * Format: uuid
+             */
+            application_id: string;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Dataset */
+            dataset: {
+                [key: string]: string;
+            };
+            /** Deterministic Assertions */
+            deterministic_assertions: ("NO_CROSS_TENANT_LEAK" | "NO_SECRET_LEAK" | "NO_DISABLED_TOOL")[];
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /** Scorers */
+            scorers: {
+                [key: string]: unknown;
+            }[];
+            /** Slug */
+            slug: string;
+            /**
+             * Tenant Id
+             * Format: uuid
+             */
+            tenant_id: string;
+            /** Thresholds */
+            thresholds: {
+                [key: string]: number;
+            };
+            /** Version */
+            version: number;
         };
         /** HTTPValidationError */
         HTTPValidationError: {
@@ -4350,6 +4589,90 @@ export interface operations {
             };
         };
     };
+    record_eval_canary_observation_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__eval_canary_observations_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                tenant_id: string;
+                application_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalCanaryObservationCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalCanaryObservationResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     rollback_deployment_api_v1_tenants__tenant_id__agent_applications__application_id__deployments__deployment_id__rollback_post: {
         parameters: {
             query?: never;
@@ -4890,6 +5213,172 @@ export interface operations {
             };
             /** @description Version precondition failed */
             412: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_eval_run_api_v1_tenants__tenant_id__agent_applications__application_id__eval_runs_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                tenant_id: string;
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalRunCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalRunResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Request validation failed */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Internal error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    create_eval_suite_api_v1_tenants__tenant_id__agent_applications__application_id__eval_suites_post: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                tenant_id: string;
+                application_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EvalSuiteCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvalSuiteResponse"];
+                };
+            };
+            /** @description Authentication failed */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Authorization failed */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Resource not found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Command conflict */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };
