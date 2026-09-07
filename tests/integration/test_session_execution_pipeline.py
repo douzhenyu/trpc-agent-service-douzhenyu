@@ -714,3 +714,55 @@ def test_trace_context_flows_from_gateway_to_dispatched_envelope() -> None:
             await database.close()
 
     asyncio.run(scenario())
+
+
+def test_admission_rejects_beyond_capacity_with_stable_error() -> None:
+    """The gateway sheds load with a stable 429 once the envelope is exhausted."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        tenant_id, application_id, _release_id = await _seed_release_stack()
+        bus = InMemoryExecutionBus(partition_count=4)
+        app = create_app(
+            AgentGatewaySettings(
+                database_url=APP_URL,
+                dispatch_interval_seconds=0.0,
+                admission_sustained_per_second=10,
+                admission_burst_per_second=30,
+                admission_burst_seconds=2,
+                admission_max_in_flight=100,
+            ),
+            bus=bus,
+        )
+        with TestClient(app) as client:
+            status_codes = []
+            for index in range(200):
+                response = client.post(
+                    "/internal/v1/agent-executions",
+                    json={
+                        "tenant_id": tenant_id,
+                        "application_id": application_id,
+                        "environment": "PRODUCTION",
+                        "session_id": "session-admission",
+                        "messages": [{"role": "user", "content": "load"}],
+                        "message_id": f"admission-{index}",
+                    },
+                )
+                status_codes.append(response.status_code)
+                if response.status_code == 429:
+                    assert response.json()["detail"] == "RATE_EXCEEDED"
+            assert 202 in status_codes
+            assert 429 in status_codes
+
+            metrics = client.get("/metrics")
+            assert metrics.status_code == 200
+            assert "platform_admission_decisions_total" in metrics.text
+
+            capacity = client.get("/internal/v1/capacity")
+            assert capacity.status_code == 200
+            body = capacity.json()
+            assert body["sustained_per_second"] == 10
+            assert body["shed_level"] in {"GREEN", "YELLOW", "RED"}
+
+    asyncio.run(scenario())

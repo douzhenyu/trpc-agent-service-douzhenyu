@@ -29,6 +29,12 @@ from trpc_service.agent_worker import (
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
 )
+from trpc_service.backpressure import (
+    AdmissionController,
+    AdmissionDenied,
+    CapacityPolicy,
+    shed_level,
+)
 from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import (
     EXECUTION_REQUESTED_EVENT,
@@ -66,6 +72,10 @@ class AgentGatewaySettings(BaseSettings):
     public_base_url: str = ""
     policy_signing_key: str = ""
     standby_mode: bool = False
+    admission_sustained_per_second: int = 1000
+    admission_burst_per_second: int = 3000
+    admission_burst_seconds: int = 60
+    admission_max_in_flight: int = 10_000
 
     def validate_runtime(self) -> None:
         missing = [
@@ -301,17 +311,45 @@ def create_app(
     ) -> AgentExecutionAccepted:
         if configured.standby_mode:
             raise HTTPException(status_code=503, detail="STANDBY_FENCED")
-        inbound = current_traceparent()
-        if inbound is not None and submission.trace_parent is None:
-            submission = submission.model_copy(update={"trace_parent": inbound})
-        submitter = cast(AgentExecutionSubmitter, application.state.submitter)
+        controller = cast(AdmissionController, application.state.admission)
         try:
-            accepted = await submitter.submit(submission)
-        except AgentGatewayError as error:
-            raise HTTPException(status_code=409, detail=error.code) from error
-        response.status_code = 200 if accepted.deduplicated else 202
-        return accepted
+            controller.admit()
+        except AdmissionDenied as error:
+            raise HTTPException(status_code=429, detail=error.reason) from error
+        try:
+            inbound = current_traceparent()
+            if inbound is not None and submission.trace_parent is None:
+                submission = submission.model_copy(update={"trace_parent": inbound})
+            submitter = cast(AgentExecutionSubmitter, application.state.submitter)
+            try:
+                accepted = await submitter.submit(submission)
+            except AgentGatewayError as error:
+                raise HTTPException(status_code=409, detail=error.code) from error
+            response.status_code = 200 if accepted.deduplicated else 202
+            return accepted
+        finally:
+            controller.release()
 
+    @application.get("/internal/v1/capacity", response_model=dict[str, str | int])
+    async def capacity_status() -> dict[str, str | int]:
+        controller = cast(AdmissionController, application.state.admission)
+        policy = controller.policy
+        return {
+            "sustained_per_second": policy.sustained_per_second,
+            "burst_per_second": policy.burst_per_second,
+            "max_in_flight": policy.max_in_flight,
+            "in_flight": controller.in_flight,
+            "shed_level": shed_level(controller.in_flight, 0, policy),
+        }
+
+    application.state.admission = AdmissionController(
+        CapacityPolicy(
+            sustained_per_second=configured.admission_sustained_per_second,
+            burst_per_second=configured.admission_burst_per_second,
+            burst_seconds=configured.admission_burst_seconds,
+            max_in_flight=configured.admission_max_in_flight,
+        )
+    )
     register_degradations_endpoint(application)
     install_telemetry(application, "agent-gateway")
     return application
