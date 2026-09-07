@@ -281,9 +281,7 @@ async def _projection_execution(
     return execution
 
 
-def _assert_complete(
-    events: list[Any], *, expected_count: int, first_sequence: int
-) -> None:
+def _assert_complete(events: list[Any], *, expected_count: int, first_sequence: int) -> None:
     if len(events) != expected_count or int(events[0]["sequence"]) != first_sequence:
         raise ValueError("SESSION_PROJECTION_SOURCE_INCOMPLETE")
 
@@ -582,9 +580,7 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
 
     @application.get("/internal/v1/projection-metrics", response_model=ProjectionMetrics)
     async def projection_metrics(
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> ProjectionMetrics:
         require_operator(operation_token)
         consumer = application.state.consumer
@@ -595,9 +591,7 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
         tenant_id: UUID,
         memory_id: UUID,
         payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
         *,
         action: str,
     ) -> dict[str, bool]:
@@ -617,22 +611,16 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
         tenant_id: UUID,
         memory_id: UUID,
         payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> dict[str, bool]:
-        return await invalidate(
-            tenant_id, memory_id, payload, operation_token, action="correct"
-        )
+        return await invalidate(tenant_id, memory_id, payload, operation_token, action="correct")
 
     @application.post("/internal/v1/tenants/{tenant_id}/memories/{memory_id}/deletions")
     async def delete_memory_endpoint(
         tenant_id: UUID,
         memory_id: UUID,
         payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> dict[str, bool]:
         return await invalidate(tenant_id, memory_id, payload, operation_token, action="delete")
 
