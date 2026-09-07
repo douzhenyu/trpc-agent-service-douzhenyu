@@ -18,6 +18,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import ExecutionEnvelope, ExecutionRequestedData
 from trpc_service.knowledge import DatabaseKnowledgeDeploymentResolver
 from trpc_service.llm_gateway import (
@@ -629,6 +630,7 @@ def create_app(
             completion=result.completion,
         )
 
+    register_degradations_endpoint(application)
     install_telemetry(application, "agent-worker")
     return application
 

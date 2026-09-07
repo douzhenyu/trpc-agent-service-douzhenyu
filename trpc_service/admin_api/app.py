@@ -70,6 +70,7 @@ from trpc_service.admin_api.storage_migrations import create_storage_migration_r
 from trpc_service.admin_api.storage_profiles import create_storage_profile_router
 from trpc_service.admin_api.tool_approvals import create_tool_approval_router
 from trpc_service.admin_api.tools import create_tool_router
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.ids import uuid7
 from trpc_service.telemetry import install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
@@ -696,6 +697,7 @@ def create_app(
             "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
         }
 
+    register_degradations_endpoint(application)
     install_telemetry(application, "admin-api")
     return application
 

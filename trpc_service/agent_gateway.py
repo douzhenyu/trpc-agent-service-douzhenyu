@@ -29,6 +29,7 @@ from trpc_service.agent_worker import (
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
 )
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import (
     EXECUTION_REQUESTED_EVENT,
     GATEWAY_SOURCE,
@@ -308,5 +309,6 @@ def create_app(
         response.status_code = 200 if accepted.deduplicated else 202
         return accepted
 
+    register_degradations_endpoint(application)
     install_telemetry(application, "agent-gateway")
     return application
