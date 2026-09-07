@@ -145,6 +145,12 @@ class WeComEvent(BaseModel):
     def is_text_message(self) -> bool:
         return self.msgtype == "text"
 
+    @property
+    def is_attachment(self) -> bool:
+        """Non-text payloads must be fetched and screened as Artifacts first."""
+
+        return self.msgtype in {"file", "image", "video", "voice"}
+
 
 def parse_event(plaintext: str) -> WeComEvent:
     """Normalize a decrypted callback payload into the adapter event model."""

@@ -24,7 +24,7 @@ from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
 from uuid import UUID, uuid4
 
-from fastapi import FastAPI, Query, Request, Response
+from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.responses import PlainTextResponse
 from httpx import AsyncClient
 from pydantic import BaseModel, Field
@@ -39,6 +39,18 @@ from trpc_service.agent_gateway import AgentExecutionSubmitter
 from trpc_service.agent_worker import (
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
+)
+from trpc_service.artifacts import (
+    ArtifactAccessError,
+    ArtifactError,
+    ArtifactService,
+    DatabaseArtifactAuditSink,
+    DatabaseArtifactStore,
+)
+from trpc_service.channels.adaptive_reply import (
+    ChannelReplyCapabilities,
+    ReplyStrategy,
+    plan_reply,
 )
 from trpc_service.channels.bindings import ChannelBinding, ChannelBindingRegistry
 from trpc_service.channels.delivery import DeliveryStore, ReplyDeliveryService
@@ -72,6 +84,7 @@ from trpc_service.channels.wecom import (
     normalize_to_inbound,
     parse_event,
 )
+from trpc_service.governance import DataClassification, scan_messages
 from trpc_service.llm_gateway import VaultSecretProvider
 from trpc_service.memory_access import SubjectMemoryReader, memory_policy_for_session_scope
 from trpc_service.runtime_health import RuntimeHealthResponse
@@ -98,6 +111,11 @@ class ChannelGatewaySettings(BaseSettings):
     reply_rate_refill_per_second: float = 20 / 60
     stream_min_chars: int = 256
     stream_min_interval_seconds: float = 2.0
+    wecom_max_text_chars: int = 4096
+    feishu_max_text_chars: int = 4096
+    artifact_inline_threshold_chars: int = 4096
+    artifact_public_base_url: str = ""
+    artifact_access_key: str = ""
     feishu_api_base_url: str = "https://open.feishu.cn"
     vault_url: str = ""
     vault_kubernetes_role: str = "channel-gateway"
@@ -157,6 +175,7 @@ def create_app(
     feishu_secrets: FeishuSecretResolver | None = None,
     feishu_http: AsyncClient | None = None,
     feishu_delivery_store: DeliveryStore | None = None,
+    artifact_service: ArtifactService | None = None,
     feishu_long_connections: Sequence[FeishuLongConnection] = (),
     database: Database | None = None,
 ) -> FastAPI:
@@ -210,6 +229,16 @@ def create_app(
         application.state.feishu_secrets = resolved_feishu_secrets
         application.state.feishu_http = feishu_http
         application.state.feishu_delivery_store = feishu_delivery_store
+        resolved_artifact_service = artifact_service
+        if resolved_artifact_service is None and configured.artifact_access_key:
+            resolved_artifact_service = ArtifactService(
+                store=DatabaseArtifactStore(active_database),
+                access_key=configured.artifact_access_key.encode(),
+                audit_sink=DatabaseArtifactAuditSink(active_database),
+            )
+        if configured.artifact_public_base_url and resolved_artifact_service is None:
+            raise RuntimeError("ARTIFACT_ACCESS_KEY_REQUIRED")
+        application.state.artifact_service = resolved_artifact_service
         application.state.runner = runner or ReleasePinnedRunnerRuntime(
             releases=DatabaseReleaseRouteResolver(active_database),
             llm_gateway_access_key=configured.llm_gateway_access_key,
@@ -285,6 +314,27 @@ def create_app(
     async def ready() -> RuntimeHealthResponse:
         return health()
 
+    @application.get("/internal/v1/artifacts/{artifact_id}")
+    async def download_artifact(
+        artifact_id: str,
+        tenant_id: Annotated[str, Header(alias="X-Artifact-Tenant")],
+        subject_id: Annotated[str, Header(alias="X-Artifact-Subject")],
+        access_token: Annotated[str, Header(alias="X-Artifact-Access-Token")],
+    ) -> Response:
+        service: ArtifactService | None = application.state.artifact_service
+        if service is None:
+            return PlainTextResponse("ARTIFACT_UNAVAILABLE", status_code=503)
+        try:
+            content = await service.download(
+                tenant_id=tenant_id,
+                artifact_id=artifact_id,
+                subject_id=subject_id,
+                access_token=access_token,
+            )
+        except ArtifactAccessError as error:
+            return PlainTextResponse(error.code, status_code=403)
+        return Response(content=content, media_type="application/octet-stream")
+
     def _crypto() -> WeComCrypto:
         return WeComCrypto(
             token=configured.wecom_token,
@@ -328,6 +378,11 @@ def create_app(
             # 撤回: the message was recalled; nothing executes or delivers and
             # the ack is idempotent.
             return PlainTextResponse("")
+        if event.is_attachment:
+            # The callback has no trusted byte stream.  Never route attachment
+            # metadata to a model: a channel-specific fetcher must first put
+            # bytes through ArtifactService.create() and its DLP/AV gate.
+            return PlainTextResponse("ATTACHMENT_REQUIRES_ARTIFACT_SCAN", status_code=400)
         if not event.is_text_message:
             return PlainTextResponse("")
         inbound: ChannelInboundService = application.state.inbound
@@ -367,9 +422,18 @@ def create_app(
                 session_key=normalized["session_key"],
             ),
         )
-        reply = await runner.complete(command)
+        streamed = await _stream_wecom_direct_reply(
+            application, configured, runner=runner, command=command, event=event
+        )
+        reply = streamed or await runner.complete(command)
         await _deliver(
-            application, tenant_id, event, accepted.execution_id, reply.content, configured
+            application,
+            tenant_id,
+            event,
+            accepted.execution_id,
+            reply.content,
+            configured,
+            streamed=streamed is not None,
         )
         return PlainTextResponse("")
 
@@ -653,32 +717,79 @@ async def _execute_feishu_reply(
         ),
     )
     runner: ReleasePinnedRunnerRuntime = application.state.runner
-    reply = await runner.complete(
-        RunnerExecutionCommand(
+    command = RunnerExecutionCommand(
+        tenant_id=tenant_id,
+        application_id=binding.application_id,
+        execution_id=str(accepted.execution_id),
+        release_id=str(accepted.release_id),
+        session_id=accepted.session_id,
+        user_id=event["external_user_id"],
+        message=event["text"],
+        session_user_id=_runner_session_user_id(event["session_key"], accepted.session_id),
+        memory_context=await _im_memory_context(
+            application,
             tenant_id=tenant_id,
-            application_id=binding.application_id,
-            execution_id=str(accepted.execution_id),
-            release_id=str(accepted.release_id),
-            session_id=accepted.session_id,
-            user_id=event["external_user_id"],
-            message=event["text"],
-            session_user_id=_runner_session_user_id(event["session_key"], accepted.session_id),
-            memory_context=await _im_memory_context(
-                application,
-                tenant_id=tenant_id,
-                binding=binding,
-                external_user_id=event["external_user_id"],
-                session_key=event["session_key"],
-            ),
+            binding=binding,
+            external_user_id=event["external_user_id"],
+            session_key=event["session_key"],
+        ),
+    )
+    is_group = event["session_key"].startswith(("group:", "thread:"))
+    existing_delivery = None
+    streamed_content = ""
+    if not is_group and hasattr(runner, "stream"):
+        existing_delivery = await _feishu_processing_delivery(
+            tenant_id=tenant_id,
+            binding_id=binding.binding_id,
+            execution_id=accepted.execution_id,
+            event=event,
+            deliveries=deliveries,
         )
+        pending_chars = 0
+        async for chunk in runner.stream(command):
+            if chunk.kind == "delta":
+                streamed_content += chunk.delta
+                pending_chars += len(chunk.delta)
+                # Cards have a hard provider maximum.  Once it is reached,
+                # wait for the final bounded/artifactized delivery.
+                if (
+                    len(streamed_content) <= configured.feishu_max_text_chars
+                    and pending_chars >= configured.stream_min_chars
+                    and not scan_messages([{"content": streamed_content}]).blocked
+                ):
+                    updated = await deliveries.update(
+                        existing_delivery.delivery_id,
+                        tenant_id=tenant_id,
+                        content=streamed_content,
+                    )
+                    await deliveries.run(updated.delivery_id, tenant_id=tenant_id)
+                    pending_chars = 0
+            elif chunk.reply is not None:
+                reply = chunk.reply
+        if "reply" not in locals():
+            raise RuntimeError("RUNNER_EMPTY_REPLY")
+    else:
+        reply = await runner.complete(command)
+    safe_content = await _content_for_channel(
+        application,
+        configured,
+        tenant_id=tenant_id,
+        binding=binding,
+        external_user_id=event["external_user_id"],
+        execution_id=str(accepted.execution_id),
+        content=reply.content,
     )
     await _deliver_feishu(
         tenant_id=tenant_id,
         binding_id=binding.binding_id,
         execution_id=accepted.execution_id,
         event=event,
-        content=reply.content,
+        content=safe_content,
         deliveries=deliveries,
+        configured=configured,
+        is_group=is_group,
+        existing_delivery=existing_delivery,
+        already_streamed=bool(streamed_content),
     )
 
 
@@ -689,13 +800,33 @@ async def _deliver(
     execution_id: Any,
     content: str,
     configured: ChannelGatewaySettings,
+    *,
+    streamed: bool = False,
 ) -> None:
     deliveries: ReplyDeliveryService = application.state.deliveries
     registry: ChannelBindingRegistry = application.state.registry
     binding = await registry.resolve(
         tenant_id=tenant_id, channel_type="WECOM", external_bot_id=event.aibotid
     )
-    if event.response_url and event.chattype == "single":
+    safe_content = await _content_for_channel(
+        application,
+        configured,
+        tenant_id=tenant_id,
+        binding=binding,
+        external_user_id=event.from_userid,
+        execution_id=str(execution_id),
+        content=content,
+    )
+    plan = plan_reply(
+        safe_content,
+        capabilities=ChannelReplyCapabilities(
+            supports_updates=bool(event.response_url and event.chattype == "single"),
+            max_text_chars=configured.wecom_max_text_chars,
+            stream_chunk_chars=configured.stream_min_chars,
+        ),
+        is_group=event.chattype == "group",
+    )
+    if plan.stream_chunks and event.response_url and not streamed:
         # 单聊: merged incremental updates — never per-token API calls.
         session = WeComStreamSession(
             _http(application),
@@ -709,23 +840,24 @@ async def _deliver(
                 refill_per_second=configured.reply_rate_refill_per_second,
             ),
         )
-        for start in range(0, len(content), configured.stream_min_chars):
-            await session.append(content[start : start + configured.stream_min_chars])
+        for stream_chunk in plan.stream_chunks:
+            await session.append(stream_chunk)
         await session.flush()
-    elif event.chattype == "group" and event.response_url:
+    elif plan.processing_notice and event.response_url:
         # 群聊: a processing notice precedes the final tracked delivery.
         await _http(application).post(
             event.response_url,
             json={"msgtype": "text", "text": {"content": GROUP_PROCESSING_NOTICE}},
         )
-    delivery = await deliveries.enqueue(
-        tenant_id=tenant_id,
-        binding_id=binding.binding_id if binding is not None else "unknown-binding",
-        execution_id=str(execution_id),
-        external_conversation_id=event.response_url or f"wecom:{event.chatid}",
-        content=content,
-    )
-    await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
+    for final_message in plan.final_messages:
+        delivery = await deliveries.enqueue(
+            tenant_id=tenant_id,
+            binding_id=binding.binding_id if binding is not None else "unknown-binding",
+            execution_id=str(execution_id),
+            external_conversation_id=event.response_url or f"wecom:{event.chatid}",
+            content=final_message,
+        )
+        await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
 
 
 async def _deliver_feishu(
@@ -736,15 +868,172 @@ async def _deliver_feishu(
     event: dict[str, str],
     content: str,
     deliveries: ReplyDeliveryService,
+    configured: ChannelGatewaySettings,
+    is_group: bool,
+    existing_delivery: Any | None = None,
+    already_streamed: bool = False,
 ) -> None:
+    plan = plan_reply(
+        content,
+        capabilities=ChannelReplyCapabilities(
+            supports_updates=True,
+            max_text_chars=configured.feishu_max_text_chars,
+            stream_chunk_chars=configured.stream_min_chars,
+        ),
+        is_group=is_group,
+    )
+    delivery = existing_delivery or await _feishu_processing_delivery(
+        tenant_id=tenant_id,
+        binding_id=binding_id,
+        execution_id=execution_id,
+        event=event,
+        deliveries=deliveries,
+    )
+    if plan.strategy is ReplyStrategy.MERGED_STREAM and not already_streamed:
+        streamed = ""
+        for stream_chunk in plan.stream_chunks:
+            streamed += stream_chunk
+            if streamed == content or len(streamed) > configured.feishu_max_text_chars:
+                continue
+            updated = await deliveries.update(
+                delivery.delivery_id, tenant_id=tenant_id, content=streamed
+            )
+            await deliveries.run(updated.delivery_id, tenant_id=tenant_id)
+    for index, final_message in enumerate(plan.final_messages):
+        if index == 0:
+            updated = await deliveries.update(
+                delivery.delivery_id, tenant_id=tenant_id, content=final_message
+            )
+            await deliveries.run(updated.delivery_id, tenant_id=tenant_id)
+            continue
+        follow_up = await deliveries.enqueue(
+            tenant_id=tenant_id,
+            binding_id=binding_id,
+            execution_id=str(execution_id),
+            external_conversation_id=_feishu_conversation(event),
+            content=final_message,
+        )
+        await deliveries.run(follow_up.delivery_id, tenant_id=tenant_id)
+
+
+async def _feishu_processing_delivery(
+    *,
+    tenant_id: str,
+    binding_id: str,
+    execution_id: Any,
+    event: dict[str, str],
+    deliveries: ReplyDeliveryService,
+) -> Any:
     delivery = await deliveries.enqueue(
         tenant_id=tenant_id,
         binding_id=binding_id,
         execution_id=str(execution_id),
         external_conversation_id=_feishu_conversation(event),
-        content=content,
+        content="处理中",
     )
     await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
+    return delivery
+
+
+async def _stream_wecom_direct_reply(
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    *,
+    runner: ReleasePinnedRunnerRuntime,
+    command: RunnerExecutionCommand,
+    event: WeComEvent,
+) -> Any | None:
+    """Forward actual model deltas in a single chat, never token-by-token."""
+
+    if event.chattype != "single" or not event.response_url or not hasattr(runner, "stream"):
+        return None
+    session = WeComStreamSession(
+        _http(application),
+        response_url=event.response_url,
+        batcher=WeComStreamBatcher(
+            min_chars=configured.stream_min_chars,
+            min_interval_seconds=configured.stream_min_interval_seconds,
+        ),
+        limiter=WeComRateLimiter(
+            capacity=configured.reply_rate_capacity,
+            refill_per_second=configured.reply_rate_refill_per_second,
+        ),
+    )
+    reply = None
+    # Never release a suffix until it is long enough for a secret detector to
+    # see a value split across model deltas.  This intentionally trades a
+    # small amount of latency for a fail-closed DLP boundary.
+    held = ""
+    blocked = False
+    holdback_chars = max(configured.stream_min_chars, 512)
+    async for chunk in runner.stream(command):
+        if chunk.kind == "delta":
+            held += chunk.delta
+            if len(held) > holdback_chars:
+                releasable, held = held[:-holdback_chars], held[-holdback_chars:]
+                if scan_messages([{"content": releasable + held}]).blocked:
+                    blocked = True
+                elif not blocked:
+                    await session.append(releasable)
+        elif chunk.reply is not None:
+            reply = chunk.reply
+    if scan_messages([{"content": held}]).blocked:
+        blocked = True
+    if held and not blocked:
+        await session.append(held)
+    await session.flush()
+    return reply
+
+
+async def _content_for_channel(
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    *,
+    tenant_id: str,
+    binding: ChannelBinding | None,
+    external_user_id: str,
+    execution_id: str,
+    content: str,
+) -> str:
+    """Artifactize only through a configured safe store; otherwise segment later.
+
+    The output scan runs before either path.  A detected secret never falls
+    back to a visible text segment, and an unavailable Artifact store merely
+    leaves non-sensitive content for the bounded channel planner.
+    """
+
+    if scan_messages([{"content": content}]).blocked:
+        return "回复因安全策略未投递。"
+    service: ArtifactService | None = application.state.artifact_service
+    if (
+        service is None
+        or not configured.artifact_public_base_url
+        or len(content) <= configured.artifact_inline_threshold_chars
+        or binding is None
+    ):
+        return content
+    subject_id = f"im:{binding.channel_type}:{binding.binding_id}:{external_user_id}"
+    try:
+        artifact = await service.create(
+            tenant_id=tenant_id,
+            subject_id=subject_id,
+            execution_id=execution_id,
+            filename=f"reply-{execution_id}.txt",
+            media_type="text/plain",
+            content=content.encode(),
+            declared_classification=DataClassification.INTERNAL,
+        )
+    except ArtifactError:
+        return "完整回复不能作为附件交付。"
+    except Exception:
+        logger.exception("Artifact delivery unavailable")
+        return "完整回复暂不可用，请稍后重试。"
+    base = configured.artifact_public_base_url.rstrip("/")
+    # ``artifact_public_base_url`` is the authenticated user portal.  The IM
+    # message deliberately carries neither a tenant/subject identifier nor a
+    # bearer capability: the portal maps the signed-in IM identity server-side
+    # before it asks this internal endpoint for a short-lived access token.
+    return f"完整回复已生成，请在受控工作台查看：{base}/artifacts/{artifact.artifact_id}"
 
 
 def _feishu_conversation(event: dict[str, str]) -> str:

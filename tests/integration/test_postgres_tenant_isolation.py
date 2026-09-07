@@ -64,6 +64,7 @@ async def _exercise_isolation() -> None:
             "agent_execution",
             "agent_release",
             "agent_session",
+            "artifact",
             "budget",
             "budget_alert",
             "budget_period_state",
