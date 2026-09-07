@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import importlib
 import json
 import logging
 import math
@@ -27,6 +28,7 @@ from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.auth import Principal
 from trpc_service.admin_api.database import Connection, Database
 from trpc_service.artifacts import ArtifactLifecycleWorker
+from trpc_service.content_lifecycle import ContentDeletionWorker, DeletionExecutor, RetentionSweep
 from trpc_service.execution_bus import (
     JOB_WORKER_SOURCE,
     MEMORY_INVALIDATED_EVENT,
@@ -519,6 +521,8 @@ class JobWorkerSettings(BaseSettings):
     projection_poll_interval_seconds: float = 0.5
     artifact_lifecycle_interval_seconds: float = 3600
     artifact_access_key: str = ""
+    content_deletion_enabled: bool = False
+    content_deletion_executor_factory: str = ""
     operator_token: str = ""
 
     def validate_runtime(self) -> None:
@@ -532,11 +536,16 @@ class JobWorkerSettings(BaseSettings):
             raise RuntimeError(
                 "Job Worker configuration is invalid: ARTIFACT_LIFECYCLE_INTERVAL_SECONDS"
             )
+        if self.content_deletion_enabled and not self.content_deletion_executor_factory:
+            raise RuntimeError(
+                "Job Worker configuration is incomplete: CONTENT_DELETION_EXECUTOR_FACTORY"
+            )
 
 
 def create_app(
     settings: JobWorkerSettings | None = None,
     *,
+    deletion_executor: DeletionExecutor | None = None,
     storage_migration_factory: StorageMigrationAdapterFactory | None = None,
 ) -> FastAPI:
     configured = settings or JobWorkerSettings()
@@ -544,6 +553,11 @@ def create_app(
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         configured.validate_runtime()
+        resolved_deletion_executor = deletion_executor
+        if resolved_deletion_executor is None and configured.content_deletion_enabled:
+            resolved_deletion_executor = _load_deletion_executor(
+                configured.content_deletion_executor_factory, configured.database_url
+            )
         database = Database(configured.database_url)
         await database.open()
         projections = SummaryMemoryJobWorker(database)
@@ -555,6 +569,12 @@ def create_app(
             if configured.artifact_access_key
             else None
         )
+        deletion_lifecycle = (
+            ContentDeletionWorker(database, resolved_deletion_executor)
+            if resolved_deletion_executor is not None
+            else None
+        )
+        retention_lifecycle = RetentionSweep(database)
         migration_worker = (
             StorageMigrationWorker(database, StorageMigrationExecutor(storage_migration_factory))
             if storage_migration_factory is not None
@@ -585,6 +605,31 @@ def create_app(
 
         lifecycle_task = asyncio.create_task(purge_artifacts()) if lifecycle is not None else None
 
+        async def erase_requested_content() -> None:
+            assert deletion_lifecycle is not None
+            while True:
+                try:
+                    await deletion_lifecycle.run_once()
+                except Exception:
+                    LOGGER.exception("content deletion lifecycle worker failed")
+                await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
+
+        deletion_task = (
+            asyncio.create_task(erase_requested_content())
+            if deletion_lifecycle is not None
+            else None
+        )
+
+        async def purge_expired_content() -> None:
+            while True:
+                try:
+                    await retention_lifecycle.run_once()
+                except Exception:
+                    LOGGER.exception("content retention lifecycle worker failed")
+                await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
+
+        retention_task = asyncio.create_task(purge_expired_content())
+
         async def migrate_storage() -> None:
             assert migration_worker is not None
             while True:
@@ -610,6 +655,9 @@ def create_app(
             consume_task.cancel()
             if lifecycle_task is not None:
                 lifecycle_task.cancel()
+            if deletion_task is not None:
+                deletion_task.cancel()
+            retention_task.cancel()
             if migration_task is not None:
                 migration_task.cancel()
             await database.close()
@@ -667,6 +715,25 @@ def create_app(
         return await correct_memory(tenant_id, memory_id, payload, operation_token)
 
     return application
+
+
+def _load_deletion_executor(factory_path: str, database_url: str) -> DeletionExecutor:
+    """Load the deployment-owned backend binding before the worker starts.
+
+    This is deliberately mandatory in production: starting without all six
+    erasure adapters would otherwise accept requests that can never complete.
+    """
+
+    module_name, separator, attribute = factory_path.partition(":")
+    if not separator or not module_name or not attribute:
+        raise RuntimeError("CONTENT_DELETION_EXECUTOR_FACTORY_INVALID")
+    factory = getattr(importlib.import_module(module_name), attribute, None)
+    if not callable(factory):
+        raise RuntimeError("CONTENT_DELETION_EXECUTOR_FACTORY_INVALID")
+    executor = factory(database_url)
+    if not isinstance(executor, DeletionExecutor):
+        raise RuntimeError("CONTENT_DELETION_EXECUTOR_FACTORY_INVALID")
+    return executor
 
 
 app = create_app()

@@ -51,6 +51,12 @@ agentWorker:
   llmGatewayUrl: http://agent-gateway:8000
   workerPool: shared-workers
 
+jobWorker:
+  databaseSecretName: trpc-platform-database-app
+  databaseSecretKey: url
+  artifactAccessKeySecretName: trpc-platform-artifact-access
+  artifactAccessKeySecretKey: value
+
 agentGateway:
   databaseSecretName: trpc-platform-database-app
   databaseSecretKey: url
@@ -63,6 +69,8 @@ channelGateway:
   databaseSecretKey: url
   vaultUrl: https://openbao.platform.svc
   vaultKubernetesRole: channel-gateway
+  artifactAccessKeySecretName: trpc-platform-artifact-access
+  artifactAccessKeySecretKey: value
   # Non-secret declarations. Each entry's app secret is read at runtime from
   # the matching channel binding Vault path (#app-secret).
   feishuLongConnections: []
@@ -224,6 +232,8 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    contentDeletionEnabled: false
+    contentDeletionExecutorFactory: ""
     authorization:
       allowedCalls:
         - namespace: argo-rollouts

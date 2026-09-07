@@ -6,7 +6,7 @@ import base64
 import hashlib
 import hmac
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import PurePath
@@ -136,6 +136,9 @@ class ArtifactAuditSink(Protocol):
     async def emit(self, event: ArtifactAuditEvent) -> None: ...
 
 
+ArtifactRetentionResolver = Callable[[str], Awaitable[int]]
+
+
 class MemoryArtifactStore:
     """In-memory store used by tests and explicit local development wiring."""
 
@@ -246,6 +249,7 @@ class ArtifactService:
         access_key: bytes,
         audit_sink: ArtifactAuditSink | None = None,
         clock: Callable[[], datetime] | None = None,
+        retention_days: ArtifactRetentionResolver | None = None,
     ) -> None:
         if len(access_key) < 16:
             raise ValueError("artifact access_key must contain at least 16 bytes")
@@ -253,6 +257,7 @@ class ArtifactService:
         self._access_key = access_key
         self._clock = clock or (lambda: datetime.now(UTC))
         self._audit_sink = audit_sink
+        self._retention_days = retention_days
         self.audit_events: list[ArtifactAuditEvent] = []
 
     async def create(
@@ -276,7 +281,8 @@ class ArtifactService:
             declared_classification=declared_classification,
         )
         now = self._now()
-        expiry = expires_at or now + DEFAULT_ARTIFACT_TTL
+        policy_days = await self._retention_days(tenant_id) if self._retention_days else None
+        expiry = expires_at or now + timedelta(days=policy_days or DEFAULT_ARTIFACT_TTL.days)
         if expiry <= now:
             raise AttachmentRejected(ARTIFACT_EXPIRED)
         artifact = Artifact(
@@ -412,6 +418,7 @@ class ArtifactLifecycleWorker:
             store=DatabaseArtifactStore(database),
             access_key=access_key,
             audit_sink=DatabaseArtifactAuditSink(database),
+            retention_days=TenantArtifactRetention(database).days_for,
         )
 
     async def run_once(self) -> int:
@@ -421,8 +428,35 @@ class ArtifactLifecycleWorker:
             tenant_ids = await connection.fetch("SELECT id FROM platform.tenant")
         deleted = 0
         for row in tenant_ids:
+            tenant_id = UUID(str(row["id"]))
+            async with self._database.tenant_transaction(tenant_id) as connection:
+                held = bool(
+                    await connection.fetchval(
+                        "SELECT EXISTS(SELECT 1 FROM tenant.legal_hold "
+                        "WHERE tenant_id=$1 AND status='ACTIVE')",
+                        tenant_id,
+                    )
+                )
+            if held:
+                continue
             deleted += await self._service.purge(tenant_id=str(row["id"]))
         return deleted
+
+
+class TenantArtifactRetention:
+    """Resolve the approved artifact lifecycle limit without widening tenant scope."""
+
+    def __init__(self, database: Database) -> None:
+        self._database = database
+
+    async def days_for(self, tenant_id: str) -> int:
+        tenant_uuid = UUID(tenant_id)
+        async with self._database.tenant_transaction(tenant_uuid) as connection:
+            days = await connection.fetchval(
+                "SELECT artifact_days FROM tenant.content_retention_policy WHERE tenant_id=$1",
+                tenant_uuid,
+            )
+        return int(days) if days is not None else DEFAULT_ARTIFACT_TTL.days
 
 
 def _validate_attachment(

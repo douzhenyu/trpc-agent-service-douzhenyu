@@ -79,6 +79,11 @@ async def _list_direct_memory(
         IM_DIRECT_MEMORY_POLICY,
         limit,
     )
+    await connection.executemany(
+        """UPDATE tenant.memory_record SET last_used_at=now()
+        WHERE tenant_id=$1 AND id=$2""",
+        [(tenant_id, row["id"]) for row in rows],
+    )
     return [
         VisibleMemory(
             id=UUID(str(row["id"])),

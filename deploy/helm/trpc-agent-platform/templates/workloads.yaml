@@ -111,6 +111,30 @@ spec:
               value: {{ $.Values.agentWorker.llmGatewayUrl | quote }}
             - name: WORKER_POOL
               value: {{ $.Values.agentWorker.workerPool | quote }}
+{{- else if eq $name "job-worker" }}
+          command:
+            - /app/.venv/bin/uvicorn
+          args:
+            - trpc_service.job_worker:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ $component.port | quote }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.jobWorker.databaseSecretName }}
+                  key: {{ $.Values.jobWorker.databaseSecretKey }}
+            - name: CONTENT_DELETION_EXECUTOR_FACTORY
+              value: {{ $component.contentDeletionExecutorFactory | quote }}
+            - name: CONTENT_DELETION_ENABLED
+              value: {{ $component.contentDeletionEnabled | quote }}
+            - name: ARTIFACT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.jobWorker.artifactAccessKeySecretName }}
+                  key: {{ $.Values.jobWorker.artifactAccessKeySecretKey }}
 {{- else if eq $name "channel-gateway" }}
           command:
             - /app/.venv/bin/uvicorn
@@ -136,6 +160,11 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: ARTIFACT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.channelGateway.artifactAccessKeySecretName }}
+                  key: {{ $.Values.channelGateway.artifactAccessKeySecretKey }}
 {{- else if eq $name "agent-gateway" }}
           command:
             - /app/.venv/bin/uvicorn

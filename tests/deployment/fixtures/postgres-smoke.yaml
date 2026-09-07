@@ -37,6 +37,15 @@ stringData:
   OIDC_ENABLED: "false"
   SESSION_COOKIE_SECURE: "false"
 ---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: trpc-platform-artifact-access
+  namespace: platform-smoke
+type: Opaque
+stringData:
+  value: smoke-only-artifact-access-key
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
