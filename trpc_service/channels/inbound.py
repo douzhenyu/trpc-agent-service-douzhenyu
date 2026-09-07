@@ -21,18 +21,36 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from trpc_service.agent_gateway import AgentExecutionAccepted
 from trpc_service.channels.bindings import ChannelBinding, ChannelBindingRegistry
+from trpc_service.memory_access import memory_policy_for_session_scope
 
 FAKE_SIGNATURE_PREFIX = "fake:"
 
 
 def fake_channel_signature(
-    material: str, message_key: str, text: str, external_user_id: str
+    material: str,
+    message_key: str,
+    text: str,
+    external_user_id: str,
+    session_key: str | None = None,
 ) -> str:
     """The Fake Channel signature: HMAC over the canonical inbound payload.
 
     Channel adapters copy this pattern: sign the payload, never compare a
     static token, and verify with a constant-time comparison.
     """
+
+    digest = hmac.new(
+        material.encode("utf-8"),
+        f"{message_key}\n{text}\n{external_user_id}\n{session_key or ''}".encode(),
+        hashlib.sha256,
+    ).hexdigest()
+    return f"{FAKE_SIGNATURE_PREFIX}{digest}"
+
+
+def _legacy_fake_channel_signature(
+    material: str, message_key: str, text: str, external_user_id: str
+) -> str:
+    """Accept direct Fake Channel redeliveries signed before scoped sessions."""
 
     digest = hmac.new(
         material.encode("utf-8"),
@@ -138,7 +156,21 @@ class MemoryInboundStore:
             )
 
 
-def inbound_payload_hash(text: str, external_user_id: str) -> str:
+def inbound_payload_hash(text: str, external_user_id: str, session_key: str | None = None) -> str:
+    canonical = json.dumps(
+        {
+            "text": text,
+            "external_user_id": external_user_id,
+            "session_key": session_key or f"direct:{external_user_id}",
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _legacy_inbound_payload_hash(text: str, external_user_id: str) -> str:
     canonical = json.dumps(
         {"text": text, "external_user_id": external_user_id},
         ensure_ascii=False,
@@ -180,6 +212,28 @@ class ChannelInboundService:
 
         return f"im:{binding.channel_type}:{binding.binding_id}:{external_user_id}"
 
+    def session_for(self, *, binding: ChannelBinding, event: dict[str, str]) -> str:
+        """Build a stable opaque Session ID scoped to one tenant and binding."""
+
+        scope = event.get("session_key", f"direct:{event['external_user_id']}")
+        if scope.startswith("direct:"):
+            if scope != f"direct:{event['external_user_id']}":
+                raise InboundError("SESSION_SCOPE_INVALID")
+        elif scope.startswith("group:"):
+            if not scope.removeprefix("group:"):
+                raise InboundError("GROUP_SESSION_ID_REQUIRED")
+        elif scope.startswith("thread:"):
+            parts = scope.split(":", 2)
+            if len(parts) != 3 or not parts[1] or not parts[2]:
+                raise InboundError("GROUP_SESSION_ID_REQUIRED")
+        else:
+            raise InboundError("SESSION_SCOPE_INVALID")
+        derived = uuid5(
+            NAMESPACE_URL,
+            f"session:v1|{binding.tenant_id}|{binding.application_id}|{binding.binding_id}|{scope}",
+        )
+        return f"session:{derived}"
+
     async def signed_event(
         self,
         *,
@@ -189,6 +243,7 @@ class ChannelInboundService:
         message_key: str,
         text: str,
         external_user_id: str,
+        session_key: str | None = None,
     ) -> dict[str, str]:
         """Build the internal ledger event with its integrity signature.
 
@@ -205,14 +260,19 @@ class ChannelInboundService:
         if binding is None:
             raise InboundError("BINDING_NOT_FOUND")
         material = self._secrets.resolve(binding.secret_ref)
-        return {
+        event = {
             "channel_type": channel_type,
             "external_bot_id": external_bot_id,
             "message_key": message_key,
             "text": text,
             "external_user_id": external_user_id,
-            "signature": fake_channel_signature(material, message_key, text, external_user_id),
+            "signature": fake_channel_signature(
+                material, message_key, text, external_user_id, session_key
+            ),
         }
+        if session_key is not None:
+            event["session_key"] = session_key
+        return event
 
     async def ingest(self, *, tenant_id: str, event: dict[str, str]) -> AgentExecutionAccepted:
         for field in ("channel_type", "external_bot_id", "message_key", "text", "external_user_id"):
@@ -227,9 +287,19 @@ class ChannelInboundService:
             raise InboundError("BINDING_NOT_FOUND")
         material = self._secrets.resolve(binding.secret_ref)
         expected = fake_channel_signature(
+            material,
+            event["message_key"],
+            event["text"],
+            event["external_user_id"],
+            event.get("session_key"),
+        )
+        legacy_expected = _legacy_fake_channel_signature(
             material, event["message_key"], event["text"], event["external_user_id"]
         )
-        if not hmac.compare_digest(event.get("signature", ""), expected):
+        if not hmac.compare_digest(event.get("signature", ""), expected) and not (
+            event.get("session_key") is None
+            and hmac.compare_digest(event.get("signature", ""), legacy_expected)
+        ):
             raise InboundError("SIGNATURE_INVALID")
 
         return await self.ingest_verified(tenant_id=tenant_id, event=event)
@@ -252,7 +322,10 @@ class ChannelInboundService:
         if binding is None:
             raise InboundError("BINDING_NOT_FOUND")
 
-        payload_hash = inbound_payload_hash(event["text"], event["external_user_id"])
+        payload_hash = inbound_payload_hash(
+            event["text"], event["external_user_id"], event.get("session_key")
+        )
+        legacy_payload_hash = _legacy_inbound_payload_hash(event["text"], event["external_user_id"])
         message = InboundMessage(
             tenant_id=tenant_id,
             binding_id=binding.binding_id,
@@ -262,23 +335,18 @@ class ChannelInboundService:
             occurred_at=datetime.now(UTC).isoformat(),
         )
         stored, created = await self._store.insert(message)
-        if (
-            not created
-            and stored.payload_hash == payload_hash
-            and stored.execution_id
-            and stored.release_id
-        ):
+        payload_matches = stored.payload_hash == payload_hash or (
+            event.get("session_key") is None and stored.payload_hash == legacy_payload_hash
+        )
+        if not created and payload_matches and stored.execution_id and stored.release_id:
             # Ledger hit: reuse the original execution without re-submitting.
             return AgentExecutionAccepted(
                 execution_id=UUID(stored.execution_id),
                 release_id=UUID(stored.release_id),
-                session_id=(
-                    f"channel:{binding.binding_id}:"
-                    f"{event.get('session_key', event['external_user_id'])}"
-                ),
+                session_id=self.session_for(binding=binding, event=event),
                 deduplicated=True,
             )
-        if not created and stored.payload_hash != payload_hash:
+        if not created and not payload_matches:
             # Same key, different payload: isolate the newcomer, keep the
             # original execution untouched.
             await self._store.record_conflict(
@@ -314,8 +382,8 @@ class ChannelInboundService:
 
         from trpc_service.agent_gateway import AgentExecutionSubmission
 
-        session_scope = event.get("session_key", event["external_user_id"])
-        session_id = f"channel:{binding.binding_id}:{session_scope}"
+        session_id = self.session_for(binding=binding, event=event)
+        session_scope = event.get("session_key", f"direct:{event['external_user_id']}")
         return AgentExecutionSubmission(
             tenant_id=UUID(binding.tenant_id),
             application_id=UUID(binding.application_id),
@@ -324,6 +392,7 @@ class ChannelInboundService:
             subject_id=self.subject_for(
                 binding=binding, external_user_id=event["external_user_id"]
             ),
+            memory_policy_version=memory_policy_for_session_scope(session_scope),
             messages=[{"role": "user", "content": event["text"]}],
             message_id=message_id,
         )

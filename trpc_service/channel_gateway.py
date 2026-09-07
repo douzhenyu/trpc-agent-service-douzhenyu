@@ -22,7 +22,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from fastapi import FastAPI, Query, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -69,9 +69,11 @@ from trpc_service.channels.wecom import (
     WeComReplyTransport,
     WeComStreamBatcher,
     WeComStreamSession,
+    normalize_to_inbound,
     parse_event,
 )
 from trpc_service.llm_gateway import VaultSecretProvider
+from trpc_service.memory_access import SubjectMemoryReader, memory_policy_for_session_scope
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
@@ -329,16 +331,12 @@ def create_app(
         if not event.is_text_message:
             return PlainTextResponse("")
         inbound: ChannelInboundService = application.state.inbound
-        signed = await inbound.signed_event(
-            tenant_id=tenant_id,
-            channel_type="WECOM",
-            external_bot_id=event.aibotid,
-            message_key=event.msgid,
-            text=event.text_content,
-            external_user_id=event.from_userid,
-        )
         try:
+            normalized = normalize_to_inbound(event)
+            signed = await inbound.signed_event(tenant_id=tenant_id, **normalized)
             accepted = await inbound.ingest(tenant_id=tenant_id, event=signed)
+        except WeComProtocolError as error:
+            return PlainTextResponse(error.code, status_code=400)
         except InboundError as error:
             return PlainTextResponse(error.code, status_code=409)
         except RuntimeError:
@@ -357,9 +355,17 @@ def create_app(
             application_id=binding.application_id if binding else str(accepted.release_id),
             execution_id=str(accepted.execution_id),
             release_id=str(accepted.release_id),
-            session_id=f"channel:{event.aibotid}:{event.from_userid}",
+            session_id=accepted.session_id,
             user_id=event.from_userid,
             message=event.text_content,
+            session_user_id=_runner_session_user_id(normalized["session_key"], accepted.session_id),
+            memory_context=await _im_memory_context(
+                application,
+                tenant_id=tenant_id,
+                binding=binding,
+                external_user_id=event.from_userid,
+                session_key=normalized["session_key"],
+            ),
         )
         reply = await runner.complete(command)
         await _deliver(
@@ -656,6 +662,14 @@ async def _execute_feishu_reply(
             session_id=accepted.session_id,
             user_id=event["external_user_id"],
             message=event["text"],
+            session_user_id=_runner_session_user_id(event["session_key"], accepted.session_id),
+            memory_context=await _im_memory_context(
+                application,
+                tenant_id=tenant_id,
+                binding=binding,
+                external_user_id=event["external_user_id"],
+                session_key=event["session_key"],
+            ),
         )
     )
     await _deliver_feishu(
@@ -745,6 +759,47 @@ def _feishu_conversation(event: dict[str, str]) -> str:
         _, chat_id, _ = session_key.split(":", 2)
         return f"chat_id:{chat_id}"
     raise RuntimeError("FEISHU_CONVERSATION_INVALID")
+
+
+def _runner_session_user_id(session_key: str, session_id: str) -> str | None:
+    """Give every group/topic one opaque SDK owner, independent of its sender."""
+
+    if session_key.startswith("direct:"):
+        return None
+    if session_key.startswith(("group:", "thread:")):
+        return f"conversation:{session_id}"
+    raise RuntimeError("SESSION_SCOPE_INVALID")
+
+
+async def _im_memory_context(
+    application: FastAPI,
+    *,
+    tenant_id: str,
+    binding: ChannelBinding | None,
+    external_user_id: str,
+    session_key: str,
+) -> tuple[str, ...]:
+    """Load only policy-approved Memory; group/topic lookups are always empty."""
+
+    policy = memory_policy_for_session_scope(session_key)
+    if policy != "im-subject-direct-v1" or binding is None:
+        return ()
+    try:
+        reader = SubjectMemoryReader(application.state.database)
+        subject_id = application.state.inbound.subject_for(
+            binding=binding, external_user_id=external_user_id
+        )
+        memories = await reader.list_visible(
+            tenant_id=UUID(tenant_id),
+            subject_id=subject_id,
+            memory_policy_version=policy,
+        )
+    except Exception:
+        # Memory is eventually consistent and must never delay a verified IM
+        # request. A failed read means no context, never a wider query.
+        logger.warning("IM memory lookup unavailable", exc_info=True)
+        return ()
+    return tuple(memory.content for memory in memories)
 
 
 async def _resolve_feishu_secret(

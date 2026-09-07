@@ -171,7 +171,7 @@ def test_signed_webhook_normalizes_a_direct_message_and_submits_once() -> None:
 
     assert accepted.execution_id == UUID(EXECUTION)
     assert accepted.release_id == UUID(RELEASE)
-    assert accepted.session_id == "channel:binding-feishu-1:direct:ou_user_1"
+    assert accepted.session_id == "session:2fc01fae-08d1-50c6-9594-930d7b2c902f"
     assert len(submitter.submissions) == 1
     submission = submitter.submissions[0]
     assert submission.messages == [{"role": "user", "content": "hello Feishu"}]
@@ -186,7 +186,7 @@ def test_replayed_webhook_reuses_the_original_direct_session() -> None:
 
     assert replay.deduplicated is True
     assert replay.execution_id == first.execution_id
-    assert replay.session_id == "channel:binding-feishu-1:direct:ou_user_1"
+    assert replay.session_id == "session:2fc01fae-08d1-50c6-9594-930d7b2c902f"
     assert len(submitter.submissions) == 1
 
 
@@ -213,8 +213,23 @@ def test_signed_webhook_isolates_group_and_topic_sessions() -> None:
     topic_body = _webhook_body(chat_type="group", root_id="om_root_1")
     topic = asyncio.run(topic_adapter.receive_webhook(_headers(topic_body), topic_body))
 
-    assert group.session_id == "channel:binding-feishu-1:group:oc_chat_1"
-    assert topic.session_id == "channel:binding-feishu-1:thread:oc_chat_1:om_root_1"
+    assert group.session_id == "session:8b886b5a-22db-5be6-a483-f780e360a660"
+    assert topic.session_id == "session:e79ee687-ba2b-565f-a0b2-cd68524c538b"
+
+
+def test_group_and_topic_runner_sessions_are_shared_without_raw_chat_ids() -> None:
+    from trpc_service.channel_gateway import _runner_session_user_id
+
+    group_owner = _runner_session_user_id(
+        "group:oc_chat_1", "session:8b886b5a-22db-5be6-a483-f780e360a660"
+    )
+    topic_owner = _runner_session_user_id(
+        "thread:oc_chat_1:om_root_1", "session:e79ee687-ba2b-565f-a0b2-cd68524c538b"
+    )
+
+    assert group_owner == "conversation:session:8b886b5a-22db-5be6-a483-f780e360a660"
+    assert topic_owner == "conversation:session:e79ee687-ba2b-565f-a0b2-cd68524c538b"
+    assert "oc_chat_1" not in group_owner
 
 
 def test_long_connection_lease_prevents_another_gateway_from_consuming() -> None:
@@ -818,7 +833,7 @@ def test_channel_gateway_executes_a_verified_feishu_webhook_and_delivers_a_card(
 
     assert response.status_code == 200
     assert len(submitter.submissions) == 1
-    assert runner.commands[0].session_id == "channel:binding-feishu-1:direct:ou_user_1"
+    assert runner.commands[0].session_id == "session:2fc01fae-08d1-50c6-9594-930d7b2c902f"
     assert len(card_requests) == 1
     assert card_requests[0]["url"] == (
         "https://open.feishu.cn/open-apis/im/v1/messages?receive_id_type=open_id"

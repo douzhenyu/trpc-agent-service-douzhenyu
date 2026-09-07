@@ -35,6 +35,7 @@ from trpc_service.admin_api.idempotency import (
     remember,
     replay_for,
 )
+from trpc_service.admin_api.im_subjects import create_im_subject_router
 from trpc_service.admin_api.knowledge import create_knowledge_router
 from trpc_service.admin_api.model_profiles import create_model_profile_router
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
@@ -117,6 +118,7 @@ def create_app(
     application.include_router(create_tool_approval_router(db))
     application.include_router(create_audit_query_router(db))
     application.include_router(create_channel_binding_router(db))
+    application.include_router(create_im_subject_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -145,6 +147,8 @@ def create_app(
             "CHANNEL_BINDING_CONFLICT": "CHANNEL_BINDING_CONFLICT",
             "SECRET_REF_REJECTED": "SECRET_REF_REJECTED",
             "CHANNEL_BINDING_NOT_FOUND": "CHANNEL_BINDING_NOT_FOUND",
+            "IM_SUBJECT_ASSOCIATION_INVALID": "IM_SUBJECT_ASSOCIATION_INVALID",
+            "IM_SUBJECT_ASSOCIATION_NOT_FOUND": "IM_SUBJECT_ASSOCIATION_NOT_FOUND",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(
