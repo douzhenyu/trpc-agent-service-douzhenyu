@@ -128,6 +128,8 @@ spec:
                   key: {{ $.Values.jobWorker.databaseSecretKey }}
             - name: CONTENT_DELETION_EXECUTOR_FACTORY
               value: {{ $component.contentDeletionExecutorFactory | quote }}
+            - name: CONTENT_DELETION_ENABLED
+              value: {{ $component.contentDeletionEnabled | quote }}
             - name: ARTIFACT_ACCESS_KEY
               valueFrom:
                 secretKeyRef:

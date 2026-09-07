@@ -13,6 +13,7 @@ from trpc_service.content_lifecycle import (
     DeletionExecutor,
     RetentionPolicy,
 )
+from trpc_service.job_worker import JobWorkerSettings
 
 
 class _Backend:
@@ -44,6 +45,19 @@ def test_retention_defaults_and_tenant_bounds_are_compliance_safe() -> None:
         RetentionPolicy(audit_days=89)
     with pytest.raises(ValueError, match="RETENTION_BACKUP_DAYS_INVALID"):
         RetentionPolicy(backup_days=36)
+
+
+def test_job_worker_disables_content_deletion_without_an_executor_by_default() -> None:
+    settings = JobWorkerSettings(database_url="postgresql://localhost/trpc")
+
+    settings.validate_runtime()
+    assert settings.content_deletion_enabled is False
+
+    with pytest.raises(RuntimeError, match="CONTENT_DELETION_EXECUTOR_FACTORY"):
+        JobWorkerSettings(
+            database_url="postgresql://localhost/trpc",
+            content_deletion_enabled=True,
+        ).validate_runtime()
 
 
 def test_deletion_execution_covers_every_backend_and_records_backup_deadline() -> None:

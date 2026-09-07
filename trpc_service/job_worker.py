@@ -521,7 +521,7 @@ class JobWorkerSettings(BaseSettings):
     projection_poll_interval_seconds: float = 0.5
     artifact_lifecycle_interval_seconds: float = 3600
     artifact_access_key: str = ""
-    content_deletion_enabled: bool = True
+    content_deletion_enabled: bool = False
     content_deletion_executor_factory: str = ""
     operator_token: str = ""
 

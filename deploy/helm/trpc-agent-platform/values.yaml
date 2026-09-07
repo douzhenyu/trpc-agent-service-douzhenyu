@@ -232,6 +232,7 @@ components:
       repository: ghcr.io/douzhenyu/trpc-agent-platform
       digest: sha256:0000000000000000000000000000000000000000000000000000000000000000
       tag: ""
+    contentDeletionEnabled: false
     contentDeletionExecutorFactory: ""
     authorization:
       allowedCalls:
