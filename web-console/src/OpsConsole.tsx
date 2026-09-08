@@ -88,20 +88,29 @@ function Section({
   );
 }
 
-function paged(
-  first: GenericRow[],
-  cursor: string | null,
-): LoadMore {
+function paged(first: GenericRow[], cursor: string | null): LoadMore {
   return { rows: first, cursor };
 }
 
 export function OpsConsole({ tenants }: { tenants: Tenant[] }) {
   const [tenantId, setTenantId] = useState(tenants[0]?.id ?? "");
   const [message, setMessage] = useState<string | null>(null);
-  const [sessions, setSessions] = useState<LoadMore>({ rows: [], cursor: null });
-  const [memories, setMemories] = useState<LoadMore>({ rows: [], cursor: null });
-  const [artifacts, setArtifacts] = useState<LoadMore>({ rows: [], cursor: null });
-  const [deadLetters, setDeadLetters] = useState<LoadMore>({ rows: [], cursor: null });
+  const [sessions, setSessions] = useState<LoadMore>({
+    rows: [],
+    cursor: null,
+  });
+  const [memories, setMemories] = useState<LoadMore>({
+    rows: [],
+    cursor: null,
+  });
+  const [artifacts, setArtifacts] = useState<LoadMore>({
+    rows: [],
+    cursor: null,
+  });
+  const [deadLetters, setDeadLetters] = useState<LoadMore>({
+    rows: [],
+    cursor: null,
+  });
   const [operations, setOperations] = useState<OpsOperation[]>([]);
   const [approvals, setApprovals] = useState<GenericRow[]>([]);
   const [auditEvents, setAuditEvents] = useState<GenericRow[]>([]);
@@ -175,7 +184,9 @@ export function OpsConsole({ tenants }: { tenants: Tenant[] }) {
   }, [load, reset]);
 
   async function loadMore(
-    loader: (cursor: string) => Promise<{ items: GenericRow[]; next_cursor: string | null }>,
+    loader: (
+      cursor: string,
+    ) => Promise<{ items: GenericRow[]; next_cursor: string | null }>,
     current: LoadMore,
     update: (next: LoadMore) => void,
   ) {
@@ -236,7 +247,10 @@ export function OpsConsole({ tenants }: { tenants: Tenant[] }) {
         <Table
           columns={[
             { key: "delivery_id", label: t("opsColumnDelivery") },
-            { key: "external_conversation_id", label: t("opsColumnConversation") },
+            {
+              key: "external_conversation_id",
+              label: t("opsColumnConversation"),
+            },
             { key: "attempts", label: t("opsColumnAttempts") },
             { key: "last_error", label: t("opsColumnLastError") },
             { key: "updated_at", label: t("opsColumnUpdated") },
@@ -246,7 +260,10 @@ export function OpsConsole({ tenants }: { tenants: Tenant[] }) {
         <ul className="ops-actions">
           {(deadLetters.rows as unknown as OpsDeadLetter[]).map((letter) => (
             <li key={letter.delivery_id}>
-              <button type="button" onClick={() => retryDeadLetter(letter.delivery_id)}>
+              <button
+                type="button"
+                onClick={() => retryDeadLetter(letter.delivery_id)}
+              >
                 {t("opsRetry")} {letter.delivery_id.slice(0, 8)}
               </button>
             </li>
