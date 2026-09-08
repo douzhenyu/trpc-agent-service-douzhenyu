@@ -29,7 +29,7 @@ from trpc_service.execution_bus import (
     InMemoryExecutionBus,
     OutboxDispatcher,
 )
-from trpc_service.llm_gateway import GatewayRequest, GatewayResult
+from trpc_service.llm_gateway import GatewayRequest, GatewayResult, ModelGatewayError
 from trpc_service.sessions import (
     SessionEvent,
     SessionLeaseError,
@@ -62,6 +62,11 @@ class ScriptedGateway:
             fallback_used=False,
             completion={"role": "assistant", "content": "gateway-reply"},
         )
+
+
+class FailingGateway:
+    async def complete(self, _request: GatewayRequest) -> GatewayResult:
+        raise ModelGatewayError("MODEL_UNAVAILABLE")
 
 
 async def _prepare_database() -> None:
@@ -115,7 +120,8 @@ async def _seed_release_stack(knowledge_base_id: UUID | None = None) -> tuple[st
             """INSERT INTO tenant.agent_release
             (tenant_id,id,application_id,model_alias,data_classification,region,
             fallback_aliases,model_profiles,release_version,draft_snapshot)
-            VALUES ($1,$2,$3,'primary-alias','CONFIDENTIAL','cn-test','[]'::jsonb,$4::jsonb,1,$5::jsonb)""",
+            VALUES ($1,$2,$3,'primary-alias','CONFIDENTIAL','cn-test',
+            '[]'::jsonb,$4::jsonb,1,$5::jsonb)""",
             tenant_id,
             release_id,
             application_id,
@@ -159,7 +165,8 @@ async def _seed_knowledge_deployment(tenant_id: str, base_id: UUID) -> str:
             "0" * 64,
         )
         await connection.execute(
-            "INSERT INTO tenant.knowledge_revision_build (tenant_id,revision_id,status) VALUES ($1,$2,'BUILDING')",
+            """INSERT INTO tenant.knowledge_revision_build (tenant_id,revision_id,status)
+            VALUES ($1,$2,'BUILDING')""",
             UUID(tenant_id),
             revision_id,
         )
@@ -648,6 +655,247 @@ def test_version_conflict_blocks_a_stale_worker_result() -> None:
             state = await _authority_state(tenant_id, "session-version")
             assert state["events"] == 1
             assert state["version"] == 1
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_trace_context_flows_from_gateway_to_dispatched_envelope() -> None:
+    """W3C trace context survives the HTTP boundary and the outbox dispatch."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = await _open_database()
+        try:
+            tenant_id, application_id, _release_id = await _seed_release_stack()
+            bus = InMemoryExecutionBus(partition_count=4)
+            app = create_app(
+                AgentGatewaySettings(database_url=APP_URL, dispatch_interval_seconds=0.0),
+                bus=bus,
+            )
+            trace_id = "4bf92f3577b34da6a3ce929d0e0e4736"
+            with TestClient(app) as client:
+                submitted = client.post(
+                    "/internal/v1/agent-executions",
+                    json={
+                        "tenant_id": tenant_id,
+                        "application_id": application_id,
+                        "environment": "PRODUCTION",
+                        "session_id": "session-trace",
+                        "messages": [{"role": "user", "content": "traced hello"}],
+                        "message_id": "traced-message-1",
+                    },
+                    headers={"traceparent": f"00-{trace_id}-00f067aa0ba902b7-01"},
+                )
+                assert submitted.status_code == 202
+                outbound = submitted.headers["traceparent"]
+                assert outbound.startswith(f"00-{trace_id}-")
+                assert outbound != f"00-{trace_id}-00f067aa0ba902b7-01"
+
+            connection = await asyncpg.connect(ADMIN_URL)
+            try:
+                row = await connection.fetchrow(
+                    "SELECT payload FROM platform.outbox_record WHERE tenant_id=$1",
+                    UUID(tenant_id),
+                )
+                assert row is not None
+                payload = (
+                    json.loads(row["payload"])
+                    if isinstance(row["payload"], str)
+                    else row["payload"]
+                )
+                assert payload["trace_parent"].startswith(f"00-{trace_id}-")
+            finally:
+                await connection.close()
+
+            dispatcher = OutboxDispatcher(database, bus)
+            assert await dispatcher.dispatch_pending() == 1
+            envelope = bus.published[0]
+            assert envelope.trace_parent is not None
+            assert envelope.trace_parent.startswith(f"00-{trace_id}-")
+        finally:
+            await database.close()
+
+    asyncio.run(scenario())
+
+
+def test_admission_rejects_beyond_capacity_with_stable_error() -> None:
+    """The gateway sheds load with a stable 429 once the envelope is exhausted."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        tenant_id, application_id, _release_id = await _seed_release_stack()
+        bus = InMemoryExecutionBus(partition_count=4)
+        app = create_app(
+            AgentGatewaySettings(
+                database_url=APP_URL,
+                dispatch_interval_seconds=0.0,
+                admission_sustained_per_second=10,
+                admission_burst_per_second=30,
+                admission_burst_seconds=2,
+                admission_max_in_flight=100,
+            ),
+            bus=bus,
+        )
+        with TestClient(app) as client:
+            status_codes = []
+            for index in range(200):
+                response = client.post(
+                    "/internal/v1/agent-executions",
+                    json={
+                        "tenant_id": tenant_id,
+                        "application_id": application_id,
+                        "environment": "PRODUCTION",
+                        "session_id": "session-admission",
+                        "messages": [{"role": "user", "content": "load"}],
+                        "message_id": f"admission-{index}",
+                    },
+                )
+                status_codes.append(response.status_code)
+                if response.status_code == 429:
+                    assert response.json()["detail"] == "RATE_EXCEEDED"
+            assert 202 in status_codes
+            assert 429 in status_codes
+
+            metrics = client.get("/metrics")
+            assert metrics.status_code == 200
+            assert "platform_admission_decisions_total" in metrics.text
+
+            capacity = client.get("/internal/v1/capacity")
+            assert capacity.status_code == 200
+            body = capacity.json()
+            assert body["sustained_per_second"] == 10
+            assert body["shed_level"] in {"GREEN", "YELLOW", "RED"}
+
+    asyncio.run(scenario())
+
+
+def test_capacity_limit_tracks_pending_executions_until_worker_completion() -> None:
+    """A durable pending execution consumes capacity after its HTTP request ends."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        tenant_id, application_id, _release_id = await _seed_release_stack()
+        app = create_app(
+            AgentGatewaySettings(
+                database_url=APP_URL,
+                dispatch_interval_seconds=0.0,
+                admission_sustained_per_second=100,
+                admission_burst_per_second=100,
+                admission_burst_seconds=1,
+                admission_max_in_flight=1,
+            ),
+            bus=InMemoryExecutionBus(partition_count=4),
+        )
+        with TestClient(app) as client:
+            payload = {
+                "tenant_id": tenant_id,
+                "application_id": application_id,
+                "environment": "PRODUCTION",
+                "session_id": "session-capacity",
+                "messages": [{"role": "user", "content": "load"}],
+            }
+            accepted = client.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "capacity-1"},
+            )
+            assert accepted.status_code == 202
+
+            capacity = client.get("/internal/v1/capacity")
+            assert capacity.status_code == 200
+            assert capacity.json()["pending_executions"] == 1
+            assert capacity.json()["pending_outbox_records"] == 1
+            assert capacity.json()["shed_level"] == "RED"
+
+            rejected = client.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "capacity-2"},
+            )
+            assert rejected.status_code == 429
+            assert rejected.json()["detail"] == "INFLIGHT_SATURATED"
+
+    asyncio.run(scenario())
+
+
+def test_rate_limit_is_shared_by_gateway_replicas() -> None:
+    """A second gateway replica cannot multiply the configured global rate."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        tenant_id, application_id, _release_id = await _seed_release_stack()
+        settings = AgentGatewaySettings(
+            database_url=APP_URL,
+            dispatch_interval_seconds=0.0,
+            admission_sustained_per_second=1,
+            admission_burst_per_second=1,
+            admission_burst_seconds=1,
+            admission_max_in_flight=100,
+        )
+        first_app = create_app(settings, bus=InMemoryExecutionBus(partition_count=4))
+        second_app = create_app(settings, bus=InMemoryExecutionBus(partition_count=4))
+        payload = {
+            "tenant_id": tenant_id,
+            "application_id": application_id,
+            "environment": "PRODUCTION",
+            "session_id": "session-global-rate",
+            "messages": [{"role": "user", "content": "load"}],
+        }
+        with TestClient(first_app) as first, TestClient(second_app) as second:
+            accepted = first.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "global-rate-1"},
+            )
+            assert accepted.status_code == 202
+            rejected = second.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "global-rate-2"},
+            )
+            assert rejected.status_code == 429
+            assert rejected.json()["detail"] == "RATE_EXCEEDED"
+
+    asyncio.run(scenario())
+
+
+def test_unrecoverable_model_failure_releases_durable_execution_capacity() -> None:
+    """Terminal worker failures do not leave a PENDING execution forever."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = await _open_database()
+        try:
+            tenant_id, application_id, _release_id = await _seed_release_stack()
+            bus = InMemoryExecutionBus(partition_count=4)
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            accepted = await submitter.submit(
+                _submission(tenant_id, application_id, "session-terminal-failure")
+            )
+            assert await OutboxDispatcher(database, bus).dispatch_pending() == 1
+            worker = AgentWorker(FailingGateway(), DatabaseReleaseRouteResolver(database))
+            processor = AgentExecutionProcessor(
+                worker,
+                database,
+                DatabaseReleaseRouteResolver(database),
+                SessionLeaseManager(database),
+                "worker-terminal-failure",
+            )
+            assert await bus.deliver_once(processor.handle) is False
+
+            connection = await asyncpg.connect(ADMIN_URL)
+            try:
+                status = await connection.fetchval(
+                    "SELECT status FROM tenant.agent_execution WHERE tenant_id=$1 AND id=$2",
+                    UUID(tenant_id),
+                    accepted.execution_id,
+                )
+                assert status == "FAILED"
+            finally:
+                await connection.close()
         finally:
             await database.close()
 

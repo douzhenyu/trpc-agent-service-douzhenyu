@@ -5,7 +5,7 @@ from pathlib import Path
 from alembic import op
 
 revision = "0019_summary_memory_projections"
-down_revision = "0018_knowledge_revisions"
+down_revision = "0018_merge_feishu_knowledge"
 branch_labels = None
 depends_on = None
 

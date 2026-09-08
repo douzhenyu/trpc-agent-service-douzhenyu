@@ -35,7 +35,7 @@ Channel Adapter 是 Channel Gateway 内插件，Storage Adapter 是 Worker 共�
 
 ## 4. 关键数据流与一致性
 
-企业微信或飞书事件先由 Channel Gateway 验签、解密（适用时）并解析唯一通道绑定；企业微信智能机器人也可由出站 WSS 长连接订阅，使用 Bot ID/Secret 认证，并以入站帧的 `req_id` 回复。长连接配置显式给出所属租户，随后仍解析该租户的唯一 Binding。入站在一个 PostgreSQL 事务内写入**入站消息**、唯一**Agent 执行**和 Outbox；重复事件复用原执行，键相同但 Payload 摘要不同则隔离告警（[ADR-0017](../adr/0017-durable-inbound-idempotency-ledger.md)）。
+企业微信或飞书事件先由 Channel Gateway 验签、解密并解析唯一通道绑定；随后在一个 PostgreSQL 事务内写入**入站消息**、唯一**Agent 执行**和 Outbox，提交后才确认回调。重复事件复用原执行，键相同但 Payload 摘要不同则隔离告警（[ADR-0017](../adr/0017-durable-inbound-idempotency-ledger.md)）。
 
 Outbox 将执行命令投递到 Kafka 兼容**执行总线**，按 `(tenant_id, session_id)` 分区。Agent Worker 取得带 fencing token 的租约并检查 `expected_version`，加载启动时固定的 Agent Release，通过 Filter/OPA 执行治理，再驱动 tRPC-Agent Runner。提交点原子追加 Session Event、推进 Session 版本、更新可重建 Session State 并写 Outbox；失去租约或版本冲突的 Worker 不得提交（[ADR-0010](../adr/0010-kafka-compatible-durable-execution-bus.md)、[ADR-0011](../adr/0011-stateless-workers-and-session-concurrency.md)）。
 

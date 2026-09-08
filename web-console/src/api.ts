@@ -26,6 +26,9 @@ export type AgentDeploymentRollback =
 export type ModelProfile = components["schemas"]["ModelProfileResponse"];
 export type ModelProfileCreate = components["schemas"]["ModelProfileCreate"];
 export type ModelProfileUpdate = components["schemas"]["ModelProfileUpdate"];
+export type StorageProfile = components["schemas"]["StorageProfileResponse"];
+export type StorageProfileCreate =
+  components["schemas"]["StorageProfileCreate"];
 
 const client = createClient<paths>({
   baseUrl: globalThis.location.origin,
@@ -117,6 +120,37 @@ export async function createModelProfile(
   );
   if (!response.ok || !data)
     throw apiError(response, "无法保存模型配置档", error);
+  return data;
+}
+
+export async function getStorageProfiles(
+  tenantId: string,
+): Promise<StorageProfile[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/storage-profiles",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取存储配置档", error);
+  return data.items;
+}
+
+export async function createStorageProfile(
+  tenantId: string,
+  payload: StorageProfileCreate,
+): Promise<StorageProfile> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/storage-profiles",
+    {
+      params: {
+        path: { tenant_id: tenantId },
+        header: { "Idempotency-Key": idempotencyKey() },
+      },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法保存存储配置档", error);
   return data;
 }
 
@@ -484,4 +518,226 @@ export async function rollbackAgentDeployment(
   if (!response.ok || !data)
     throw apiError(response, "无法回滚环境 Deployment", error);
   return data;
+}
+
+export type OpsSession = {
+  id: string;
+  tenant_id: string;
+  application_id: string;
+  version: number;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OpsMemory = {
+  id: string;
+  tenant_id: string;
+  subject_id: string;
+  source_session_id: string;
+  content_preview: string;
+  is_valid: boolean;
+  invalidated_at: string | null;
+  invalidation_reason: string | null;
+  created_at: string;
+};
+
+export type OpsArtifact = {
+  id: string;
+  tenant_id: string;
+  subject_id: string;
+  execution_id: string;
+  filename: string;
+  media_type: string;
+  size_bytes: number;
+  classification: string;
+  created_at: string;
+  expires_at: string;
+};
+
+export type OpsDeadLetter = {
+  delivery_id: string;
+  tenant_id: string;
+  binding_id: string;
+  execution_id: string;
+  external_conversation_id: string;
+  attempts: number;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+};
+
+export type OpsOperation = {
+  kind: string;
+  id: string;
+  status: string;
+  attempts: number;
+  next_action_at: string | null;
+  last_error: string | null;
+  created_at: string;
+  updated_at: string;
+  evidence: {
+    proofs?: Record<string, unknown>[];
+    approval_status?: string | null;
+    rollback_approval_status?: string | null;
+    observation_ends_at?: string | null;
+  };
+};
+
+type OpsPage<T> = { items: T[]; next_cursor: string | null };
+
+type OpsQuery = { cursor?: string; limit?: number };
+
+async function opsList<T>(
+  path:
+    | "/api/v1/tenants/{tenant_id}/ops/sessions"
+    | "/api/v1/tenants/{tenant_id}/ops/memories"
+    | "/api/v1/tenants/{tenant_id}/ops/artifacts"
+    | "/api/v1/tenants/{tenant_id}/ops/dead-letters",
+  tenantId: string,
+  query: OpsQuery,
+  fallback: string,
+): Promise<OpsPage<T>> {
+  const { data, error, response } = await client.GET(path, {
+    params: {
+      path: { tenant_id: tenantId },
+      query: {
+        limit: query.limit ?? 50,
+        ...(query.cursor ? { cursor: query.cursor } : {}),
+      },
+    },
+  });
+  if (!response.ok || !data) throw apiError(response, fallback, error);
+  return data as unknown as OpsPage<T>;
+}
+
+export function listOpsSessions(
+  tenantId: string,
+  query: OpsQuery = {},
+): Promise<OpsPage<OpsSession>> {
+  return opsList(
+    "/api/v1/tenants/{tenant_id}/ops/sessions",
+    tenantId,
+    query,
+    "无法读取会话列表",
+  );
+}
+
+export function listOpsMemories(
+  tenantId: string,
+  query: OpsQuery = {},
+): Promise<OpsPage<OpsMemory>> {
+  return opsList(
+    "/api/v1/tenants/{tenant_id}/ops/memories",
+    tenantId,
+    query,
+    "无法读取记忆列表",
+  );
+}
+
+export function listOpsArtifacts(
+  tenantId: string,
+  query: OpsQuery = {},
+): Promise<OpsPage<OpsArtifact>> {
+  return opsList(
+    "/api/v1/tenants/{tenant_id}/ops/artifacts",
+    tenantId,
+    query,
+    "无法读取 Artifact 列表",
+  );
+}
+
+export function listOpsDeadLetters(
+  tenantId: string,
+  query: OpsQuery = {},
+): Promise<OpsPage<OpsDeadLetter>> {
+  return opsList(
+    "/api/v1/tenants/{tenant_id}/ops/dead-letters",
+    tenantId,
+    query,
+    "无法读取死信列表",
+  );
+}
+
+export async function requeueDeadLetter(
+  tenantId: string,
+  deliveryId: string,
+): Promise<{ delivery_id: string; status: string }> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/ops/dead-letters/{delivery_id}/retries",
+    {
+      params: { path: { tenant_id: tenantId, delivery_id: deliveryId } },
+    },
+  );
+  if (!response.ok || !data) throw apiError(response, "无法重试死信", error);
+  return data as { delivery_id: string; status: string };
+}
+
+export async function listOpsOperations(
+  tenantId: string,
+): Promise<OpsOperation[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/ops/operations",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取异步操作", error);
+  return (data as unknown as { items: OpsOperation[] })?.items ?? [];
+}
+
+export type GenericRow = Record<string, unknown>;
+
+export async function getToolApprovals(
+  tenantId: string,
+): Promise<GenericRow[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/tool-approvals",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取审批列表", error);
+  return (data as unknown as { approvals: GenericRow[] })?.approvals ?? [];
+}
+
+export async function getAuditEvents(tenantId: string): Promise<GenericRow[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/audit-events",
+    { params: { path: { tenant_id: tenantId }, query: { limit: 50 } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取审计事件", error);
+  return (data as unknown as { events: GenericRow[] })?.events ?? [];
+}
+
+export async function getBudgets(tenantId: string): Promise<GenericRow[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/budgets",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取预算列表", error);
+  return (data as unknown as { items: GenericRow[] })?.items ?? [];
+}
+
+export async function getStorageMigrations(
+  tenantId: string,
+): Promise<GenericRow[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/storage-migrations",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取存储迁移列表", error);
+  return (data as unknown as { items: GenericRow[] })?.items ?? [];
+}
+
+export async function getKnowledgeBases(
+  tenantId: string,
+): Promise<GenericRow[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/knowledge-bases",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取知识库列表", error);
+  return (data as unknown as { items: GenericRow[] })?.items ?? [];
 }

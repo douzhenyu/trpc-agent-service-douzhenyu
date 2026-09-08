@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import hmac
 import json
 from dataclasses import dataclass, field
 from typing import Any
@@ -114,6 +115,7 @@ class RecordedSubmission:
     payload_hash: str
     application_id: str
     session_id: str
+    memory_policy_version: str
 
 
 class StaticSubmitter:
@@ -147,6 +149,7 @@ class StaticSubmitter:
             payload_hash=payload_hash,
             session_id=submission.session_id,
             application_id=str(submission.application_id),
+            memory_policy_version=submission.memory_policy_version,
         )
         return AgentExecutionAccepted(
             execution_id=UUID(EXECUTION),
@@ -242,6 +245,110 @@ def test_inbound_subject_is_scoped_to_tenant_and_binding() -> None:
     service = _inbound_service()
     subject = service.subject_for(binding=_binding(), external_user_id="user-9")
     assert subject == "im:FAKE:binding-1:user-9"
+
+
+def test_session_ids_are_opaque_and_isolated_by_scope_binding_and_tenant() -> None:
+    service = _inbound_service()
+    direct = {"external_user_id": "user-9", "session_key": "direct:user-9"}
+    group = {"external_user_id": "user-9", "session_key": "group:room-1"}
+    topic = {"external_user_id": "user-9", "session_key": "thread:room-1:topic-1"}
+    other_binding = _binding(external_bot_id="bot-78")
+    other_binding = other_binding.model_copy(update={"binding_id": "binding-2"})
+    other_tenant = _binding(tenant_id=TENANT_OTHER)
+
+    direct_session = service.session_for(binding=_binding(), event=direct)
+    assert direct_session.startswith("session:")
+    assert "user-9" not in direct_session
+    assert "binding-1" not in direct_session
+    assert direct_session == service.session_for(binding=_binding(), event=direct)
+    assert direct_session != service.session_for(binding=_binding(), event=group)
+    assert direct_session != service.session_for(binding=_binding(), event=topic)
+    assert direct_session != service.session_for(binding=other_binding, event=direct)
+    assert direct_session != service.session_for(binding=other_tenant, event=direct)
+
+
+def test_group_session_without_stable_chat_id_is_rejected() -> None:
+    service = _inbound_service()
+    with pytest.raises(InboundError, match="GROUP_SESSION_ID_REQUIRED"):
+        service.session_for(
+            binding=_binding(),
+            event={"external_user_id": "user-9", "session_key": "group:"},
+        )
+
+
+def test_group_submissions_use_the_no_private_memory_policy() -> None:
+    submitter = StaticSubmitter()
+    service = _inbound_service(submitter=submitter)
+    event = _event()
+    event["session_key"] = "group:room-1"
+    from trpc_service.channels.inbound import fake_channel_signature
+
+    event["signature"] = fake_channel_signature(
+        "fake-signing-material", "msg-1", "hello", "user-9", "group:room-1"
+    )
+
+    asyncio.run(service.ingest(tenant_id=TENANT, event=event))
+
+    # The submitter sees the execution contract, including the visibility gate.
+    submission = next(iter(submitter.submissions.values()))
+    assert submission.session_id.startswith("session:")
+    assert submission.memory_policy_version == "im-group-isolated-v1"
+
+
+def test_same_message_key_cannot_move_between_session_scopes() -> None:
+    service = _inbound_service()
+    direct = _event()
+    group = _event()
+    group["session_key"] = "group:room-1"
+    from trpc_service.channels.inbound import fake_channel_signature
+
+    group["signature"] = fake_channel_signature(
+        "fake-signing-material", "msg-1", "hello", "user-9", "group:room-1"
+    )
+
+    asyncio.run(service.ingest(tenant_id=TENANT, event=direct))
+    with pytest.raises(InboundError, match="INBOUND_PAYLOAD_CONFLICT"):
+        asyncio.run(service.ingest(tenant_id=TENANT, event=group))
+
+
+def test_pre_scope_direct_redelivery_remains_deduplicated_after_upgrade() -> None:
+    from trpc_service.channels.inbound import InboundMessage
+
+    store = MemoryInboundStore()
+    legacy_canonical = json.dumps(
+        {"text": "hello", "external_user_id": "user-9"},
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    legacy_hash = hashlib.sha256(legacy_canonical.encode()).hexdigest()
+    asyncio.run(
+        store.insert(
+            InboundMessage(
+                tenant_id=TENANT,
+                binding_id="binding-1",
+                message_key="msg-1",
+                payload_hash=legacy_hash,
+                external_user_id="user-9",
+                execution_id=EXECUTION,
+                release_id=RELEASE,
+                occurred_at="2026-01-01T00:00:00+00:00",
+            )
+        )
+    )
+    legacy_signature = (
+        "fake:"
+        + hmac.new(b"fake-signing-material", b"msg-1\nhello\nuser-9", hashlib.sha256).hexdigest()
+    )
+
+    accepted = asyncio.run(
+        _inbound_service(store=store).ingest(
+            tenant_id=TENANT, event=_event(signature=legacy_signature)
+        )
+    )
+
+    assert accepted.deduplicated is True
+    assert accepted.session_id.startswith("session:")
 
 
 # --- reply delivery state machine ---

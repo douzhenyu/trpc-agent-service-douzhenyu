@@ -1,0 +1,78 @@
+name: Upstream upgrade
+
+# Daily discovery of stable trpc-agent-py releases. An upgrade candidate
+# opens a lockfile-upgrade PR; production promotion of that PR stays gated
+# behind full regression, Staging smoke and the Rollout canary (see
+# docs/release-promotion-gates.md).
+
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    outputs:
+      upgrade_available: ${{ steps.check.outputs.upgrade_available }}
+      candidate: ${{ steps.check.outputs.candidate }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.28"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - id: check
+        run: |
+          output="$(uv run python scripts/check_upstream_release.py \
+            --current "${PINNED_VERSION}")"
+          echo "$output"
+          echo "$output" >> "${GITHUB_OUTPUT}"
+        env:
+          PINNED_VERSION: "1.1.19"
+
+  upgrade-pr:
+    runs-on: ubuntu-latest
+    needs: discover
+    if: needs.discover.outputs.upgrade_available == 'true'
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.11.28"
+          enable-cache: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Bump the pinned SDK and refresh the lockfile
+        run: |
+          uv add "trpc-agent-py==${{ needs.discover.outputs.candidate }}"
+      - name: Keep the runtime pin in sync
+        run: |
+          python_version="${{ needs.discover.outputs.candidate }}"
+          sed -i "s/^PINNED_TRPC_AGENT_VERSION = .*/PINNED_TRPC_AGENT_VERSION = \"${python_version}\"/" trpc_service/version.py
+      - name: Open the lockfile-upgrade PR
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: upstream/trpc-agent-py-${{ needs.discover.outputs.candidate }}
+          title: "chore: upgrade trpc-agent-py to ${{ needs.discover.outputs.candidate }}"
+          body: |
+            Automated daily upstream check found stable release
+            [${{ needs.discover.outputs.candidate }}](https://pypi.org/project/trpc-agent-py/).
+
+            Promotion ladder before production release (non-negotiable):
+            1. Full regression suite + coverage/type/contract gates on this PR
+            2. Staging environment smoke (docker compose + k8s smoke)
+            3. Production Rollout canary with eval-gate analysis pauses
+
+            See docs/release-promotion-gates.md.
+          labels: upstream-upgrade

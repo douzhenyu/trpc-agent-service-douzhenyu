@@ -72,6 +72,9 @@ wait_for_application() {
     -l app.kubernetes.io/component=database-migration >&2 || true
   kube logs -n platform-smoke \
     -l app.kubernetes.io/component=database-migration --all-containers=true >&2 || true
+  kube logs -n platform-smoke \
+    -l "app.kubernetes.io/component=${application#smoke-}" --all-containers=true \
+    --tail=60 >&2 || true
   return 1
 }
 
@@ -157,12 +160,17 @@ cluster_created=true
 kube_apply_remote \
   https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/experimental-install.yaml \
   --server-side
+kube create namespace istio-egress
 istioctl install --context "${cluster_context}" --set profile=ambient \
   --set values.pilot.env.ENABLE_INGRESS_WAYPOINT_ROUTING=true \
+  --set "components.egressGateways[0].name=istio-egressgateway" \
+  --set "components.egressGateways[0].namespace=istio-egress" \
+  --set "components.egressGateways[0].enabled=true" \
   --skip-confirmation
 kube rollout status deployment/istiod -n istio-system --timeout=240s
 kube rollout status daemonset/istio-cni-node -n istio-system --timeout=240s
 kube rollout status daemonset/ztunnel -n istio-system --timeout=240s
+kube rollout status deployment/istio-egressgateway -n istio-egress --timeout=240s
 
 docker build --quiet -t local/trpc-agent-platform:smoke -f Dockerfile.admin-api .
 docker build --quiet -t local/trpc-agent-web-console:smoke web-console

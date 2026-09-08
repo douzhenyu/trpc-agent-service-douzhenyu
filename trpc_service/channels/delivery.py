@@ -310,6 +310,22 @@ class ReplyDeliveryService:
         delivery = await self._transition(delivery, DeliveryState.QUEUED)
         return await self.run(delivery_id, tenant_id=tenant_id, max_attempts=delivery.attempts + 1)
 
+    async def update(self, delivery_id: str, *, tenant_id: str, content: str) -> ReplyDelivery:
+        """Queue a new representation under the same logical delivery id.
+
+        Updatable channel cards use this after their processing placeholder has
+        landed.  Retaining ``delivery_id`` lets the provider update that card
+        instead of creating another user-visible message; terminal failures
+        remain immutable and must use the dead-letter recovery path.
+        """
+
+        delivery = await self._load(tenant_id, delivery_id)
+        if delivery.status is not DeliveryState.DELIVERED:
+            raise ReplyDeliveryError("DELIVERY_NOT_UPDATABLE")
+        updated = delivery.model_copy(update={"content": content, "status": DeliveryState.QUEUED})
+        await self._store.save_delivery(updated)
+        return updated
+
     async def _load(self, tenant_id: str, delivery_id: str) -> ReplyDelivery:
         delivery = await self._store.get_delivery(tenant_id, delivery_id)
         if delivery is None:

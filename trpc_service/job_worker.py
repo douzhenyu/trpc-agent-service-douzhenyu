@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import hmac
+import importlib
 import json
 import logging
 import math
@@ -26,6 +27,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.auth import Principal
 from trpc_service.admin_api.database import Connection, Database
+from trpc_service.artifacts import ArtifactLifecycleWorker
+from trpc_service.content_lifecycle import ContentDeletionWorker, DeletionExecutor, RetentionSweep
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import (
     JOB_WORKER_SOURCE,
     MEMORY_INVALIDATED_EVENT,
@@ -36,6 +40,10 @@ from trpc_service.execution_bus import (
     session_partition_key,
 )
 from trpc_service.ids import uuid7
+from trpc_service.memory_access import IM_GROUP_MEMORY_POLICY
+from trpc_service.storage_migration import StorageMigrationAdapterFactory, StorageMigrationExecutor
+from trpc_service.storage_migration_worker import StorageMigrationWorker
+from trpc_service.telemetry import install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
@@ -177,42 +185,6 @@ class SummaryMemoryJobWorker:
             tenant_id, memory_id, actor=actor, reason=reason, action="memory.corrected"
         )
 
-    async def delete_memory(
-        self, tenant_id: str, memory_id: UUID, *, actor: str, reason: str
-    ) -> bool:
-        """Erase derived Memory while preserving its source Session Events and audit evidence."""
-
-        if not 1 <= len(actor) <= 256 or not 1 <= len(reason) <= 512:
-            raise ValueError("MEMORY_CORRECTION_INVALID")
-        parsed_tenant_id = UUID(tenant_id)
-        async with self._database.tenant_transaction(parsed_tenant_id) as connection:
-            deleted = await connection.fetchrow(
-                """DELETE FROM tenant.memory_record WHERE tenant_id=$1 AND id=$2
-                RETURNING source_session_id""",
-                parsed_tenant_id,
-                memory_id,
-            )
-            if deleted is None:
-                return False
-            await _publish_memory_invalidation(
-                connection,
-                tenant_id=parsed_tenant_id,
-                memory_id=str(memory_id),
-                session_id=str(deleted["source_session_id"]),
-                reason="DELETED",
-            )
-            await insert_audit(
-                connection,
-                Principal(subject=actor, auth_method="oidc", roles=frozenset()),
-                "memory.deleted",
-                "ALLOW",
-                target_type="memory",
-                target_id=str(memory_id),
-                tenant_id=parsed_tenant_id,
-                details={"reason": reason},
-            )
-        return True
-
     async def _invalidate_memory(
         self, tenant_id: str, memory_id: UUID, *, actor: str, reason: str, action: str
     ) -> bool:
@@ -281,9 +253,7 @@ async def _projection_execution(
     return execution
 
 
-def _assert_complete(
-    events: list[Any], *, expected_count: int, first_sequence: int
-) -> None:
+def _assert_complete(events: list[Any], *, expected_count: int, first_sequence: int) -> None:
     if len(events) != expected_count or int(events[0]["sequence"]) != first_sequence:
         raise ValueError("SESSION_PROJECTION_SOURCE_INCOMPLETE")
 
@@ -295,10 +265,11 @@ async def _upsert_summary(
     event_range: SessionEventRange,
     events: list[Any],
 ) -> None:
+    source_from_version, content = _summary_projection(events)
     await connection.execute(
         """INSERT INTO tenant.session_summary
         (tenant_id,session_id,source_from_version,source_version,content)
-        VALUES ($1,$2,1,$3,$4)
+        VALUES ($1,$2,$3,$4,$5)
         ON CONFLICT (tenant_id,session_id) DO UPDATE SET
           source_from_version=EXCLUDED.source_from_version,
           source_version=EXCLUDED.source_version,
@@ -307,8 +278,9 @@ async def _upsert_summary(
         WHERE tenant.session_summary.source_version < EXCLUDED.source_version""",
         tenant_id,
         session_id,
+        source_from_version,
         event_range.to_version,
-        _projection_content(events),
+        content,
     )
 
 
@@ -321,7 +293,7 @@ async def _insert_memory_projection(
     events: list[Any],
 ) -> None:
     subject_id = execution["subject_id"]
-    if subject_id is None:
+    if subject_id is None or execution["memory_policy_version"] == IM_GROUP_MEMORY_POLICY:
         return
     memory_id = await connection.fetchval(
         """INSERT INTO tenant.memory_record
@@ -350,18 +322,46 @@ async def _insert_memory_projection(
 
 
 def _projection_content(events: list[Any]) -> str:
-    parts: list[str] = []
-    for event in events:
-        payload = event["payload"]
-        value = payload if isinstance(payload, dict) else json.loads(str(payload))
-        content = value.get("content")
-        if content is None:
-            choices = value.get("completion", {}).get("choices", [])
-            if choices and isinstance(choices[0], dict):
-                content = choices[0].get("message", {}).get("content")
-        if content:
-            parts.append(f"{event['kind']}: {content}")
+    parts = [content for event in events if (content := _event_content(event)) is not None]
     return "\n".join(parts)[:16000] or "Session Event projection contained no textual content."
+
+
+def _event_content(event: Any) -> str | None:
+    payload = event["payload"]
+    value = payload if isinstance(payload, dict) else json.loads(str(payload))
+    content = value.get("content")
+    if content is None:
+        choices = value.get("completion", {}).get("choices", [])
+        if choices and isinstance(choices[0], dict):
+            content = choices[0].get("message", {}).get("content")
+    return f"{event['kind']}: {content}" if content else None
+
+
+def _summary_projection(events: list[Any]) -> tuple[int, str]:
+    """Keep the newest complete Event range that fits in Summary storage."""
+
+    fragments: list[tuple[int, str]] = []
+    for event in events:
+        content = _event_content(event)
+        if content is not None:
+            fragments.append((int(event["sequence"]), content))
+    if not fragments:
+        return int(events[0]["sequence"]), "Session Event projection contained no textual content."
+
+    selected: list[tuple[int, str]] = []
+    remaining = 16000
+    for sequence, content in reversed(fragments):
+        separator = 1 if selected else 0
+        available = remaining - separator
+        if available <= 0:
+            break
+        if len(content) > available:
+            selected.append((sequence, content[-available:]))
+            break
+        selected.append((sequence, content))
+        remaining -= len(content) + separator
+    selected.reverse()
+    return selected[0][0], "\n".join(content for _, content in selected)
 
 
 async def _publish_memory_invalidation(
@@ -521,6 +521,10 @@ class JobWorkerSettings(BaseSettings):
 
     database_url: str = ""
     projection_poll_interval_seconds: float = 0.5
+    artifact_lifecycle_interval_seconds: float = 3600
+    artifact_access_key: str = ""
+    content_deletion_enabled: bool = False
+    content_deletion_executor_factory: str = ""
     operator_token: str = ""
 
     def validate_runtime(self) -> None:
@@ -530,20 +534,55 @@ class JobWorkerSettings(BaseSettings):
             raise RuntimeError(
                 "Job Worker configuration is invalid: PROJECTION_POLL_INTERVAL_SECONDS"
             )
+        if self.artifact_lifecycle_interval_seconds <= 0:
+            raise RuntimeError(
+                "Job Worker configuration is invalid: ARTIFACT_LIFECYCLE_INTERVAL_SECONDS"
+            )
+        if self.content_deletion_enabled and not self.content_deletion_executor_factory:
+            raise RuntimeError(
+                "Job Worker configuration is incomplete: CONTENT_DELETION_EXECUTOR_FACTORY"
+            )
 
 
-def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
+def create_app(
+    settings: JobWorkerSettings | None = None,
+    *,
+    deletion_executor: DeletionExecutor | None = None,
+    storage_migration_factory: StorageMigrationAdapterFactory | None = None,
+) -> FastAPI:
     configured = settings or JobWorkerSettings()
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         configured.validate_runtime()
+        resolved_deletion_executor = deletion_executor
+        if resolved_deletion_executor is None and configured.content_deletion_enabled:
+            resolved_deletion_executor = _load_deletion_executor(
+                configured.content_deletion_executor_factory, configured.database_url
+            )
         database = Database(configured.database_url)
         await database.open()
         projections = SummaryMemoryJobWorker(database)
         consumer = SessionProjectionConsumer(database, projections)
         application.state.projections = projections
         application.state.consumer = consumer
+        lifecycle = (
+            ArtifactLifecycleWorker(database, access_key=configured.artifact_access_key.encode())
+            if configured.artifact_access_key
+            else None
+        )
+        deletion_lifecycle = (
+            ContentDeletionWorker(database, resolved_deletion_executor)
+            if resolved_deletion_executor is not None
+            else None
+        )
+        retention_lifecycle = RetentionSweep(database)
+        migration_worker = (
+            StorageMigrationWorker(database, StorageMigrationExecutor(storage_migration_factory))
+            if storage_migration_factory is not None
+            else None
+        )
+        application.state.storage_migration_worker = migration_worker
 
         async def consume() -> None:
             while True:
@@ -556,10 +595,73 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
                     await asyncio.sleep(configured.projection_poll_interval_seconds)
 
         consume_task = asyncio.create_task(consume())
+
+        async def purge_artifacts() -> None:
+            assert lifecycle is not None
+            while True:
+                try:
+                    await lifecycle.run_once()
+                except Exception:
+                    LOGGER.exception("artifact lifecycle worker failed")
+                await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
+
+        lifecycle_task = asyncio.create_task(purge_artifacts()) if lifecycle is not None else None
+
+        async def erase_requested_content() -> None:
+            assert deletion_lifecycle is not None
+            while True:
+                try:
+                    await deletion_lifecycle.run_once()
+                except Exception:
+                    LOGGER.exception("content deletion lifecycle worker failed")
+                await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
+
+        deletion_task = (
+            asyncio.create_task(erase_requested_content())
+            if deletion_lifecycle is not None
+            else None
+        )
+
+        async def purge_expired_content() -> None:
+            while True:
+                try:
+                    await retention_lifecycle.run_once()
+                except Exception:
+                    LOGGER.exception("content retention lifecycle worker failed")
+                await asyncio.sleep(configured.artifact_lifecycle_interval_seconds)
+
+        retention_task = asyncio.create_task(purge_expired_content())
+
+        async def migrate_storage() -> None:
+            assert migration_worker is not None
+            while True:
+                progressed = False
+                try:
+                    async with database.transaction() as connection:
+                        tenants = await connection.fetch(
+                            "SELECT id FROM platform.tenant WHERE status='ACTIVE' ORDER BY id"
+                        )
+                    for tenant in tenants:
+                        progressed = await migration_worker.run_once(tenant["id"]) or progressed
+                except Exception:
+                    LOGGER.exception("storage migration worker failed")
+                if not progressed:
+                    await asyncio.sleep(configured.projection_poll_interval_seconds)
+
+        migration_task = (
+            asyncio.create_task(migrate_storage()) if migration_worker is not None else None
+        )
         try:
             yield
         finally:
             consume_task.cancel()
+            if lifecycle_task is not None:
+                lifecycle_task.cancel()
+            if deletion_task is not None:
+                deletion_task.cancel()
+            retention_task.cancel()
+            if migration_task is not None:
+                migration_task.cancel()
             await database.close()
 
     application = FastAPI(title="tRPC-Agent Platform job-worker", lifespan=lifespan)
@@ -582,30 +684,23 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
 
     @application.get("/internal/v1/projection-metrics", response_model=ProjectionMetrics)
     async def projection_metrics(
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> ProjectionMetrics:
         require_operator(operation_token)
         consumer = application.state.consumer
         assert isinstance(consumer, SessionProjectionConsumer)
         return await consumer.metrics()
 
-    async def invalidate(
+    async def correct_memory(
         tenant_id: UUID,
         memory_id: UUID,
         payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
-        *,
-        action: str,
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> dict[str, bool]:
         require_operator(operation_token)
         projections = application.state.projections
         assert isinstance(projections, SummaryMemoryJobWorker)
-        operation = projections.correct_memory if action == "correct" else projections.delete_memory
-        invalidated = await operation(
+        invalidated = await projections.correct_memory(
             str(tenant_id), memory_id, actor=payload.actor, reason=payload.reason
         )
         if not invalidated:
@@ -617,26 +712,32 @@ def create_app(settings: JobWorkerSettings | None = None) -> FastAPI:
         tenant_id: UUID,
         memory_id: UUID,
         payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
+        operation_token: str | None = Header(default=None, alias="X-Job-Worker-Operator-Token"),
     ) -> dict[str, bool]:
-        return await invalidate(
-            tenant_id, memory_id, payload, operation_token, action="correct"
-        )
+        return await correct_memory(tenant_id, memory_id, payload, operation_token)
 
-    @application.post("/internal/v1/tenants/{tenant_id}/memories/{memory_id}/deletions")
-    async def delete_memory_endpoint(
-        tenant_id: UUID,
-        memory_id: UUID,
-        payload: MemoryInvalidationRequest,
-        operation_token: str | None = Header(
-            default=None, alias="X-Job-Worker-Operator-Token"
-        ),
-    ) -> dict[str, bool]:
-        return await invalidate(tenant_id, memory_id, payload, operation_token, action="delete")
-
+    register_degradations_endpoint(application)
+    install_telemetry(application, "job-worker")
     return application
+
+
+def _load_deletion_executor(factory_path: str, database_url: str) -> DeletionExecutor:
+    """Load the deployment-owned backend binding before the worker starts.
+
+    This is deliberately mandatory in production: starting without all six
+    erasure adapters would otherwise accept requests that can never complete.
+    """
+
+    module_name, separator, attribute = factory_path.partition(":")
+    if not separator or not module_name or not attribute:
+        raise RuntimeError("CONTENT_DELETION_EXECUTOR_FACTORY_INVALID")
+    factory = getattr(importlib.import_module(module_name), attribute, None)
+    if not callable(factory):
+        raise RuntimeError("CONTENT_DELETION_EXECUTOR_FACTORY_INVALID")
+    executor = factory(database_url)
+    if not isinstance(executor, DeletionExecutor):
+        raise RuntimeError("CONTENT_DELETION_EXECUTOR_FACTORY_INVALID")
+    return executor
 
 
 app = create_app()

@@ -1,0 +1,74 @@
+groups:
+  - name: trpc-platform-slo-burn-rate
+    rules:
+      - alert: DataPlaneSLOBurnRateFast
+        expr: >
+          (
+            sum(rate(platform_http_requests_total{service=~"agent-gateway|channel-gateway",status=~"5.."}[5m]))
+            / sum(rate(platform_http_requests_total{service=~"agent-gateway|channel-gateway"}[5m]))
+          ) / 0.0005 > 14.4
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 数据面 5m 错误预算燃烧率超过 14.4 倍（2% 预算/小时）
+      - alert: DataPlaneSLOBurnRateSlow
+        expr: >
+          (
+            sum(rate(platform_http_requests_total{service=~"agent-gateway|channel-gateway",status=~"5.."}[30m]))
+            / sum(rate(platform_http_requests_total{service=~"agent-gateway|channel-gateway"}[30m]))
+          ) / 0.0005 > 6
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 数据面 30m 错误预算燃烧率超过 6 倍（5% 预算/6 小时）
+      - alert: ControlPlaneSLOBurnRateFast
+        expr: >
+          (
+            sum(rate(platform_http_requests_total{service="admin-api",status=~"5.."}[5m]))
+            / sum(rate(platform_http_requests_total{service="admin-api"}[5m]))
+          ) / 0.001 > 14.4
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: 控制面 5m 错误预算燃烧率超过 14.4 倍
+      - alert: ControlPlaneSLOBurnRateSlow
+        expr: >
+          (
+            sum(rate(platform_http_requests_total{service="admin-api",status=~"5.."}[30m]))
+            / sum(rate(platform_http_requests_total{service="admin-api"}[30m]))
+          ) / 0.001 > 6
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: 控制面 30m 错误预算燃烧率超过 6 倍
+  - name: trpc-platform-capacity
+    rules:
+      - alert: AdmissionOverload
+        expr: >
+          sum(rate(platform_admission_decisions_total{decision="DENIED"}[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 网关在持续负载下拒绝请求，容量已饱和
+  - name: trpc-platform-pipeline
+    rules:
+      - alert: ExecutionPipelineFailures
+        expr: >
+          sum(rate(platform_execution_outcomes_total{outcome="FAILED"}[10m])) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: 执行管线持续出现失败结果
+      - alert: PlatformUnitMissingMetrics
+        expr: absent(up{job=~"trpc-agent-platform-.*"}) == 1
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: 平台单元指标抓取目标全部缺失

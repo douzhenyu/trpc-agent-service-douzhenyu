@@ -32,6 +32,7 @@ from trpc_service.budgets import (
     estimate_cost_micros,
     estimate_tokens,
 )
+from trpc_service.degradation import DegradationDomain, degradation_registry
 from trpc_service.governance import (
     DataClassification,
     highest_classification,
@@ -468,9 +469,18 @@ class LLMGateway:
                 failure_recorded = True
                 continue
             self._record_success(key)
+            fallback_used = profile.alias != request.model_alias
+            if fallback_used:
+                degradation_registry().degrade(
+                    DegradationDomain.MODEL,
+                    "LLM_FALLBACK_USED",
+                    detail=f"primary={request.model_alias} served_by={profile.alias}",
+                )
+            else:
+                degradation_registry().restore(DegradationDomain.MODEL, "PRIMARY_RECOVERED")
             result = GatewayResult(
                 model_alias=profile.alias,
-                fallback_used=profile.alias != request.model_alias,
+                fallback_used=fallback_used,
                 completion=completion,
             )
             self._record_event(

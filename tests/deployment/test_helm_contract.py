@@ -152,11 +152,41 @@ def test_smoke_database_fixture_satisfies_admin_api_first_install() -> None:
     assert container["imagePullPolicy"] == "Never"
     database_policy = resources[("NetworkPolicy", "smoke-postgres")]
     assert {"ports": [{"port": 15008, "protocol": "TCP"}]} in database_policy["spec"]["ingress"]
+    database_clients = database_policy["spec"]["ingress"][1]["from"][0]["podSelector"][
+        "matchExpressions"
+    ][0]
+    assert database_clients == {
+        "key": "trpc-agent-platform.io/network-profile",
+        "operator": "In",
+        "values": [
+            "admin-api",
+            "agent-gateway",
+            "agent-worker",
+            "channel-gateway",
+            "database-migration",
+            "job-worker",
+        ],
+    }
     assert set(resources[("Secret", "trpc-platform-database-admin")]["stringData"]) == {
         "url",
         "app-password",
     }
     assert set(resources[("Secret", "trpc-platform-database-app")]["stringData"]) == {"url"}
+    assert set(resources[("Secret", "trpc-platform-artifact-access")]["stringData"]) == {"value"}
+    rendered_workloads = {
+        manifest["metadata"]["labels"]["app.kubernetes.io/component"]: manifest
+        for manifest in render_chart()
+        if manifest["kind"] == "Rollout"
+    }
+    for component in ("channel-gateway", "job-worker"):
+        container = rendered_workloads[component]["spec"]["template"]["spec"]["containers"][0]
+        artifact_access_key = next(
+            item for item in container["env"] if item["name"] == "ARTIFACT_ACCESS_KEY"
+        )
+        assert artifact_access_key["valueFrom"]["secretKeyRef"] == {
+            "name": "trpc-platform-artifact-access",
+            "key": "value",
+        }
     assert {
         "SESSION_SIGNING_KEY",
         "OIDC_ENABLED",
@@ -179,9 +209,50 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
             {"port": 15008, "protocol": "TCP"},
         ],
     }
-    assert expected_rule in policies["database-migration"]["spec"]["egress"]
-    assert expected_rule in policies["admin-api"]["spec"]["egress"]
+    for component in (
+        "admin-api",
+        "agent-gateway",
+        "agent-worker",
+        "channel-gateway",
+        "database-migration",
+        "job-worker",
+    ):
+        assert expected_rule in policies[component]["spec"]["egress"]
     assert expected_rule not in policies["web-console"]["spec"]["egress"]
+
+    database_workloads = {
+        manifest["metadata"]["labels"]["app.kubernetes.io/component"]
+        for manifest in manifests
+        if manifest["kind"] in {"Deployment", "Rollout"}
+        and any(
+            env["name"] == "DATABASE_URL"
+            for env in manifest["spec"]["template"]["spec"]["containers"][0].get("env", [])
+        )
+    }
+    direct_database_profiles = {
+        profile for profile, policy in policies.items() if expected_rule in policy["spec"]["egress"]
+    }
+    assert direct_database_profiles == database_workloads | {"database-migration"}
+
+    smoke_documents = list(yaml.safe_load_all(SMOKE_DATABASE_PATH.read_text()))
+    smoke_database_policy = next(
+        document
+        for document in smoke_documents
+        if document["kind"] == "NetworkPolicy" and document["metadata"]["name"] == "smoke-postgres"
+    )
+    smoke_database_clients = smoke_database_policy["spec"]["ingress"][1]["from"][0]["podSelector"][
+        "matchExpressions"
+    ][0]["values"]
+    assert set(smoke_database_clients) == direct_database_profiles
+
+    disabled_policies = {
+        manifest["metadata"]["labels"].get("app.kubernetes.io/component"): manifest
+        for manifest in render_chart()
+        if manifest["kind"] == "NetworkPolicy"
+    }
+    assert all(
+        expected_rule not in policy["spec"]["egress"] for policy in disabled_policies.values()
+    )
 
     waypoint_rule = {
         "to": [
@@ -194,7 +265,14 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
         "ports": [{"port": 15008, "protocol": "TCP"}],
     }
     assert waypoint_rule in policies["database-migration"]["spec"]["egress"]
-    assert waypoint_rule in policies["admin-api"]["spec"]["egress"]
+    for component in (
+        "admin-api",
+        "agent-gateway",
+        "agent-worker",
+        "channel-gateway",
+        "job-worker",
+    ):
+        assert waypoint_rule in policies[component]["spec"]["egress"]
 
     waypoint = next(
         manifest
@@ -327,7 +405,15 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
             manifest["metadata"]["labels"].get("app.kubernetes.io/component"),
         ): manifest
         for manifest in manifests
-        if manifest["kind"] in {"Deployment", "Rollout", "ServiceAccount", "NetworkPolicy"}
+        if manifest["kind"]
+        in {
+            "Deployment",
+            "Rollout",
+            "ServiceAccount",
+            "NetworkPolicy",
+            "ServiceEntry",
+            "VirtualService",
+        }
     }
 
     for unit in EXPECTED_UNITS:
@@ -338,7 +424,7 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         network_policy = resources[("NetworkPolicy", unit)]
 
         assert pod_spec["serviceAccountName"] == service_account["metadata"]["name"]
-        expects_kubernetes_auth = unit in {"agent-worker", "agent-gateway"}
+        expects_kubernetes_auth = unit in {"agent-worker", "agent-gateway", "channel-gateway"}
         assert service_account["automountServiceAccountToken"] is expects_kubernetes_auth
         assert pod_spec["automountServiceAccountToken"] is expects_kubernetes_auth
         assert pod_spec["securityContext"] == {
@@ -383,6 +469,29 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         "VAULT_URL",
         "VAULT_KUBERNETES_ROLE",
         "OPA_URL",
+    }
+    channel_gateway = resources[("Rollout", "channel-gateway")]
+    channel_container = channel_gateway["spec"]["template"]["spec"]["containers"][0]
+    assert {item["name"] for item in channel_container["env"]} >= {
+        "DATABASE_URL",
+        "VAULT_URL",
+        "VAULT_KUBERNETES_ROLE",
+        "FEISHU_LONG_CONNECTIONS",
+        "GATEWAY_INSTANCE_ID",
+    }
+    feishu_entry = resources[("ServiceEntry", "channel-gateway")]
+    assert feishu_entry["spec"] == {
+        "exportTo": ["."],
+        "hosts": ["open.feishu.cn"],
+        "location": "MESH_EXTERNAL",
+        "ports": [{"number": 443, "name": "tls-feishu", "protocol": "TLS"}],
+        "resolution": "DNS",
+    }
+    feishu_route = resources[("VirtualService", "channel-gateway")]
+    assert feishu_route["spec"]["gateways"] == ["mesh"]
+    assert feishu_route["spec"]["tls"][0]["route"][0]["destination"] == {
+        "host": "istio-egressgateway.istio-egress.svc.cluster.local",
+        "port": {"number": 443},
     }
 
 

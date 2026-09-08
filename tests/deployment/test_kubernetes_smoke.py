@@ -55,6 +55,18 @@ def test_smoke_timeout_allows_the_shell_exit_trap_to_clean_up(tmp_path: Path) ->
     assert marker.exists()
 
 
+def test_smoke_provisions_the_shared_egress_gateway_before_platform_sync() -> None:
+    script = SMOKE_SCRIPT.read_text()
+
+    assert "kube create namespace istio-egress" in script
+    assert '--set "components.egressGateways[0].name=istio-egressgateway"' in script
+    assert '--set "components.egressGateways[0].namespace=istio-egress"' in script
+    assert "kube rollout status deployment/istio-egressgateway -n istio-egress" in script
+    assert script.index("kube create namespace istio-egress") < script.index(
+        "tests/deployment/fixtures/argocd-smoke.yaml"
+    )
+
+
 @pytest.mark.smoke
 def test_real_ambient_mesh_enforces_zero_trust_and_preserves_safe_rollouts() -> None:
     if os.environ.get("RUN_KUBERNETES_SMOKE") != "1":

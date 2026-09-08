@@ -10,6 +10,12 @@ Kubernetes 是唯一正式支持的生产运行基座。Docker Compose 仍只用
 | Web Console | Deployment | 2 | `/` | `trpc-agent-platform-web-console` |
 | Agent Gateway | Rollout | 3 | `/health/ready` | `trpc-agent-platform-agent-gateway` |
 | Channel Gateway | Rollout | 3 | `/health/ready` | `trpc-agent-platform-channel-gateway` |
+
+飞书长连接通过 `channelGateway.feishuLongConnections` 声明要启动的
+`tenant_id` 与 `app_id`；该列表不含凭据。Channel Gateway 使用自身的
+Kubernetes ServiceAccount 登录 Vault，并从对应 Channel Binding 的
+`secret_ref` 路径读取 `#app-secret`（以及 Webhook/回复所需的
+`#verification-token`、`#tenant-access-token`）。
 | Agent Worker | Rollout | 3 | `/health/ready` | `trpc-agent-platform-agent-worker` |
 | Job Worker | Rollout | 2 | `/health/ready` | `trpc-agent-platform-job-worker` |
 
@@ -23,7 +29,11 @@ ApplicationSet 创建生产 namespace 时会写入 `istio.io/dataplane-mode=ambi
 
 每个单元有两层默认拒绝：共享 NetworkPolicy 先兜底隔离所有平台 Pod（包括 Sync 迁移任务），单元 NetworkPolicy 再在 L4 只开放 Ambient HBONE `15008`、Ambient 固定 kubelet 探针地址、DNS、声明出站所需的 Waypoint HBONE 通道以及受控 egress gateway；Istio AuthorizationPolicy 在 ztunnel 只接受 Waypoint 身份，在 Waypoint 再按调用方 ServiceAccount、HTTP 方法和路径放行。迁移任务在声明数据库出口前保持完全隔离。Web Console 可按声明的 `GET`、`POST`、`PUT`、`PATCH` 与 `DELETE /api/v1/*` 管理接口调用 Admin API，但不能访问文档端点。平台策略拒绝携带裸 `x-tenant-id` 的内部请求；后续业务接口必须从短期签名凭证验证租户上下文，不能信任调用方自报的 tenant id。
 
-`zeroTrust.egressGateway` 指向唯一允许的外部出口。当前六类骨架没有声明任何外部依赖，因此 Chart 只预留到 gateway 的 L4 通道，不创建宽泛的 ServiceEntry 或透明外部路由；集群必须在外部依赖接入时部署与该 namespace、Pod 标签和 HBONE 端口匹配的 egress gateway，并在平台外的网格基础设施层按获批目的地配置 ServiceEntry/路由和审计策略。缺失这些资源时外部连接按设计失败关闭，直接访问公网始终不在工作负载 NetworkPolicy 的允许列表中。
+`zeroTrust.egressGateway` 指向唯一允许的外部出口。启用飞书后，Chart 以
+`channelGateway.feishuEgress.hosts` 生成仅限获批域名的 `ServiceEntry`，并用
+TLS `VirtualService` 将 443 流量送至共享 egress gateway；默认只允许
+`open.feishu.cn`。集群的该 gateway 必须为这些 SNI 域名提供 TLS passthrough、
+审计和上游路由；未声明的域名、缺失 route 或直接访问公网都会失败关闭。
 
 ## 前置条件
 

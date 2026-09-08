@@ -44,7 +44,7 @@ CREATE INDEX memory_record_subject_visible_idx
   ON tenant.memory_record (tenant_id, subject_id, created_at DESC) WHERE is_valid;
 
 -- Durable acknowledgement state for the Job Worker consumer. A failed
--- projection is retried from the published Outbox record; an already written
+-- projection is retried from the published Outbox record, and an already written
 -- projection can safely be replayed because Summary and Memory are idempotent.
 CREATE TABLE platform.session_projection_delivery (
   outbox_id uuid NOT NULL REFERENCES platform.outbox_record(id) ON DELETE CASCADE,

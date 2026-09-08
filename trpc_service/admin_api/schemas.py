@@ -7,6 +7,10 @@ from uuid import UUID
 
 from pydantic import AfterValidator, BaseModel, ConfigDict, Field
 
+from trpc_service.content_lifecycle import RetentionPolicy
+from trpc_service.storage import StorageBackend
+from trpc_service.storage_migration import StorageMigrationState
+
 
 class HealthResponse(BaseModel):
     """Stable public health contract consumed by the Web Console."""
@@ -106,6 +110,151 @@ ModelEndpoint = Annotated[
 ]
 ModelRegion = Annotated[str, Field(pattern=r"^[a-z][a-z0-9-]{1,62}$", max_length=63)]
 DataClassification = Literal["PUBLIC", "INTERNAL", "CONFIDENTIAL", "RESTRICTED"]
+
+
+class StorageProfileCreate(BaseModel):
+    alias: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    classification: DataClassification
+    worker_pool: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    encryption_key_ref: SecretReference
+    backends: list[StorageBackend] = Field(min_length=4, max_length=5)
+    activate: bool = False
+
+
+class StorageProfileResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    alias: str
+    classification: DataClassification
+    worker_pool: str
+    encryption_key_ref: SecretReference
+    backends: list[StorageBackend]
+    active: bool
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class StorageProfileList(BaseModel):
+    items: list[StorageProfileResponse]
+
+
+class RetentionPolicyUpdate(RetentionPolicy):
+    """A complete proposed policy; partial writes must not reset other limits."""
+
+    inbound_payload_days: int
+    session_days: int
+    memory_days: int
+    artifact_days: int
+    idempotency_tombstone_days: int
+    audit_days: int
+    backup_days: int
+
+
+class RetentionPolicyResponse(RetentionPolicy):
+    tenant_id: UUID
+    version: int
+    updated_at: datetime
+
+
+class RetentionPolicyChangeResponse(RetentionPolicy):
+    id: UUID
+    tenant_id: UUID
+    status: Literal["PENDING_APPROVAL", "APPROVED"]
+    initiator: str
+    approver: str | None
+    created_at: datetime
+    approved_at: datetime | None
+
+
+class LegalHoldCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class LegalHoldResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    scope: Literal["TENANT"]
+    reason: str
+    status: Literal["PENDING_APPROVAL", "ACTIVE", "RELEASED"]
+    initiator: str
+    approver: str | None
+    created_at: datetime
+    activated_at: datetime | None
+    released_at: datetime | None
+
+
+class DeletionRequestCreate(BaseModel):
+    reason: str = Field(min_length=1, max_length=1000)
+
+
+class DeletionProofResponse(BaseModel):
+    backend: str
+    deleted_count: int
+    verified: bool
+    evidence_digest: str
+    completed_at: datetime
+
+
+class DeletionRequestResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    requested_by: str
+    reason: str
+    status: str
+    primary_due_at: datetime
+    backup_due_at: datetime
+    attempts: int
+    next_attempt_at: datetime | None
+    last_error: str | None
+    created_at: datetime
+    completed_at: datetime | None
+    proofs: list[DeletionProofResponse] = Field(default_factory=list)
+
+
+class StorageMigrationCreate(BaseModel):
+    target_profile_id: UUID
+    observation_seconds: int = Field(default=300, ge=60, le=86_400)
+
+
+class StorageMigrationApproval(BaseModel):
+    decision: Literal["APPROVE", "DENY"]
+
+
+class StorageMigrationRollbackApproval(BaseModel):
+    decision: Literal["REQUEST", "APPROVE", "DENY"]
+
+
+class StorageMigrationAdvance(BaseModel):
+    """Operator-only control-plane transition; workers own data-plane phases."""
+
+    operation: Literal["SWITCH", "COMPLETE"]
+
+
+class StorageMigrationResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    source_profile_id: UUID
+    target_profile_id: UUID
+    state: StorageMigrationState
+    approval_status: Literal["PENDING", "APPROVED", "DENIED"]
+    requested_by: str
+    approved_by: str | None
+    approved_at: datetime | None
+    rollback_approval_status: Literal["NONE", "PENDING", "APPROVED", "DENIED"]
+    rollback_requested_by: str | None
+    rollback_approved_by: str | None
+    rollback_approved_at: datetime | None
+    validation: dict[str, Any]
+    observation_seconds: int
+    observation_ends_at: datetime | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class StorageMigrationList(BaseModel):
+    items: list[StorageMigrationResponse]
 
 
 class ModelProfileCreate(BaseModel):
@@ -215,7 +364,7 @@ class AgentReleaseList(BaseModel):
 
 
 DeploymentEnvironment = Literal["DEVELOPMENT", "STAGING", "PRODUCTION"]
-DeploymentStatus = Literal["PENDING_APPROVAL", "ACTIVE"]
+DeploymentStatus = Literal["PENDING_APPROVAL", "ACTIVE", "HALTED"]
 
 
 class AgentDeploymentCreate(BaseModel):
@@ -249,6 +398,72 @@ class AgentDeploymentList(BaseModel):
     next_cursor: str | None = None
 
 
+EvalAssertion = Literal[
+    "NO_CROSS_TENANT_LEAK",
+    "NO_SECRET_LEAK",
+    "NO_DISABLED_TOOL",
+]
+
+
+class EvalSuiteCreate(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    dataset: dict[str, str]
+    scorers: list[dict[str, Any]] = Field(min_length=1, max_length=20)
+    thresholds: dict[str, float | int] = Field(min_length=1)
+    deterministic_assertions: list[EvalAssertion] = Field(min_length=1, max_length=20)
+
+
+class EvalSuiteResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    slug: str
+    version: int = Field(ge=1)
+    dataset: dict[str, str]
+    scorers: list[dict[str, Any]]
+    thresholds: dict[str, float | int]
+    deterministic_assertions: list[EvalAssertion]
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+
+
+class EvalRunCreate(BaseModel):
+    suite_id: UUID
+    release_id: UUID
+    environment: DeploymentEnvironment
+    evidence: dict[str, Any] = Field(min_length=1)
+
+
+class EvalRunResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    application_id: UUID
+    suite_id: UUID
+    release_id: UUID
+    environment: DeploymentEnvironment
+    sdk_version: str
+    dependency_snapshot: dict[str, Any]
+    results: dict[str, Any]
+    status: Literal["PASSED", "FAILED"]
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    created_at: datetime
+
+
+class EvalCanaryObservationCreate(BaseModel):
+    eval_run_id: UUID
+    metrics: dict[str, float | int] = Field(min_length=1)
+
+
+class EvalCanaryObservationResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    deployment_id: UUID
+    eval_run_id: UUID
+    metrics: dict[str, float | int]
+    decision: Literal["CONTINUE", "HALTED"]
+    created_at: datetime
+
+
 class KnowledgeBaseCreate(BaseModel):
     slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
     name: str = Field(min_length=1, max_length=200)
@@ -261,6 +476,14 @@ class KnowledgeBaseResponse(BaseModel):
     name: str
     version: int = Field(ge=1)
     created_at: datetime
+
+
+class KnowledgeBaseList(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    tenant_id: UUID
+    items: list[KnowledgeBaseResponse]
+    next_cursor: str | None = None
 
 
 class KnowledgeSource(BaseModel):

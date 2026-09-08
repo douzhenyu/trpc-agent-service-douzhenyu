@@ -55,7 +55,7 @@ spec:
         trpc-agent-platform.io/network-profile: {{ $name }}
     spec:
       serviceAccountName: {{ $name }}
-      automountServiceAccountToken: {{ or (eq $name "agent-worker") (eq $name "agent-gateway") }}
+      automountServiceAccountToken: {{ or (eq $name "agent-worker") (eq $name "agent-gateway") (eq $name "channel-gateway") }}
       terminationGracePeriodSeconds: 30
       securityContext:
         runAsNonRoot: true
@@ -109,6 +109,64 @@ spec:
                   key: {{ $.Values.agentWorker.databaseSecretKey }}
             - name: LLM_GATEWAY_URL
               value: {{ $.Values.agentWorker.llmGatewayUrl | quote }}
+            - name: WORKER_POOL
+              value: {{ $.Values.agentWorker.workerPool | quote }}
+{{- else if eq $name "job-worker" }}
+          command:
+            - /app/.venv/bin/uvicorn
+          args:
+            - trpc_service.job_worker:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ $component.port | quote }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.jobWorker.databaseSecretName }}
+                  key: {{ $.Values.jobWorker.databaseSecretKey }}
+            - name: CONTENT_DELETION_EXECUTOR_FACTORY
+              value: {{ $component.contentDeletionExecutorFactory | quote }}
+            - name: CONTENT_DELETION_ENABLED
+              value: {{ $component.contentDeletionEnabled | quote }}
+            - name: ARTIFACT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.jobWorker.artifactAccessKeySecretName }}
+                  key: {{ $.Values.jobWorker.artifactAccessKeySecretKey }}
+{{- else if eq $name "channel-gateway" }}
+          command:
+            - /app/.venv/bin/uvicorn
+          args:
+            - trpc_service.channel_gateway:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - {{ $component.port | quote }}
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.channelGateway.databaseSecretName }}
+                  key: {{ $.Values.channelGateway.databaseSecretKey }}
+            - name: VAULT_URL
+              value: {{ $.Values.channelGateway.vaultUrl | quote }}
+            - name: VAULT_KUBERNETES_ROLE
+              value: {{ $.Values.channelGateway.vaultKubernetesRole | quote }}
+            - name: FEISHU_LONG_CONNECTIONS
+              value: {{ $.Values.channelGateway.feishuLongConnections | toJson | quote }}
+            - name: GATEWAY_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
+            - name: ARTIFACT_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.channelGateway.artifactAccessKeySecretName }}
+                  key: {{ $.Values.channelGateway.artifactAccessKeySecretKey }}
+            - name: STANDBY_MODE
+              value: {{ $.Values.failover.standbyMode | quote }}
 {{- else if eq $name "agent-gateway" }}
           command:
             - /app/.venv/bin/uvicorn
@@ -130,6 +188,8 @@ spec:
               value: {{ $.Values.agentGateway.vaultKubernetesRole | quote }}
             - name: OPA_URL
               value: {{ $.Values.agentGateway.opaUrl | quote }}
+            - name: STANDBY_MODE
+              value: {{ $.Values.failover.standbyMode | quote }}
 {{- else if and (ne $name "admin-api") (ne $name "web-console") }}
           command:
             - /app/.venv/bin/uvicorn

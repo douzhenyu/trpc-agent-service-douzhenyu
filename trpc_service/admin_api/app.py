@@ -28,15 +28,19 @@ from trpc_service.admin_api.auth import (
 )
 from trpc_service.admin_api.budgets import create_budget_router
 from trpc_service.admin_api.channel_bindings import create_channel_binding_router
+from trpc_service.admin_api.content_lifecycle import create_content_lifecycle_router
 from trpc_service.admin_api.database import Database, record_to_dict
+from trpc_service.admin_api.evals import create_eval_router
 from trpc_service.admin_api.http_contract import ETAG_HEADER, error_responses
 from trpc_service.admin_api.idempotency import (
     IdempotencyConflictError,
     remember,
     replay_for,
 )
+from trpc_service.admin_api.im_subjects import create_im_subject_router
 from trpc_service.admin_api.knowledge import create_knowledge_router
 from trpc_service.admin_api.model_profiles import create_model_profile_router
+from trpc_service.admin_api.ops import create_ops_router
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.policies import create_policy_router
 from trpc_service.admin_api.preconditions import parse_if_match
@@ -62,9 +66,13 @@ from trpc_service.admin_api.schemas import (
     TenantResponse,
 )
 from trpc_service.admin_api.settings import AdminSettings
+from trpc_service.admin_api.storage_migrations import create_storage_migration_router
+from trpc_service.admin_api.storage_profiles import create_storage_profile_router
 from trpc_service.admin_api.tool_approvals import create_tool_approval_router
 from trpc_service.admin_api.tools import create_tool_router
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.ids import uuid7
+from trpc_service.telemetry import install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 LOGGER = logging.getLogger(__name__)
@@ -107,16 +115,22 @@ def create_app(
     application.state.settings = configured
     application.include_router(create_agent_router(db))
     application.include_router(create_budget_router(db))
+    application.include_router(create_eval_router(db))
     if configured.policy_signing_key:
         application.include_router(
             create_policy_router(db, signing_key=configured.policy_signing_key)
         )
     application.include_router(create_model_profile_router(db))
+    application.include_router(create_storage_profile_router(db))
+    application.include_router(create_content_lifecycle_router(db))
+    application.include_router(create_storage_migration_router(db))
     application.include_router(create_knowledge_router(db))
     application.include_router(create_tool_router(db))
     application.include_router(create_tool_approval_router(db))
     application.include_router(create_audit_query_router(db))
     application.include_router(create_channel_binding_router(db))
+    application.include_router(create_im_subject_router(db))
+    application.include_router(create_ops_router(db))
 
     @application.exception_handler(HTTPException)
     async def stable_http_error(_request: Request, exc: HTTPException) -> JSONResponse:
@@ -145,6 +159,47 @@ def create_app(
             "CHANNEL_BINDING_CONFLICT": "CHANNEL_BINDING_CONFLICT",
             "SECRET_REF_REJECTED": "SECRET_REF_REJECTED",
             "CHANNEL_BINDING_NOT_FOUND": "CHANNEL_BINDING_NOT_FOUND",
+            "IM_SUBJECT_ASSOCIATION_INVALID": "IM_SUBJECT_ASSOCIATION_INVALID",
+            "IM_SUBJECT_ASSOCIATION_NOT_FOUND": "IM_SUBJECT_ASSOCIATION_NOT_FOUND",
+            "DEDICATED_STORAGE_REQUIRED": "DEDICATED_STORAGE_REQUIRED",
+            "STORAGE_MIGRATION_REQUIRED": "STORAGE_MIGRATION_REQUIRED",
+            "STORAGE_RESOURCE_ALREADY_CLAIMED": "STORAGE_RESOURCE_ALREADY_CLAIMED",
+            "LEGAL_HOLD_ACTIVE": "LEGAL_HOLD_ACTIVE",
+            "LEGAL_HOLD_SELF_APPROVAL": "LEGAL_HOLD_SELF_APPROVAL",
+            "LEGAL_HOLD_NOT_PENDING": "LEGAL_HOLD_NOT_PENDING",
+            "LEGAL_HOLD_NOT_FOUND": "LEGAL_HOLD_NOT_FOUND",
+            "LEGAL_HOLD_NOT_ACTIVE": "LEGAL_HOLD_NOT_ACTIVE",
+            "LEGAL_HOLD_SELF_RELEASE": "LEGAL_HOLD_SELF_RELEASE",
+            "RETENTION_CHANGE_NOT_FOUND": "RETENTION_CHANGE_NOT_FOUND",
+            "RETENTION_CHANGE_NOT_PENDING": "RETENTION_CHANGE_NOT_PENDING",
+            "RETENTION_POLICY_SELF_APPROVAL": "RETENTION_POLICY_SELF_APPROVAL",
+            "DELETION_REQUEST_NOT_FOUND": "DELETION_REQUEST_NOT_FOUND",
+            "STORAGE_MIGRATION_NOT_FOUND": "STORAGE_MIGRATION_NOT_FOUND",
+            "STORAGE_MIGRATION_APPROVAL_REQUIRED": "STORAGE_MIGRATION_APPROVAL_REQUIRED",
+            "STORAGE_MIGRATION_SELF_APPROVAL_DENIED": "STORAGE_MIGRATION_SELF_APPROVAL_DENIED",
+            "STORAGE_MIGRATION_OBSERVATION_REQUIRED": "STORAGE_MIGRATION_OBSERVATION_REQUIRED",
+            "STORAGE_MIGRATION_INVALID_PROFILES": "STORAGE_MIGRATION_INVALID_PROFILES",
+            "STORAGE_MIGRATION_INVALID_TRANSITION": "STORAGE_MIGRATION_INVALID_TRANSITION",
+            "STORAGE_MIGRATION_VALIDATION_FAILED": "STORAGE_MIGRATION_VALIDATION_FAILED",
+            (
+                "STORAGE_MIGRATION_APPROVAL_ALREADY_DECIDED"
+            ): "STORAGE_MIGRATION_APPROVAL_ALREADY_DECIDED",
+            "STORAGE_MIGRATION_ROLLBACK_UNAVAILABLE": "STORAGE_MIGRATION_ROLLBACK_UNAVAILABLE",
+            (
+                "STORAGE_MIGRATION_ROLLBACK_ALREADY_REQUESTED"
+            ): "STORAGE_MIGRATION_ROLLBACK_ALREADY_REQUESTED",
+            (
+                "STORAGE_MIGRATION_ROLLBACK_APPROVAL_DENIED"
+            ): "STORAGE_MIGRATION_ROLLBACK_APPROVAL_DENIED",
+            (
+                "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED"
+            ): "STORAGE_MIGRATION_ROLLBACK_APPROVAL_REQUIRED",
+            "EVAL_RUN_REQUIRED": "EVAL_RUN_REQUIRED",
+            "EVAL_RUN_FAILED": "EVAL_RUN_FAILED",
+            "DEAD_LETTER_NOT_FOUND": "DEAD_LETTER_NOT_FOUND",
+            "DEAD_LETTER_NOT_RETRYABLE": "DEAD_LETTER_NOT_RETRYABLE",
+            "INVALID_OPS_CURSOR": "INVALID_OPS_CURSOR",
+            "INVALID_CURSOR": "INVALID_CURSOR",
         }
         code = detail_codes.get(detail, codes.get(exc.status_code, "REQUEST_FAILED"))
         return JSONResponse(
@@ -642,6 +697,8 @@ def create_app(
             "next_cursor": encode_cursor(page[-1]["id"]) if len(rows) > limit else None,
         }
 
+    register_degradations_endpoint(application)
+    install_telemetry(application, "admin-api")
     return application
 
 

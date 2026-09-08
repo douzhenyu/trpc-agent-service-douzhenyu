@@ -22,13 +22,21 @@ from fastapi import FastAPI, HTTPException, Response
 from pydantic import BaseModel, ConfigDict, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from trpc_service.admin_api.database import Database
+from trpc_service.admin_api.database import Connection, Database
 from trpc_service.agent.protocols import ReleaseProtocolRegistry
 from trpc_service.agent.runner import ReleasePinnedRunnerRuntime
 from trpc_service.agent_worker import (
     DatabaseDeploymentRouteResolver,
     DatabaseReleaseRouteResolver,
 )
+from trpc_service.backpressure import (
+    ADMISSION_DECISIONS,
+    AdmissionController,
+    AdmissionDenied,
+    CapacityPolicy,
+    shed_level,
+)
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import (
     EXECUTION_REQUESTED_EVENT,
     GATEWAY_SOURCE,
@@ -43,6 +51,7 @@ from trpc_service.ids import uuid7
 from trpc_service.policy_bundles import PolicyBundleRulesResolver, PolicyBundleService
 from trpc_service.runtime_health import RuntimeHealthResponse
 from trpc_service.sessions import create_session_if_missing
+from trpc_service.telemetry import current_traceparent, install_telemetry
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 
@@ -63,6 +72,11 @@ class AgentGatewaySettings(BaseSettings):
     llm_gateway_access_key: str = ""
     public_base_url: str = ""
     policy_signing_key: str = ""
+    standby_mode: bool = False
+    admission_sustained_per_second: int = 1000
+    admission_burst_per_second: int = 3000
+    admission_burst_seconds: int = 60
+    admission_max_in_flight: int = 10_000
 
     def validate_runtime(self) -> None:
         missing = [
@@ -88,6 +102,7 @@ class AgentExecutionSubmission(BaseModel):
     memory_policy_version: str = Field(default="policy:none", min_length=1, max_length=128)
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
     message_id: str | None = Field(default=None, min_length=1, max_length=256)
+    trace_parent: str | None = Field(default=None, min_length=1, max_length=128)
 
 
 class AgentExecutionAccepted(BaseModel):
@@ -122,9 +137,40 @@ def _payload_hash(submission: AgentExecutionSubmission) -> str:
 class AgentExecutionSubmitter:
     """Commits the execution business state and its Outbox record in one transaction."""
 
-    def __init__(self, database: Database, deployments: DatabaseDeploymentRouteResolver):
+    def __init__(
+        self,
+        database: Database,
+        deployments: DatabaseDeploymentRouteResolver,
+        capacity_policy: CapacityPolicy | None = None,
+    ):
         self._database = database
         self._deployments = deployments
+        self._capacity_policy = capacity_policy or CapacityPolicy()
+
+    async def _deduplicated_submission(
+        self,
+        connection: Connection,
+        submission: AgentExecutionSubmission,
+        message_id: str,
+        payload_hash: str,
+        release_id: str,
+    ) -> AgentExecutionAccepted | None:
+        existing = await connection.fetchrow(
+            """SELECT id,payload_hash FROM tenant.agent_execution
+            WHERE tenant_id=$1 AND message_id=$2""",
+            submission.tenant_id,
+            message_id,
+        )
+        if existing is None:
+            return None
+        if str(existing["payload_hash"]) != payload_hash:
+            raise AgentGatewayError("MESSAGE_PAYLOAD_CONFLICT")
+        return AgentExecutionAccepted(
+            execution_id=existing["id"],
+            release_id=UUID(release_id),
+            session_id=submission.session_id,
+            deduplicated=True,
+        )
 
     async def submit(self, submission: AgentExecutionSubmission) -> AgentExecutionAccepted:
         release_id = await self._deployments.resolve(
@@ -146,6 +192,29 @@ class AgentExecutionSubmitter:
             )
             if classification_row is None:
                 raise AgentGatewayError("DEPLOYMENT_NOT_FOUND")
+            duplicate = await self._deduplicated_submission(
+                connection, submission, message_id, payload_hash, release_id
+            )
+            if duplicate is not None:
+                return duplicate
+            admission = str(
+                await connection.fetchval(
+                    "SELECT platform.try_admit_execution($1, $2, $3, $4)",
+                    self._capacity_policy.max_in_flight,
+                    self._capacity_policy.sustained_per_second,
+                    self._capacity_policy.burst_per_second,
+                    self._capacity_policy.burst_seconds,
+                )
+            )
+            if admission != "ALLOWED":
+                # The capacity lock can have waited for a concurrent duplicate
+                # submission to commit. Re-check idempotency before shedding it.
+                duplicate = await self._deduplicated_submission(
+                    connection, submission, message_id, payload_hash, release_id
+                )
+                if duplicate is not None:
+                    return duplicate
+                raise AgentGatewayError(admission)
             await create_session_if_missing(
                 connection, submission.tenant_id, submission.application_id, submission.session_id
             )
@@ -167,20 +236,12 @@ class AgentExecutionSubmitter:
                 payload_hash,
             )
             if execution_id is None:
-                existing = await connection.fetchrow(
-                    """SELECT id,payload_hash FROM tenant.agent_execution
-                    WHERE tenant_id=$1 AND message_id=$2""",
-                    submission.tenant_id,
-                    message_id,
+                duplicate = await self._deduplicated_submission(
+                    connection, submission, message_id, payload_hash, release_id
                 )
-                if existing is None or str(existing["payload_hash"]) != payload_hash:
-                    raise AgentGatewayError("MESSAGE_PAYLOAD_CONFLICT")
-                return AgentExecutionAccepted(
-                    execution_id=existing["id"],
-                    release_id=UUID(release_id),
-                    session_id=submission.session_id,
-                    deduplicated=True,
-                )
+                if duplicate is not None:
+                    return duplicate
+                raise AgentGatewayError("MESSAGE_PAYLOAD_CONFLICT")
             data = ExecutionRequestedData(
                 tenant_id=str(submission.tenant_id),
                 application_id=str(submission.application_id),
@@ -189,6 +250,7 @@ class AgentExecutionSubmitter:
                 environment=submission.environment,
                 session_id=submission.session_id,
                 messages=submission.messages,
+                trace_parent=submission.trace_parent,
             )
             await insert_outbox_record(
                 connection,
@@ -224,10 +286,19 @@ def create_app(
         configured.validate_runtime()
         database = Database(configured.database_url)
         await database.open()
+        application.state.database = database
+        policy = CapacityPolicy(
+            sustained_per_second=configured.admission_sustained_per_second,
+            burst_per_second=configured.admission_burst_per_second,
+            burst_seconds=configured.admission_burst_seconds,
+            max_in_flight=configured.admission_max_in_flight,
+        )
         application.state.submitter = AgentExecutionSubmitter(
             database,
             DatabaseDeploymentRouteResolver(database),
+            policy,
         )
+        application.state.admission = AdmissionController(policy)
         policy_resolver = (
             PolicyBundleRulesResolver(
                 PolicyBundleService(database, signing_key=configured.policy_signing_key)
@@ -294,12 +365,56 @@ def create_app(
     async def submit_execution(
         submission: AgentExecutionSubmission, response: Response
     ) -> AgentExecutionAccepted:
+        if configured.standby_mode:
+            raise HTTPException(status_code=503, detail="STANDBY_FENCED")
+        controller = cast(AdmissionController, application.state.admission)
+        try:
+            controller.admit()
+        except AdmissionDenied as error:
+            raise HTTPException(status_code=429, detail=error.reason) from error
+        inbound = current_traceparent()
+        if inbound is not None and submission.trace_parent is None:
+            submission = submission.model_copy(update={"trace_parent": inbound})
         submitter = cast(AgentExecutionSubmitter, application.state.submitter)
         try:
             accepted = await submitter.submit(submission)
         except AgentGatewayError as error:
-            raise HTTPException(status_code=409, detail=error.code) from error
+            if error.code in {"INFLIGHT_SATURATED", "RATE_EXCEEDED"}:
+                controller = cast(AdmissionController, application.state.admission)
+                ADMISSION_DECISIONS.labels(
+                    service=controller.service, decision="DENIED", reason=error.code
+                ).inc()
+            status_code = 429 if error.code in {"INFLIGHT_SATURATED", "RATE_EXCEEDED"} else 409
+            raise HTTPException(status_code=status_code, detail=error.code) from error
         response.status_code = 200 if accepted.deduplicated else 202
         return accepted
 
+    @application.get("/internal/v1/capacity", response_model=dict[str, str | int])
+    async def capacity_status() -> dict[str, str | int]:
+        controller = cast(AdmissionController, application.state.admission)
+        policy = controller.policy
+        database = cast(Database, application.state.database)
+        async with database.transaction() as connection:
+            pending_executions = int(
+                await connection.fetchval("SELECT platform.pending_execution_count()")
+            )
+            pending_outbox_records = int(
+                await connection.fetchval(
+                    """SELECT count(*) FROM platform.outbox_record
+                    WHERE status='PENDING' AND event_type=$1""",
+                    EXECUTION_REQUESTED_EVENT,
+                )
+            )
+        return {
+            "sustained_per_second": policy.sustained_per_second,
+            "burst_per_second": policy.burst_per_second,
+            "max_in_flight": policy.max_in_flight,
+            "in_flight": pending_executions,
+            "pending_executions": pending_executions,
+            "pending_outbox_records": pending_outbox_records,
+            "shed_level": shed_level(pending_executions, pending_outbox_records, policy),
+        }
+
+    register_degradations_endpoint(application)
+    install_telemetry(application, "agent-gateway")
     return application

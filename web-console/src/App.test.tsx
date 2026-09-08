@@ -25,41 +25,45 @@ function json(body: unknown, status = 200): Response {
 test("平台管理员可通过公开 API 创建租户与 Tenant Group", async () => {
   const fetchMock = vi
     .spyOn(globalThis, "fetch")
-    .mockResolvedValueOnce(
-      json({
-        subject: "admin",
-        auth_method: "emergency",
-        roles: ["PLATFORM_ADMIN"],
-      }),
-    )
-    .mockResolvedValueOnce(json({ items: [] }))
-    .mockResolvedValueOnce(json({ items: [] }))
-    .mockResolvedValueOnce(json({ items: [] }))
-    .mockResolvedValueOnce(
-      json(
-        {
-          id: "tenant-1",
-          slug: "acme",
-          name: "Acme",
-          status: "ACTIVE",
-          version: 1,
-          created_at: "2026-01-01T00:00:00Z",
-          updated_at: "2026-01-01T00:00:00Z",
-        },
-        201,
-      ),
-    )
-    .mockResolvedValueOnce(
-      json(
-        {
-          id: "group-1",
-          name: "核心客户",
-          version: 1,
-          tenant_ids: ["tenant-1"],
-        },
-        201,
-      ),
-    );
+    .mockImplementation(async (input) => {
+      const request =
+        input instanceof Request ? input : new Request(String(input));
+      const path = new URL(request.url).pathname;
+      const empty = { items: [], next_cursor: null };
+      if (path === "/api/v1/auth/session") {
+        return json({
+          subject: "admin",
+          auth_method: "emergency",
+          roles: ["PLATFORM_ADMIN"],
+        });
+      }
+      if (request.method === "POST" && path === "/api/v1/tenants") {
+        return json(
+          {
+            id: "tenant-1",
+            slug: "acme",
+            name: "Acme",
+            status: "ACTIVE",
+            version: 1,
+            created_at: "2026-01-01T00:00:00Z",
+            updated_at: "2026-01-01T00:00:00Z",
+          },
+          201,
+        );
+      }
+      if (request.method === "POST" && path === "/api/v1/tenant-groups") {
+        return json(
+          {
+            id: "group-1",
+            name: "核心客户",
+            version: 1,
+            tenant_ids: ["tenant-1"],
+          },
+          201,
+        );
+      }
+      return json(empty);
+    });
 
   render(<App />);
   expect(
@@ -79,7 +83,7 @@ test("平台管理员可通过公开 API 创建租户与 Tenant Group", async ()
   fireEvent.click(screen.getByRole("checkbox", { name: "Acme" }));
   fireEvent.click(screen.getByRole("button", { name: "创建 Tenant Group" }));
   expect(await screen.findByText("核心客户 · 1 个租户")).toBeInTheDocument();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(6));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
   expect(
     fetchMock.mock.calls.every(([request]) =>
       new URL(
@@ -144,7 +148,8 @@ test("租户 Agent 开发者只加载可访问租户并直接进入 Agent 工作
         roles: [],
       }),
     )
-    .mockResolvedValueOnce(json({ items: [tenant], next_cursor: null }));
+    .mockResolvedValueOnce(json({ items: [tenant], next_cursor: null }))
+    .mockImplementation(() => Promise.resolve(json({ items: [] })));
 
   render(<App />);
 
@@ -155,7 +160,15 @@ test("租户 Agent 开发者只加载可访问租户并直接进入 Agent 工作
     screen.getByRole("button", { name: "加载 Agent 应用" }),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "创建租户" })).toBeNull();
-  expect(fetchMock).toHaveBeenCalledTimes(2);
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.map(
+        ([request]) =>
+          new URL(request instanceof Request ? request.url : String(request))
+            .pathname,
+      ),
+    ).toContain("/api/v1/tenants"),
+  );
 });
 
 test("平台角色按钮调用公开 API 并刷新", async () => {

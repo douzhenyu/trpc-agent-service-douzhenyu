@@ -199,6 +199,19 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
             await processor.handle(execution_envelope)
             assert await dispatcher.dispatch_pending() == 1
             assert await consumer.run_once() is True
+
+            third = await submitter.submit(
+                _submission(tenant_id, application_id, f"{'x' * 15_980} LATEST-CONTEXT", "m-3")
+            )
+            assert await dispatcher.dispatch_pending() == 2
+            execution_envelope = next(
+                envelope
+                for envelope in reversed(bus.published)
+                if envelope.data.get("execution_id") == str(third.execution_id)
+            )
+            await processor.handle(execution_envelope)
+            assert await dispatcher.dispatch_pending() == 1
+            assert await consumer.run_once() is True
             await projections.handle(older_projection)
 
             connection = await asyncpg.connect(ADMIN_URL)
@@ -210,9 +223,8 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                     "session-summary-memory",
                 )
                 assert summary is not None
-                assert (summary["source_from_version"], summary["source_version"]) == (1, 4)
-                assert "tea" in summary["content"]
-                assert "coffee" in summary["content"]
+                assert (summary["source_from_version"], summary["source_version"]) == (5, 6)
+                assert "LATEST-CONTEXT" in summary["content"]
                 memories = await connection.fetch(
                     """SELECT id,subject_id,source_session_id,source_from_version,source_to_version,
                     policy_version,is_valid FROM tenant.memory_record
@@ -225,16 +237,21 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 assert source_ranges == [
                     (1, 2),
                     (3, 4),
+                    (5, 6),
                 ]
                 assert all(row["subject_id"] == "im:FEISHU:binding-1:alice" for row in memories)
                 assert all(row["source_session_id"] == "session-summary-memory" for row in memories)
                 assert all(row["policy_version"] == "policy:7" for row in memories)
-                memory_id, second_memory_id = memories[0]["id"], memories[1]["id"]
+                memory_id = memories[0]["id"]
             finally:
                 await connection.close()
 
             app = create_job_worker_app(
-                JobWorkerSettings(database_url=APP_URL, operator_token="memory-operator")
+                JobWorkerSettings(
+                    database_url=APP_URL,
+                    operator_token="memory-operator",
+                    content_deletion_enabled=False,
+                )
             )
             with TestClient(app) as client:
                 protected_metrics = client.get("/internal/v1/projection-metrics")
@@ -250,12 +267,6 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                     json={"actor": "memory-admin", "reason": "source was corrected"},
                 )
                 assert corrected.status_code == 200, corrected.text
-                deleted = client.post(
-                    f"/internal/v1/tenants/{tenant_id}/memories/{second_memory_id}/deletions",
-                    headers={"X-Job-Worker-Operator-Token": "memory-operator"},
-                    json={"actor": "memory-admin", "reason": "retention request"},
-                )
-                assert deleted.status_code == 200, deleted.text
             connection = await asyncpg.connect(ADMIN_URL)
             try:
                 valid = await connection.fetchval(
@@ -276,20 +287,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 )
                 assert valid is False
                 assert audit_action == "memory.corrected"
-                deleted_count = await connection.fetchval(
-                    "SELECT count(*) FROM tenant.memory_record WHERE tenant_id=$1 AND id=$2",
-                    UUID(tenant_id),
-                    second_memory_id,
-                )
-                deleted_audit = await connection.fetchval(
-                    """SELECT action FROM platform.audit_event WHERE tenant_id=$1 AND target_id=$2
-                    ORDER BY occurred_at DESC LIMIT 1""",
-                    UUID(tenant_id),
-                    str(second_memory_id),
-                )
                 assert int(invalidations) >= 4
-                assert int(deleted_count) == 0
-                assert deleted_audit == "memory.deleted"
                 await connection.execute(
                     """UPDATE platform.session_projection_delivery SET status='DEAD_LETTER',
                     completed_at=NULL WHERE outbox_id=(SELECT id FROM platform.outbox_record

@@ -1,5 +1,18 @@
 # 基于 tRPC-Agent 设计多租户节点化 Agent 部署平台
 
+## 八项交付物与最终验收
+
+- [架构设计文档](docs/architecture/architecture-design.md)
+- [系统架构图](docs/architecture/system-diagrams.md)
+- [核心时序图](docs/architecture/system-diagrams.md)
+- [数据模型设计](docs/architecture/data-model-and-sync.md)
+- [数据同步和幂等策略](docs/architecture/data-model-and-sync.md)
+- [多后端适配方案](docs/architecture/data-model-and-sync.md)
+- [生产风险清单](docs/risk-register-and-acceptance.md)
+- [GitHub 实现代码](docs/final-acceptance.md)
+
+最终验收采用可复现的 CI 证据，而不是把静态文档当作生产结论；证据范围和重新执行方式见[最终验收记录](docs/final-acceptance.md)。
+
 ## 架构图文档
 - [系统架构图](docs/architecture/diagrams/system-architecture.mmd)（[SVG](docs/architecture/diagrams/system-architecture.svg)）
 - [企业微信核心链路时序图](docs/architecture/diagrams/wecom-core-sequence.mmd)（[SVG](docs/architecture/diagrams/wecom-core-sequence.svg)）
@@ -15,6 +28,7 @@ tRPC-Agent-Python 已经具备 Agent 编排、Tool / MCP、Session、Memory、Kn
 任务描述
 请设计一个基于 tRPC-Agent-Python 的多租户节点化 Agent 部署平台。平台需要支持多个租户创建和部署自己的 Agent，每个租>户可以绑定不同 IM 通道、选择不同数据后端、配置不同工具权限和知识库，并允许多个 Agent 节点水平扩展。系统需要考虑跨节
 点会话路由、数据同步、后端适配、IM 消息接入、监控审计和故障恢复。
+本题以架构设计为主，可以包含少量关键伪代码、接口定义或数据模型示例。不要求实现完整系统，但方案必须足够具体，能指导>后续工程落地。
 
 ## 具体要求
 ### 多租户与节点部署

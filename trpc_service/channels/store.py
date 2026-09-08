@@ -238,6 +238,7 @@ class DatabaseDeliveryStore:
                      external_conversation_id,content,status,attempts)
                     VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                     ON CONFLICT (tenant_id,delivery_id) DO UPDATE SET
+                      content=EXCLUDED.content,
                       status=EXCLUDED.status,
                       attempts=EXCLUDED.attempts,
                       updated_at=now()""",

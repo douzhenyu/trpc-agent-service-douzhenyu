@@ -1,4 +1,0 @@
-services:
-  admin-api:
-    environment:
-      EMERGENCY_ADMIN_PASSWORD_HASH: ${E2E_ADMIN_PASSWORD_HASH:?set for local E2E only}
