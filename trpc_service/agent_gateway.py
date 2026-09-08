@@ -64,6 +64,7 @@ class AgentGatewaySettings(BaseSettings):
     llm_gateway_access_key: str = ""
     public_base_url: str = ""
     policy_signing_key: str = ""
+    standby_mode: bool = False
 
     def validate_runtime(self) -> None:
         missing = [
@@ -297,6 +298,8 @@ def create_app(
     async def submit_execution(
         submission: AgentExecutionSubmission, response: Response
     ) -> AgentExecutionAccepted:
+        if configured.standby_mode:
+            raise HTTPException(status_code=503, detail="STANDBY_FENCED")
         inbound = current_traceparent()
         if inbound is not None and submission.trace_parent is None:
             submission = submission.model_copy(update={"trace_parent": inbound})

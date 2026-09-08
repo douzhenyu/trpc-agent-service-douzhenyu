@@ -115,6 +115,7 @@ class ChannelGatewaySettings(BaseSettings):
     stream_min_interval_seconds: float = 2.0
     wecom_max_text_chars: int = 4096
     feishu_max_text_chars: int = 4096
+    standby_mode: bool = False
     artifact_inline_threshold_chars: int = 4096
     artifact_public_base_url: str = ""
     artifact_access_key: str = ""
@@ -367,6 +368,8 @@ def create_app(
         nonce: Annotated[str, Query()],
     ) -> Response:
         del bot_id
+        if configured.standby_mode:
+            return PlainTextResponse("STANDBY_FENCED", status_code=503)
         payload = await request.json()
         encrypted = str(payload.get("encrypt", ""))
         crypto = _crypto()
@@ -446,6 +449,8 @@ def create_app(
         bot_id: str,
         request: Request,
     ) -> Response:
+        if configured.standby_mode:
+            return PlainTextResponse("STANDBY_FENCED", status_code=503)
         raw_body = await request.body()
         inbound: ChannelInboundService = application.state.inbound
         registry: ChannelBindingRegistry = application.state.registry
