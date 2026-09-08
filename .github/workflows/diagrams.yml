@@ -3,12 +3,14 @@ name: Documentation gate
 "on":
   pull_request:
     paths:
+      - "README.md"
       - "docs/**"
       - ".github/workflows/diagrams.yml"
   push:
     branches:
       - main
     paths:
+      - "README.md"
       - "docs/**"
       - ".github/workflows/diagrams.yml"
   workflow_dispatch:

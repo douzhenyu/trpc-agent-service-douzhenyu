@@ -32,3 +32,9 @@ def test_final_acceptance_binds_risks_and_clean_environment_evidence() -> None:
     assert "uv run pytest tests/unit tests/integration" in evidence
     assert "npm run test:smoke" in evidence
     assert "不得将未运行的生产演练写为通过" in evidence
+
+
+def test_documentation_gate_runs_for_readme_only_changes() -> None:
+    workflow = (ROOT / ".github/workflows/diagrams.yml").read_text()
+
+    assert workflow.count('- "README.md"') == 2
