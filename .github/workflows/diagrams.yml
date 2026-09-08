@@ -42,7 +42,7 @@ jobs:
           from urllib.parse import unquote, urlsplit
 
           missing = []
-          for document in Path("docs").rglob("*.md"):
+          for document in [Path("README.md"), *Path("docs").rglob("*.md")]:
               for raw_target in re.findall(r"(?<!!)\[[^]]*\]\(([^)]+)\)", document.read_text()):
                   raw_target = raw_target.strip()
                   if raw_target.startswith("<"):
