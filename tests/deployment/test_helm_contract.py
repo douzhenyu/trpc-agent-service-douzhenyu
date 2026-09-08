@@ -220,6 +220,40 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
         assert expected_rule in policies[component]["spec"]["egress"]
     assert expected_rule not in policies["web-console"]["spec"]["egress"]
 
+    database_workloads = {
+        manifest["metadata"]["labels"]["app.kubernetes.io/component"]
+        for manifest in manifests
+        if manifest["kind"] in {"Deployment", "Rollout"}
+        and any(
+            env["name"] == "DATABASE_URL"
+            for env in manifest["spec"]["template"]["spec"]["containers"][0].get("env", [])
+        )
+    }
+    direct_database_profiles = {
+        profile for profile, policy in policies.items() if expected_rule in policy["spec"]["egress"]
+    }
+    assert direct_database_profiles == database_workloads | {"database-migration"}
+
+    smoke_documents = list(yaml.safe_load_all(SMOKE_DATABASE_PATH.read_text()))
+    smoke_database_policy = next(
+        document
+        for document in smoke_documents
+        if document["kind"] == "NetworkPolicy" and document["metadata"]["name"] == "smoke-postgres"
+    )
+    smoke_database_clients = smoke_database_policy["spec"]["ingress"][1]["from"][0]["podSelector"][
+        "matchExpressions"
+    ][0]["values"]
+    assert set(smoke_database_clients) == direct_database_profiles
+
+    disabled_policies = {
+        manifest["metadata"]["labels"].get("app.kubernetes.io/component"): manifest
+        for manifest in render_chart()
+        if manifest["kind"] == "NetworkPolicy"
+    }
+    assert all(
+        expected_rule not in policy["spec"]["egress"] for policy in disabled_policies.values()
+    )
+
     waypoint_rule = {
         "to": [
             {
