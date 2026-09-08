@@ -152,6 +152,21 @@ def test_smoke_database_fixture_satisfies_admin_api_first_install() -> None:
     assert container["imagePullPolicy"] == "Never"
     database_policy = resources[("NetworkPolicy", "smoke-postgres")]
     assert {"ports": [{"port": 15008, "protocol": "TCP"}]} in database_policy["spec"]["ingress"]
+    database_clients = database_policy["spec"]["ingress"][1]["from"][0]["podSelector"][
+        "matchExpressions"
+    ][0]
+    assert database_clients == {
+        "key": "trpc-agent-platform.io/network-profile",
+        "operator": "In",
+        "values": [
+            "admin-api",
+            "agent-gateway",
+            "agent-worker",
+            "channel-gateway",
+            "database-migration",
+            "job-worker",
+        ],
+    }
     assert set(resources[("Secret", "trpc-platform-database-admin")]["stringData"]) == {
         "url",
         "app-password",
@@ -194,8 +209,15 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
             {"port": 15008, "protocol": "TCP"},
         ],
     }
-    assert expected_rule in policies["database-migration"]["spec"]["egress"]
-    assert expected_rule in policies["admin-api"]["spec"]["egress"]
+    for component in (
+        "admin-api",
+        "agent-gateway",
+        "agent-worker",
+        "channel-gateway",
+        "database-migration",
+        "job-worker",
+    ):
+        assert expected_rule in policies[component]["spec"]["egress"]
     assert expected_rule not in policies["web-console"]["spec"]["egress"]
 
     waypoint_rule = {
@@ -209,7 +231,14 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
         "ports": [{"port": 15008, "protocol": "TCP"}],
     }
     assert waypoint_rule in policies["database-migration"]["spec"]["egress"]
-    assert waypoint_rule in policies["admin-api"]["spec"]["egress"]
+    for component in (
+        "admin-api",
+        "agent-gateway",
+        "agent-worker",
+        "channel-gateway",
+        "job-worker",
+    ):
+        assert waypoint_rule in policies[component]["spec"]["egress"]
 
     waypoint = next(
         manifest
