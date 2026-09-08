@@ -588,10 +588,11 @@ type OpsPage<T> = { items: T[]; next_cursor: string | null };
 type OpsQuery = { cursor?: string; limit?: number };
 
 async function opsList<T>(
-  path: "/api/v1/tenants/{tenant_id}/ops/sessions" |
-    "/api/v1/tenants/{tenant_id}/ops/memories" |
-    "/api/v1/tenants/{tenant_id}/ops/artifacts" |
-    "/api/v1/tenants/{tenant_id}/ops/dead-letters",
+  path:
+    | "/api/v1/tenants/{tenant_id}/ops/sessions"
+    | "/api/v1/tenants/{tenant_id}/ops/memories"
+    | "/api/v1/tenants/{tenant_id}/ops/artifacts"
+    | "/api/v1/tenants/{tenant_id}/ops/dead-letters",
   tenantId: string,
   query: OpsQuery,
   fallback: string,
@@ -678,13 +679,16 @@ export async function listOpsOperations(
     "/api/v1/tenants/{tenant_id}/ops/operations",
     { params: { path: { tenant_id: tenantId } } },
   );
-  if (!response.ok || !data) throw apiError(response, "无法读取异步操作", error);
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取异步操作", error);
   return (data as unknown as { items: OpsOperation[] })?.items ?? [];
 }
 
 export type GenericRow = Record<string, unknown>;
 
-export async function getToolApprovals(tenantId: string): Promise<GenericRow[]> {
+export async function getToolApprovals(
+  tenantId: string,
+): Promise<GenericRow[]> {
   const { data, error, response } = await client.GET(
     "/api/v1/tenants/{tenant_id}/tool-approvals",
     { params: { path: { tenant_id: tenantId } } },
@@ -726,7 +730,9 @@ export async function getStorageMigrations(
   return (data as unknown as { items: GenericRow[] })?.items ?? [];
 }
 
-export async function getKnowledgeBases(tenantId: string): Promise<GenericRow[]> {
+export async function getKnowledgeBases(
+  tenantId: string,
+): Promise<GenericRow[]> {
   const { data, error, response } = await client.GET(
     "/api/v1/tenants/{tenant_id}/knowledge-bases",
     { params: { path: { tenant_id: tenantId } } },
