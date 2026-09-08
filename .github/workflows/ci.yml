@@ -155,7 +155,7 @@ jobs:
         run: uv sync --locked
       - name: Generate SBOM (CycloneDX)
         run: |
-          uv export --format cyclonedx-json --no-hashes --output-file sbom.cdx.json
+          uv export --preview-features sbom-export --format cyclonedx1.5 --no-hashes --output-file sbom.cdx.json
           uv export --format requirements-txt --no-hashes --output-file requirements.txt
       - uses: actions/upload-artifact@v4
         with:

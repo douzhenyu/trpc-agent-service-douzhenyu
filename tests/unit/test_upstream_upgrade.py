@@ -45,7 +45,8 @@ def test_ci_carries_supply_chain_gates() -> None:
     workflow = (REPOSITORY_ROOT / ".github/workflows/ci.yml").read_text()
     assert "supply-chain" in workflow
     assert "uv sync --locked" in workflow
-    assert "cyclonedx-json" in workflow
+    assert "--preview-features sbom-export" in workflow
+    assert "cyclonedx1.5" in workflow
     assert "pip-audit" in workflow
     assert "gitleaks" in workflow
     assert "npm audit --omit=dev --audit-level=high" in workflow
