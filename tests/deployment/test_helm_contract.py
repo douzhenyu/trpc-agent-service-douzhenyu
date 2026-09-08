@@ -152,6 +152,21 @@ def test_smoke_database_fixture_satisfies_admin_api_first_install() -> None:
     assert container["imagePullPolicy"] == "Never"
     database_policy = resources[("NetworkPolicy", "smoke-postgres")]
     assert {"ports": [{"port": 15008, "protocol": "TCP"}]} in database_policy["spec"]["ingress"]
+    database_clients = database_policy["spec"]["ingress"][1]["from"][0]["podSelector"][
+        "matchExpressions"
+    ][0]
+    assert database_clients == {
+        "key": "trpc-agent-platform.io/network-profile",
+        "operator": "In",
+        "values": [
+            "admin-api",
+            "agent-gateway",
+            "agent-worker",
+            "channel-gateway",
+            "database-migration",
+            "job-worker",
+        ],
+    }
     assert set(resources[("Secret", "trpc-platform-database-admin")]["stringData"]) == {
         "url",
         "app-password",
@@ -194,9 +209,50 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
             {"port": 15008, "protocol": "TCP"},
         ],
     }
-    assert expected_rule in policies["database-migration"]["spec"]["egress"]
-    assert expected_rule in policies["admin-api"]["spec"]["egress"]
+    for component in (
+        "admin-api",
+        "agent-gateway",
+        "agent-worker",
+        "channel-gateway",
+        "database-migration",
+        "job-worker",
+    ):
+        assert expected_rule in policies[component]["spec"]["egress"]
     assert expected_rule not in policies["web-console"]["spec"]["egress"]
+
+    database_workloads = {
+        manifest["metadata"]["labels"]["app.kubernetes.io/component"]
+        for manifest in manifests
+        if manifest["kind"] in {"Deployment", "Rollout"}
+        and any(
+            env["name"] == "DATABASE_URL"
+            for env in manifest["spec"]["template"]["spec"]["containers"][0].get("env", [])
+        )
+    }
+    direct_database_profiles = {
+        profile for profile, policy in policies.items() if expected_rule in policy["spec"]["egress"]
+    }
+    assert direct_database_profiles == database_workloads | {"database-migration"}
+
+    smoke_documents = list(yaml.safe_load_all(SMOKE_DATABASE_PATH.read_text()))
+    smoke_database_policy = next(
+        document
+        for document in smoke_documents
+        if document["kind"] == "NetworkPolicy" and document["metadata"]["name"] == "smoke-postgres"
+    )
+    smoke_database_clients = smoke_database_policy["spec"]["ingress"][1]["from"][0]["podSelector"][
+        "matchExpressions"
+    ][0]["values"]
+    assert set(smoke_database_clients) == direct_database_profiles
+
+    disabled_policies = {
+        manifest["metadata"]["labels"].get("app.kubernetes.io/component"): manifest
+        for manifest in render_chart()
+        if manifest["kind"] == "NetworkPolicy"
+    }
+    assert all(
+        expected_rule not in policy["spec"]["egress"] for policy in disabled_policies.values()
+    )
 
     waypoint_rule = {
         "to": [
@@ -209,7 +265,14 @@ def test_direct_database_egress_is_opt_in_and_scoped_to_database_pods() -> None:
         "ports": [{"port": 15008, "protocol": "TCP"}],
     }
     assert waypoint_rule in policies["database-migration"]["spec"]["egress"]
-    assert waypoint_rule in policies["admin-api"]["spec"]["egress"]
+    for component in (
+        "admin-api",
+        "agent-gateway",
+        "agent-worker",
+        "channel-gateway",
+        "job-worker",
+    ):
+        assert waypoint_rule in policies[component]["spec"]["egress"]
 
     waypoint = next(
         manifest
