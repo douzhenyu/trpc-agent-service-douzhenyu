@@ -1,4 +1,10 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  within,
+} from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 
 import { OpsConsole } from "./OpsConsole";
@@ -53,33 +59,48 @@ function jsonResponse(payload: unknown): Response {
 }
 
 function mockFetch(postPaths: string[] = []) {
-  return vi
-    .spyOn(globalThis, "fetch")
-    .mockImplementation(async (input) => {
-      const request = input instanceof Request ? input : new Request(String(input));
-      const path = new URL(request.url).pathname;
-      if (request.method === "POST") {
-        expect(postPaths).toContain(path);
-        return jsonResponse({ delivery_id: deadLetter.delivery_id, status: "QUEUED" });
+  return vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const request =
+      input instanceof Request ? input : new Request(String(input));
+    const url = new URL(request.url);
+    const path = url.pathname;
+    if (request.method === "POST") {
+      expect(postPaths).toContain(path);
+      return jsonResponse({
+        delivery_id: deadLetter.delivery_id,
+        status: "QUEUED",
+      });
+    }
+    const paged = { items: [], next_cursor: null };
+    if (path.endsWith("/ops/sessions")) {
+      return jsonResponse({ ...paged, items: [session] });
+    }
+    if (path.endsWith("/ops/dead-letters")) {
+      if (url.searchParams.get("cursor")) {
+        return jsonResponse({
+          items: [
+            {
+              ...deadLetter,
+              delivery_id: "00000000-0000-0000-0000-000000000006",
+              last_error: "SECOND_PAGE",
+            },
+          ],
+          next_cursor: null,
+        });
       }
-      const paged = { items: [], next_cursor: null };
-      if (path.endsWith("/ops/sessions")) {
-        return jsonResponse({ ...paged, items: [session] });
-      }
-      if (path.endsWith("/ops/dead-letters")) {
-        return jsonResponse({ items: [deadLetter], next_cursor: "cursor-1" });
-      }
-      if (path.endsWith("/ops/operations")) {
-        return jsonResponse({ ...paged, items: [operation] });
-      }
-      if (path.endsWith("/audit-events")) {
-        return jsonResponse({ events: [] });
-      }
-      if (path.endsWith("/tool-approvals")) {
-        return jsonResponse({ approvals: [] });
-      }
-      return jsonResponse(paged);
-    });
+      return jsonResponse({ items: [deadLetter], next_cursor: "cursor-1" });
+    }
+    if (path.endsWith("/ops/operations")) {
+      return jsonResponse({ ...paged, items: [operation] });
+    }
+    if (path.endsWith("/audit-events")) {
+      return jsonResponse({ events: [] });
+    }
+    if (path.endsWith("/tool-approvals")) {
+      return jsonResponse({ approvals: [] });
+    }
+    return jsonResponse(paged);
+  });
 }
 
 afterEach(() => {
@@ -112,9 +133,62 @@ test("死信重试通过 Admin API 提交并刷新列表", async () => {
 
   await vi.waitFor(() => {
     const calls = fetchMock.mock.calls.filter((call) => {
-      const request = call[0] instanceof Request ? call[0] : new Request(String(call[0]));
+      const request =
+        call[0] instanceof Request ? call[0] : new Request(String(call[0]));
       return request.method === "POST";
     });
     expect(calls).toHaveLength(1);
   });
+});
+
+test("运营工作台为死信队列加载下一页并追加结果", async () => {
+  const fetchMock = mockFetch();
+  render(<OpsConsole tenants={[tenant]} />);
+  await screen.findByText("PROVIDER_TIMEOUT");
+
+  const deadLetterSection = screen
+    .getByRole("heading", { name: "死信队列" })
+    .closest("section");
+  expect(deadLetterSection).not.toBeNull();
+  fireEvent.click(
+    within(deadLetterSection!).getByRole("button", { name: "加载更多" }),
+  );
+
+  await vi.waitFor(() => {
+    const paginatedRequests = fetchMock.mock.calls.filter((call) => {
+      const request =
+        call[0] instanceof Request ? call[0] : new Request(String(call[0]));
+      const url = new URL(request.url);
+      return (
+        url.pathname.endsWith("/ops/dead-letters") &&
+        url.searchParams.get("cursor") === "cursor-1" &&
+        url.searchParams.get("limit") === "20"
+      );
+    });
+    expect(paginatedRequests).toHaveLength(1);
+  });
+  expect(await screen.findByText("SECOND_PAGE")).toBeInTheDocument();
+});
+
+test("运营工作台在没有可选租户时不发起请求", async () => {
+  const fetchMock = mockFetch();
+  render(<OpsConsole tenants={[]} />);
+
+  expect(await screen.findAllByText("暂无数据")).not.toHaveLength(0);
+  expect(fetchMock).not.toHaveBeenCalled();
+});
+
+test("运营工作台显示加载请求错误", async () => {
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const request =
+      input instanceof Request ? input : new Request(String(input));
+    if (request.method === "POST") throw new Error("重试服务不可用");
+    if (new URL(request.url).pathname.endsWith("/ops/dead-letters")) {
+      return jsonResponse({ items: [deadLetter], next_cursor: null });
+    }
+    throw new Error("加载服务不可用");
+  });
+  render(<OpsConsole tenants={[tenant]} />);
+
+  expect(await screen.findByText("加载服务不可用")).toBeInTheDocument();
 });
