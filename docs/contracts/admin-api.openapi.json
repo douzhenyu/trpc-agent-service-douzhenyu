@@ -4396,6 +4396,13 @@
       },
       "ValidationError": {
         "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
           "loc": {
             "items": {
               "anyOf": [
@@ -4982,10 +4989,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "title": "Response Logout Api V1 Auth Session Delete",
-                  "type": "null"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response"
@@ -5306,10 +5310,7 @@
           "200": {
             "content": {
               "application/json": {
-                "schema": {
-                  "title": "Response Assign Role Api V1 Platform Users  User Id  Roles  Role  Put",
-                  "type": "null"
-                }
+                "schema": {}
               }
             },
             "description": "Successful Response",

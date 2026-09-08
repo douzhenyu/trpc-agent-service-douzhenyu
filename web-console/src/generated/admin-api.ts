@@ -3079,6 +3079,10 @@ export interface components {
         ToolSource: "DECLARED" | "MCP";
         /** ValidationError */
         ValidationError: {
+            /** Context */
+            ctx?: Record<string, never>;
+            /** Input */
+            input?: unknown;
             /** Location */
             loc: (string | number)[];
             /** Message */
@@ -3455,7 +3459,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": null;
+                    "application/json": unknown;
                 };
             };
             /** @description Internal error */
@@ -3660,7 +3664,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": null;
+                    "application/json": unknown;
                 };
             };
             /** @description Invalid request */
