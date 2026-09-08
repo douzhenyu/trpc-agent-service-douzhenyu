@@ -1,5 +1,18 @@
 # 基于 tRPC-Agent 设计多租户节点化 Agent 部署平台
 
+## 八项交付物与最终验收
+
+- [架构设计文档](docs/architecture/architecture-design.md)
+- [系统架构图](docs/architecture/system-diagrams.md)
+- [核心时序图](docs/architecture/system-diagrams.md)
+- [数据模型设计](docs/architecture/data-model-and-sync.md)
+- [数据同步和幂等策略](docs/architecture/data-model-and-sync.md)
+- [多后端适配方案](docs/architecture/data-model-and-sync.md)
+- [生产风险清单](docs/risk-register-and-acceptance.md)
+- [GitHub 实现代码](docs/final-acceptance.md)
+
+最终验收采用可复现的 CI 证据，而不是把静态文档当作生产结论；证据范围和重新执行方式见[最终验收记录](docs/final-acceptance.md)。
+
 ## 架构图文档
 - [系统架构图](docs/architecture/diagrams/system-architecture.mmd)（[SVG](docs/architecture/diagrams/system-architecture.svg)）
 - [企业微信核心链路时序图](docs/architecture/diagrams/wecom-core-sequence.mmd)（[SVG](docs/architecture/diagrams/wecom-core-sequence.svg)）
