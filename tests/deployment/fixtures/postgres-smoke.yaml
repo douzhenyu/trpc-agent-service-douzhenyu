@@ -133,6 +133,12 @@ spec:
             matchExpressions:
               - key: trpc-agent-platform.io/network-profile
                 operator: In
-                values: [admin-api, database-migration]
+                values:
+                  - admin-api
+                  - agent-gateway
+                  - agent-worker
+                  - channel-gateway
+                  - database-migration
+                  - job-worker
       ports:
         - {port: 5432, protocol: TCP}
