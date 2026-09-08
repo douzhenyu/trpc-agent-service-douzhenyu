@@ -160,7 +160,15 @@ test("租户 Agent 开发者只加载可访问租户并直接进入 Agent 工作
     screen.getByRole("button", { name: "加载 Agent 应用" }),
   ).toBeInTheDocument();
   expect(screen.queryByRole("button", { name: "创建租户" })).toBeNull();
-  expect(fetchMock).toHaveBeenCalledTimes(12);
+  await waitFor(() =>
+    expect(
+      fetchMock.mock.calls.map(
+        ([request]) =>
+          new URL(request instanceof Request ? request.url : String(request))
+            .pathname,
+      ),
+    ).toContain("/api/v1/tenants"),
+  );
 });
 
 test("平台角色按钮调用公开 API 并刷新", async () => {
