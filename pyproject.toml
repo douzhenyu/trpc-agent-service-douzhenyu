@@ -6,7 +6,7 @@ requires-python = "==3.12.*"
 dependencies = [
   "alembic==1.19.1",
   "asyncpg==0.31.0",
-  "fastapi==0.116.1",
+  "fastapi==0.141.1",
   "httpx==0.28.1",
   "pwdlib[argon2]==0.3.1",
   "pyjwt[crypto]==2.13.0",
@@ -17,7 +17,7 @@ dependencies = [
   # Standard Agent protocol surfaces (AG-UI / A2A) and the SDK extras they pull in.
   "ag-ui-protocol==0.1.22",
   "a2a-sdk==0.3.22",
-  "protobuf==6.33.0",
+  "protobuf==6.33.5",
   # Required by the trpc-agent-sdk AG-UI server import chain (graph DSL).
   "langgraph==1.2.11",
   "lark-channel-sdk==1.4.0",
@@ -34,8 +34,8 @@ admin-api = "trpc_service.admin_api.__main__:main"
 dev = [
   "httpx==0.28.1",
   "mypy==1.17.1",
-  "pytest==8.4.1",
-  "pytest-asyncio==1.1.0",
+  "pytest==9.0.3",
+  "pytest-asyncio==1.4.0",
   "pytest-cov==6.2.1",
   "pyyaml==6.0.3",
   "ruff==0.12.9",

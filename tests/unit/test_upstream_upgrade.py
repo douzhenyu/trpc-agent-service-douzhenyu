@@ -47,6 +47,7 @@ def test_ci_carries_supply_chain_gates() -> None:
     assert "uv sync --locked" in workflow
     assert "--preview-features sbom-export" in workflow
     assert "cyclonedx1.5" in workflow
+    assert "--no-emit-project --output-file requirements.txt" in workflow
     assert "pip-audit" in workflow
     assert "gitleaks" in workflow
     assert "npm audit --omit=dev --audit-level=high" in workflow
