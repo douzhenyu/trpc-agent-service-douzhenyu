@@ -766,3 +766,50 @@ def test_admission_rejects_beyond_capacity_with_stable_error() -> None:
             assert body["shed_level"] in {"GREEN", "YELLOW", "RED"}
 
     asyncio.run(scenario())
+
+
+def test_capacity_limit_tracks_pending_executions_until_worker_completion() -> None:
+    """A durable pending execution consumes capacity after its HTTP request ends."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        tenant_id, application_id, _release_id = await _seed_release_stack()
+        app = create_app(
+            AgentGatewaySettings(
+                database_url=APP_URL,
+                dispatch_interval_seconds=0.0,
+                admission_sustained_per_second=100,
+                admission_burst_per_second=100,
+                admission_burst_seconds=1,
+                admission_max_in_flight=1,
+            ),
+            bus=InMemoryExecutionBus(partition_count=4),
+        )
+        with TestClient(app) as client:
+            payload = {
+                "tenant_id": tenant_id,
+                "application_id": application_id,
+                "environment": "PRODUCTION",
+                "session_id": "session-capacity",
+                "messages": [{"role": "user", "content": "load"}],
+            }
+            accepted = client.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "capacity-1"},
+            )
+            assert accepted.status_code == 202
+
+            capacity = client.get("/internal/v1/capacity")
+            assert capacity.status_code == 200
+            assert capacity.json()["pending_executions"] == 1
+            assert capacity.json()["shed_level"] == "RED"
+
+            rejected = client.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "capacity-2"},
+            )
+            assert rejected.status_code == 429
+            assert rejected.json()["detail"] == "INFLIGHT_SATURATED"
+
+    asyncio.run(scenario())

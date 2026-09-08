@@ -28,7 +28,6 @@ def test_sustained_rate_admits_1000_per_second() -> None:
     for _ in range(2000):
         try:
             controller.admit()
-            controller.release()
             admitted += 1
         except AdmissionDenied:
             pass
@@ -43,7 +42,6 @@ def test_burst_absorbs_3000_per_second_for_60_seconds() -> None:
     for _ in range(60 * 3000):
         try:
             controller.admit()
-            controller.release()
         except AdmissionDenied:
             denied += 1
         clock.advance(1 / 3000)
@@ -64,28 +62,11 @@ def test_sustained_above_limit_is_rejected_with_stable_reason() -> None:
     for _ in range(200):
         try:
             controller.admit()
-            controller.release()
         except AdmissionDenied as error:
             assert error.reason == "RATE_EXCEEDED"
             rejected += 1
         clock.advance(1 / 30)
     assert rejected > 0
-
-
-def test_in_flight_cap_blocks_at_10000_concurrent() -> None:
-    controller = AdmissionController(CapacityPolicy(), clock=FakeClock())
-    for _ in range(10_000):
-        controller.admit()
-    try:
-        controller.admit()
-        raise AssertionError("expected ADMISSION_DENIED")
-    except AdmissionDenied as error:
-        assert error.reason == "INFLIGHT_SATURATED"
-    assert controller.in_flight == 10_000
-    controller.release()
-    assert controller.in_flight == 9_999
-    controller.admit()
-    assert controller.in_flight == 10_000
 
 
 def test_shed_level_classifies_saturation() -> None:

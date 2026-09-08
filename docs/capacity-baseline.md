@@ -17,9 +17,12 @@
 
 - 网关对每次提交执行令牌桶准入（`trpc_service.backpressure.AdmissionController`）：
   桶容量 = 突发速率 × 60s，按持续速率回填。超出后以 **429** 返回稳定错误
-  `RATE_EXCEEDED`；并发 in-flight 达到 `admission_max_in_flight`（默认 10000）
-  时返回 `INFLIGHT_SATURATED`。
-- `GET /internal/v1/capacity` 暴露当前策略、in-flight 与 shed level
+  `RATE_EXCEEDED`；`platform.try_admit_execution` 以事务 advisory lock 统计所有
+  Gateway 副本中尚未终态的执行，达到 `admission_max_in_flight`（默认 10000）
+  时返回 `INFLIGHT_SATURATED`。成功写入 Outbox 后不会释放该容量，只有 Worker
+  将执行推进到终态才会腾出槽位。
+- `GET /internal/v1/capacity` 暴露当前策略、跨副本 `pending_executions`、兼容的
+  `in_flight` 计数与 shed level。
   （GREEN/YELLOW/RED）。
 - 所有准入决策通过 `platform_admission_decisions_total{service,decision,reason}`
   暴露到 Prometheus，并配有 `AdmissionOverload` 告警（见 observability 规则）。
@@ -35,22 +38,25 @@ Prometheus，否则 HPA 只依赖 Resource 指标。
 
 ## 4. 饱和点基线
 
-下表记录理论起点；每次负载验收后以实测值替换（`实测` 列）。
+下表是生产验收必须采集的可审计基线。Gateway 的容量数值由可重复测试与事务
+准入共同约束；其他依赖的行列出报告字段和必须确认的首个饱和阈值，压测 JSON
+输出与对应 Grafana 截图是该行的验收证据。
 
-| 组件 | 饱和信号 | 初始告警阈值 | 实测 |
+| 组件 | 饱和信号 | 初始告警阈值 | 验收报告字段 |
 | --- | --- | --- | --- |
-| Agent Gateway | 429 比率、请求延迟 | burn rate 14.4×（5m）；`AdmissionOverload` | 待验收 |
-| Kafka（Outbox→分区） | 分区积压、生产者延迟 | `ExecutionPipelineFailures` 持续 10m | 待验收 |
-| Agent Worker | 执行结果失败率、lease 等待 | FAILED 结果持续 10m | 待验收 |
-| PostgreSQL | 连接占用、事务延迟、锁等待 | 连接池 > 80%、p95 > 500ms | 待验收 |
-| Redis | 内存、逐出、延迟 | 内存 > 80%、逐出 > 0 | 待验收 |
-| LLM/外部依赖 | 网关延迟、熔断次数 | p95 > 5s、fallback 率 > 5% | 待验收 |
+| Agent Gateway | 429 比率、已接受请求 p99、`pending_executions` | burn rate 14.4×（5m）；`AdmissionOverload`；10000 pending | 1000/s、3000/s profile 的 `accepted_rate`、p99、2xx/429 计数 |
+| Kafka（Outbox→分区） | 分区积压、生产者延迟 | `ExecutionPipelineFailures` 持续 10m | 每分区积压、发布延迟 p95、重试次数 |
+| Agent Worker | 执行结果失败率、lease 等待、PENDING 执行数 | FAILED 结果持续 10m；pending > 8000 | 完成率、lease 等待 p95、pending 峰值 |
+| PostgreSQL | 连接占用、事务延迟、锁等待 | 连接池 > 80%、p95 > 500ms | 连接峰值、事务 p95、锁等待 p95 |
+| Redis | 内存、逐出、延迟 | 内存 > 80%、逐出 > 0 | 内存峰值、逐出计数、命令延迟 p95（未部署时明确 N/A） |
+| LLM/外部依赖 | 网关延迟、熔断次数 | p95 > 5s、fallback 率 > 5% | 依赖 p95、熔断次数、fallback 比率 |
 
 ## 5. 验收流程
 
 1. 部署目标环境并确认 `GET /internal/v1/capacity` 反映生产策略
    （1000/3000/60s/10000）。
-2. 依次运行 `soak`、`sustained`、`burst`，保留 JSON 输出与 Grafana 截图。
+2. 依次运行 `soak`、`sustained`、`burst`，保留 JSON 输出与 Grafana 截图；仅
+   200/202 计入 `accepted_rate`，429 快速拒绝不能使容量验收通过。
 3. 验证扩缩容：突发期间观察 HPA 副本数上升、结束后 300s 内回落。
 4. 验证背压：以 >3000/s 压测，确认 429 `RATE_EXCEEDED` 生效且
    `platform_admission_decisions_total` 同步增长，无雪崩（错误率受控）。

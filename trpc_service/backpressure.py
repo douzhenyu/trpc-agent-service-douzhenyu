@@ -52,7 +52,6 @@ class AdmissionController:
     clock: Callable[[], float] = time.monotonic
     _tokens: float | None = field(default=None, init=False)
     _last_refill: float | None = field(default=None, init=False)
-    _in_flight: int = field(default=0, init=False)
 
     def _refill(self, now: float) -> float:
         capacity = float(self.policy.burst_per_second * self.policy.burst_seconds)
@@ -66,13 +65,13 @@ class AdmissionController:
         return self._tokens
 
     def admit(self) -> None:
-        """Reserve one admission slot or raise :class:`AdmissionDenied`."""
+        """Admit one request through the local sustained-rate token bucket.
+
+        The execution-count limit is enforced transactionally by
+        ``platform.try_admit_execution`` so it remains correct across gateway
+        replicas and until the worker reaches a terminal execution state.
+        """
         now = self.clock()
-        if self._in_flight >= self.policy.max_in_flight:
-            ADMISSION_DECISIONS.labels(
-                service=self.service, decision="DENIED", reason="INFLIGHT_SATURATED"
-            ).inc()
-            raise AdmissionDenied("INFLIGHT_SATURATED")
         tokens = self._refill(now)
         if tokens < 1.0:
             ADMISSION_DECISIONS.labels(
@@ -80,17 +79,7 @@ class AdmissionController:
             ).inc()
             raise AdmissionDenied("RATE_EXCEEDED")
         self._tokens = tokens - 1.0
-        self._in_flight += 1
         ADMISSION_DECISIONS.labels(service=self.service, decision="ALLOWED", reason="NONE").inc()
-
-    def release(self) -> None:
-        """Return an in-flight slot after the execution has been accepted."""
-        if self._in_flight > 0:
-            self._in_flight -= 1
-
-    @property
-    def in_flight(self) -> int:
-        return self._in_flight
 
 
 def shed_level(in_flight: int, pending: int, policy: CapacityPolicy) -> str:

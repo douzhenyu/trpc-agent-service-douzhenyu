@@ -10,7 +10,8 @@ Run against a live stack, e.g.:
       --tenant <uuid> --application <uuid> --profile burst
 
 Exit code is non-zero when the profile's acceptance thresholds fail:
-  p99 latency <= 5s and achieved throughput >= 90% of the requested rate.
+  accepted-request p99 latency <= 5s and accepted throughput >= 90% of the
+  requested rate. Fast 429 responses are reported but never count as capacity.
 """
 
 from __future__ import annotations
@@ -20,6 +21,7 @@ import asyncio
 import json
 import statistics
 import time
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -31,9 +33,12 @@ PROFILES: dict[str, dict[str, int]] = {
 }
 
 ACCEPTED_STATUSES = {200, 202}  # 429 rejections are shed, not errors
+MAX_CLIENT_CONCURRENCY = 10_000
 
 
-async def _send_one(client: httpx.AsyncClient, url: str, payload: dict) -> tuple[float, int]:
+async def _send_one(
+    client: httpx.AsyncClient, url: str, payload: dict[str, Any]
+) -> tuple[float, int]:
     started = time.perf_counter()
     response = await client.post(url, json=payload)
     elapsed = time.perf_counter() - started
@@ -42,57 +47,83 @@ async def _send_one(client: httpx.AsyncClient, url: str, payload: dict) -> tuple
     return elapsed, response.status_code
 
 
-async def run(profile: str, url: str, tenant: str, application: str) -> dict:
+async def run(profile: str, url: str, tenant: str, application: str) -> dict[str, Any]:
     settings = PROFILES[profile]
     rate = settings["rate"]
     duration = settings["seconds"]
     interval = 1.0 / rate
-    latencies: list[float] = []
+    accepted_latencies: list[float] = []
     status_counts: dict[str, int] = {}
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
         started = time.perf_counter()
-        sent = 0
-        while time.perf_counter() - started < duration:
-            offset = sent * interval
+        attempted = 0
+        concurrency = asyncio.Semaphore(MAX_CLIENT_CONCURRENCY)
+        requests: set[asyncio.Task[None]] = set()
+
+        async def record_request(payload: dict[str, Any]) -> None:
+            try:
+                elapsed, status = await _send_one(client, url, payload)
+                key = f"{status // 100}xx/{status}"
+                status_counts[key] = status_counts.get(key, 0) + 1
+                if status in ACCEPTED_STATUSES:
+                    accepted_latencies.append(elapsed)
+            finally:
+                concurrency.release()
+
+        while True:
+            offset = attempted * interval
+            if offset >= duration:
+                break
             payload = {
                 "tenant_id": tenant,
                 "application_id": application,
                 "environment": "PRODUCTION",
                 "session_id": f"load-{uuid4().hex[:8]}",
-                "messages": [{"role": "user", "content": f"load-{sent}"}],
+                "messages": [{"role": "user", "content": f"load-{attempted}"}],
                 "message_id": f"load-{uuid4()}",
             }
-            elapsed, status = await _send_one(client, url, payload)
-            latencies.append(elapsed)
-            key = f"{status // 100}xx/{status}"
-            status_counts[key] = status_counts.get(key, 0) + 1
-            sent += 1
             ahead = offset - (time.perf_counter() - started)
             if ahead > 0:
                 await asyncio.sleep(ahead)
+            await concurrency.acquire()
+            request = asyncio.create_task(record_request(payload))
+            requests.add(request)
+            request.add_done_callback(requests.discard)
+            attempted += 1
+
+        if requests:
+            await asyncio.gather(*requests)
+
+    accepted = sum(count for key, count in status_counts.items() if key in {"2xx/200", "2xx/202"})
 
     return {
         "profile": profile,
         "requested_rate": rate,
-        "sent": sent,
-        "achieved_rate": round(sent / duration, 1),
-        "p50_seconds": round(statistics.median(latencies), 4) if latencies else 0.0,
-        "p99_seconds": (
-            round(statistics.quantiles(latencies, n=100)[98], 4) if len(latencies) > 1 else 0.0
+        "attempted": attempted,
+        "accepted": accepted,
+        "attempted_rate": round(attempted / duration, 1),
+        "accepted_rate": round(accepted / duration, 1),
+        "p50_seconds": (
+            round(statistics.median(accepted_latencies), 4) if accepted_latencies else 0.0
         ),
-        "max_seconds": round(max(latencies), 4) if latencies else 0.0,
+        "p99_seconds": (
+            round(statistics.quantiles(accepted_latencies, n=100)[98], 4)
+            if len(accepted_latencies) > 1
+            else 0.0
+        ),
+        "max_seconds": round(max(accepted_latencies), 4) if accepted_latencies else 0.0,
         "status_counts": status_counts,
     }
 
 
-def evaluate(report: dict) -> list[str]:
+def evaluate(report: dict[str, Any]) -> list[str]:
     failures: list[str] = []
     if report["p99_seconds"] > 5.0:
         failures.append(f"p99 {report['p99_seconds']}s exceeds the 5s bound")
-    if report["achieved_rate"] < report["requested_rate"] * 0.9:
+    if report["accepted_rate"] < report["requested_rate"] * 0.9:
         failures.append(
-            f"achieved {report['achieved_rate']}/s below 90% of {report['requested_rate']}/s"
+            f"accepted {report['accepted_rate']}/s below 90% of {report['requested_rate']}/s"
         )
     return failures
 
