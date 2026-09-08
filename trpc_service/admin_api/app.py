@@ -35,6 +35,7 @@ from trpc_service.admin_api.idempotency import (
     remember,
     replay_for,
 )
+from trpc_service.admin_api.knowledge import create_knowledge_router
 from trpc_service.admin_api.model_profiles import create_model_profile_router
 from trpc_service.admin_api.pagination import decode_cursor, encode_cursor
 from trpc_service.admin_api.policies import create_policy_router
@@ -111,6 +112,7 @@ def create_app(
             create_policy_router(db, signing_key=configured.policy_signing_key)
         )
     application.include_router(create_model_profile_router(db))
+    application.include_router(create_knowledge_router(db))
     application.include_router(create_tool_router(db))
     application.include_router(create_tool_approval_router(db))
     application.include_router(create_audit_query_router(db))

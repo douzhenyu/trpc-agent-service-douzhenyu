@@ -321,9 +321,15 @@ class ReleasePinnedRunnerRuntime:
     async def complete(self, command: RunnerExecutionCommand) -> RunnerExecutionReply:
         """Execute one release-pinned run and return the full reply."""
 
+        reply: RunnerExecutionReply | None = None
         async for chunk in self.stream(command, streaming=False):
             if chunk.reply is not None:
-                return chunk.reply
+                # Do not return from inside the async iterator: exhausting it
+                # lets ``stream`` reset its invocation ContextVar in the task
+                # that created it, rather than during async-generator cleanup.
+                reply = chunk.reply
+        if reply is not None:
+            return reply
         raise AgentRunnerError("RUNNER_EMPTY_REPLY")
 
     async def stream(

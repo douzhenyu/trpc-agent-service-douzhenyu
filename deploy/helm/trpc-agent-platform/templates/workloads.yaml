@@ -109,21 +109,6 @@ spec:
                   key: {{ $.Values.agentWorker.databaseSecretKey }}
             - name: LLM_GATEWAY_URL
               value: {{ $.Values.agentWorker.llmGatewayUrl | quote }}
-{{- else if eq $name "channel-gateway" }}
-          command:
-            - /app/.venv/bin/uvicorn
-          args:
-            - trpc_service.channel_gateway:app
-            - --host
-            - 0.0.0.0
-            - --port
-            - {{ $component.port | quote }}
-          env:
-            - name: DATABASE_URL
-              valueFrom:
-                secretKeyRef:
-                  name: {{ $.Values.agentWorker.databaseSecretName }}
-                  key: {{ $.Values.agentWorker.databaseSecretKey }}
 {{- else if eq $name "agent-gateway" }}
           command:
             - /app/.venv/bin/uvicorn

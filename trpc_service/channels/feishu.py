@@ -6,19 +6,21 @@ import asyncio
 import hashlib
 import hmac
 import json
-from collections.abc import Awaitable, Callable, Mapping
+import logging
+from collections.abc import Callable, Coroutine, Mapping
+from concurrent.futures import Future
 from dataclasses import dataclass
 from time import monotonic
 from typing import Any, Protocol
 from uuid import UUID
-
-from httpx import AsyncClient, TimeoutException
 
 from trpc_service.admin_api.database import Database
 from trpc_service.agent_gateway import AgentExecutionAccepted
 from trpc_service.channels.bindings import ChannelBinding, ChannelBindingRegistry
 from trpc_service.channels.delivery import ChannelTransportOutcome, ReplyDelivery
 from trpc_service.channels.inbound import ChannelInboundService, InboundError, SecretResolver
+
+_LOGGER = logging.getLogger("uvicorn.error")
 
 
 class FeishuAdapterError(RuntimeError):
@@ -29,10 +31,139 @@ class FeishuAdapterError(RuntimeError):
         self.code = code
 
 
-class FeishuSecretResolver(Protocol):
-    """Resolve a tenant-scoped Feishu credential from its opaque vault reference."""
+class FeishuLongConnectionSource(Protocol):
+    """Provider boundary for a single Feishu long-connection event stream."""
 
-    def resolve(self, tenant_id: str, secret_ref: str) -> str | Awaitable[str]: ...
+    async def consume(
+        self,
+        app_id: str,
+        on_event: Callable[[Mapping[str, object]], Coroutine[Any, Any, None]],
+    ) -> None: ...
+
+    async def close(self) -> None: ...
+
+
+class BlockingFeishuClient(Protocol):
+    """Small synchronous seam around the official SDK WebSocket client."""
+
+    def start(self) -> None: ...
+
+    def close(self) -> None: ...
+
+
+BlockingFeishuClientFactory = Callable[[Callable[[object], None]], BlockingFeishuClient]
+
+
+class LarkSdkLongConnectionSource:
+    """Bridge the official synchronous SDK into Channel Gateway's async runtime.
+
+    The SDK acknowledges the provider event immediately; the durable inbound
+    pipeline continues on the gateway loop. This keeps provider retries from
+    blocking a slow Agent execution while preserving the adapter's own ledger
+    and binding checks.
+    """
+
+    def __init__(
+        self,
+        *,
+        app_id: str,
+        app_secret: str,
+        client_factory: BlockingFeishuClientFactory | None = None,
+    ) -> None:
+        self._app_id = app_id
+        self._app_secret = app_secret
+        self._client_factory = client_factory
+        self._client: BlockingFeishuClient | None = None
+
+    async def consume(
+        self,
+        app_id: str,
+        on_event: Callable[[Mapping[str, object]], Coroutine[Any, Any, None]],
+    ) -> None:
+        if app_id != self._app_id:
+            raise FeishuAdapterError("FEISHU_LONG_CONNECTION_APP_MISMATCH")
+        gateway_loop = asyncio.get_running_loop()
+
+        def receive(event: object) -> None:
+            future: Future[None] = asyncio.run_coroutine_threadsafe(
+                on_event(lark_event_payload(event)), gateway_loop
+            )
+            future.add_done_callback(_report_background_event_failure)
+
+        def start_client() -> None:
+            # The official SDK captures its event loop while the WebSocket
+            # client is constructed.  Build and start it in the same worker
+            # thread; constructing it on Uvicorn's running loop makes the SDK
+            # attempt to nest ``run_until_complete``.
+            client = self._build_client(receive)
+            self._client = client
+            client.start()
+
+        try:
+            await asyncio.to_thread(start_client)
+        finally:
+            self._client = None
+
+    async def close(self) -> None:
+        if self._client is not None:
+            await asyncio.to_thread(self._client.close)
+
+    def _build_client(self, receive: Callable[[object], None]) -> BlockingFeishuClient:
+        if self._client_factory is not None:
+            return self._client_factory(receive)
+        return _OfficialLarkClient(self._app_id, self._app_secret, receive)
+
+
+def lark_event_payload(event: object) -> dict[str, object]:
+    """Convert an official SDK event object into the validated adapter envelope."""
+
+    import lark_oapi as lark  # type: ignore[import-untyped]
+
+    payload = json.loads(lark.JSON.marshal(event))
+    if not isinstance(payload, dict):
+        raise FeishuAdapterError("FEISHU_EVENT_INVALID")
+    return {str(key): value for key, value in payload.items()}
+
+
+def _report_background_event_failure(future: Future[None]) -> None:
+    """Record only the stable failure class; provider payloads never reach logs."""
+
+    try:
+        future.result()
+    except Exception as error:
+        _LOGGER.warning(
+            "feishu_long_connection_event_failed error_code=%s",
+            getattr(error, "code", type(error).__name__),
+        )
+
+
+class _OfficialLarkClient:
+    """Deferred import keeps unit tests independent from the provider package."""
+
+    def __init__(self, app_id: str, app_secret: str, receive: Callable[[object], None]) -> None:
+        import lark_oapi as lark
+
+        handler = (
+            lark.EventDispatcherHandler.builder("", "")
+            .register_p2_im_message_receive_v1(receive)
+            .build()
+        )
+        self._client = lark.ws.Client(
+            app_id,
+            app_secret,
+            log_level=lark.LogLevel.ERROR,
+            event_handler=handler,
+            auto_reconnect=False,
+        )
+
+    def start(self) -> None:
+        self._client.start()
+
+    def close(self) -> None:
+        import lark_oapi.ws.client as ws_client  # type: ignore[import-untyped]
+
+        if ws_client.loop.is_running():
+            asyncio.run_coroutine_threadsafe(self._client._disconnect(), ws_client.loop).result(2)
 
 
 @dataclass(frozen=True)
@@ -53,18 +184,6 @@ class LongConnectionLeaseStore(Protocol):
     ) -> LongConnectionLease | None: ...
 
     async def release(self, lease: LongConnectionLease) -> None: ...
-
-
-class FeishuLongConnectionSource(Protocol):
-    """Provider SDK boundary for one Feishu long-connection application stream."""
-
-    async def consume(
-        self,
-        app_id: str,
-        on_event: Callable[[Mapping[str, object]], Awaitable[None]],
-    ) -> None: ...
-
-    async def close(self) -> None: ...
 
 
 class MemoryLongConnectionLeaseStore:
@@ -105,50 +224,6 @@ class MemoryLongConnectionLeaseStore:
     async def release(self, lease: LongConnectionLease) -> None:
         if self._leases.get(lease.connection_key) == lease:
             self._leases.pop(lease.connection_key)
-
-
-class FeishuLongConnectionSupervisor:
-    """Own, renew and release one SDK long connection under a fenced lease."""
-
-    def __init__(
-        self,
-        *,
-        adapter: FeishuChannelAdapter,
-        source: FeishuLongConnectionSource,
-        app_id: str,
-        on_accepted: Callable[[AgentExecutionAccepted, Mapping[str, object]], Awaitable[None]],
-        renew_interval_seconds: float = 10.0,
-    ) -> None:
-        self._adapter = adapter
-        self._source = source
-        self._app_id = app_id
-        self._on_accepted = on_accepted
-        self._renew_interval_seconds = renew_interval_seconds
-
-    async def run(self) -> None:
-        await self._adapter.acquire_long_connection(self._app_id)
-        renew_task = asyncio.create_task(self._renew())
-        try:
-            await self._source.consume(self._app_id, self._receive)
-        finally:
-            renew_task.cancel()
-            await self._adapter.release_long_connection()
-
-    async def _receive(self, payload: Mapping[str, object]) -> None:
-        accepted = await self._adapter.receive_long_connection_event(payload)
-        if accepted.deduplicated:
-            return
-        await self._on_accepted(accepted, payload)
-
-    async def _renew(self) -> None:
-        try:
-            while True:
-                await asyncio.sleep(self._renew_interval_seconds)
-                await self._adapter.renew_long_connection()
-        except FeishuAdapterError:
-            # Losing the lease fences this instance before it can consume more
-            # events; the SDK source must then disconnect.
-            await self._source.close()
 
 
 class DatabaseLongConnectionLeaseStore:
@@ -241,81 +316,67 @@ class FeishuCardClient(Protocol):
     def reconcile_card(self, idempotency_key: str) -> str: ...
 
 
-class HttpFeishuCardClient:
-    """Feishu IM card client with stable logical-delivery identity.
+class LarkSdkCardClient:
+    """Official SDK-backed reply transport for one inbound Feishu message.
 
-    The Feishu API creates a message once and subsequently patches that same
-    message.  The delivery id is carried as the API ``uuid`` so a retry can be
-    reconciled without creating another user-visible card.
+    ``conversation_id`` is intentionally the provider message ID rather than a
+    chat identifier: replying to the original message works for both P2P and
+    group conversations and lets Feishu retain the reply relationship.  The
+    stable delivery ID is passed to the provider as its idempotency UUID.
     """
 
-    def __init__(
-        self,
-        http: AsyncClient,
-        *,
-        tenant_access_token: str,
-        api_base_url: str = "https://open.feishu.cn",
-    ) -> None:
-        self._http = http
-        self._tenant_access_token = tenant_access_token
-        self._api_base_url = api_base_url.rstrip("/")
-        self._message_ids: dict[str, str] = {}
+    def __init__(self, *, app_id: str, app_secret: str) -> None:
+        self._app_id = app_id
+        self._app_secret = app_secret
 
     async def upsert_card(
         self, *, conversation_id: str, card: dict[str, object], idempotency_key: str
     ) -> FeishuCardResponse:
-        message_id = self._message_ids.get(idempotency_key)
-        headers = {"Authorization": f"Bearer {self._tenant_access_token}"}
-        content = json.dumps(card, ensure_ascii=False, separators=(",", ":"))
         try:
-            if message_id is not None:
-                response = await self._http.patch(
-                    f"{self._api_base_url}/open-apis/im/v1/messages/{message_id}",
-                    headers=headers,
-                    json={"msg_type": "interactive", "content": content},
-                    timeout=10.0,
-                )
-            else:
-                receive_id_type, receive_id = _feishu_receive_id(conversation_id)
-                response = await self._http.post(
-                    f"{self._api_base_url}/open-apis/im/v1/messages",
-                    params={"receive_id_type": receive_id_type},
-                    headers=headers,
-                    json={
-                        "receive_id": receive_id,
-                        "msg_type": "interactive",
-                        "content": content,
-                        "uuid": idempotency_key,
-                    },
-                    timeout=10.0,
-                )
-        except (TimeoutError, TimeoutException):
+            return await asyncio.to_thread(self._reply, conversation_id, card, idempotency_key)
+        except TimeoutError:
             raise
         except Exception:
-            return FeishuCardResponse(error_code="FEISHU_CARD_REQUEST_FAILED")
-        if response.status_code == 429:
-            return FeishuCardResponse(rate_limited=True, error_code="FEISHU_CARD_RATE_LIMITED")
-        if not 200 <= response.status_code < 300:
-            return FeishuCardResponse(error_code=f"FEISHU_CARD_HTTP_{response.status_code}")
-        try:
-            payload: Any = response.json()
-            if not isinstance(payload, dict) or payload.get("code", 0) != 0:
-                return FeishuCardResponse(error_code="FEISHU_CARD_API_FAILED")
-            data = payload.get("data")
-            returned_id = data.get("message_id") if isinstance(data, dict) else None
-        except ValueError:
-            return FeishuCardResponse(error_code="FEISHU_CARD_RESPONSE_INVALID")
-        if message_id is None:
-            if not isinstance(returned_id, str) or not returned_id:
-                return FeishuCardResponse(error_code="FEISHU_CARD_RESPONSE_INVALID")
-            self._message_ids[idempotency_key] = returned_id
-        return FeishuCardResponse(delivered=True)
+            return FeishuCardResponse(error_code="FEISHU_CARD_SEND_FAILED")
 
     def reconcile_card(self, idempotency_key: str) -> str:
-        # The create request carries this same value as Feishu's UUID.  It is
-        # therefore safe to retry a timed-out request: Feishu deduplicates it
-        # instead of creating another visible card.
-        return "delivered" if idempotency_key in self._message_ids else "not_delivered"
+        del idempotency_key
+        # Feishu's reply endpoint does not expose a lookup keyed by client UUID.
+        # Preserve the delivery state machine's fail-safe reconciliation path.
+        return "unknown"
+
+    def _reply(
+        self,
+        message_id: str,
+        card: dict[str, object],
+        idempotency_key: str,
+    ) -> FeishuCardResponse:
+        import lark_oapi as lark
+
+        client = (
+            lark.Client.builder()
+            .app_id(self._app_id)
+            .app_secret(self._app_secret)
+            .log_level(lark.LogLevel.ERROR)
+            .build()
+        )
+        body = (
+            lark.im.v1.ReplyMessageRequestBody.builder()
+            .msg_type("interactive")
+            .content(json.dumps(card, ensure_ascii=False))
+            .uuid(idempotency_key)
+            .build()
+        )
+        request = (
+            lark.im.v1.ReplyMessageRequest.builder()
+            .message_id(message_id)
+            .request_body(body)
+            .build()
+        )
+        response = client.im.v1.message.reply(request)
+        if response.success():
+            return FeishuCardResponse(delivered=True)
+        return FeishuCardResponse(error_code="FEISHU_CARD_REJECTED")
 
 
 class FeishuCardTransport:
@@ -347,7 +408,7 @@ class FeishuCardTransport:
                 card=render_feishu_card(delivery.content),
                 idempotency_key=delivery.delivery_id,
             )
-        except (TimeoutError, TimeoutException):
+        except TimeoutError:
             return ChannelTransportOutcome(
                 False, outcome_unknown=True, error_code="FEISHU_CARD_TIMEOUT"
             )
@@ -371,18 +432,6 @@ def render_feishu_card(content: str) -> dict[str, object]:
         "config": {"wide_screen_mode": True},
         "elements": [{"tag": "div", "text": {"tag": "lark_md", "content": content}}],
     }
-
-
-def _feishu_receive_id(conversation_id: str) -> tuple[str, str]:
-    """Decode the typed conversation identity persisted with a delivery."""
-
-    try:
-        receive_id_type, receive_id = conversation_id.split(":", 1)
-    except ValueError as error:
-        raise ValueError("FEISHU_CONVERSATION_INVALID") from error
-    if receive_id_type not in {"chat_id", "open_id"} or not receive_id:
-        raise ValueError("FEISHU_CONVERSATION_INVALID")
-    return receive_id_type, receive_id
 
 
 def feishu_webhook_signature(*, token: str, timestamp: str, nonce: str, body: bytes) -> str:
@@ -434,7 +483,7 @@ class FeishuChannelAdapter:
         )
         if not hmac.compare_digest(signature, expected):
             raise FeishuAdapterError("FEISHU_SIGNATURE_INVALID")
-        event = normalize_feishu_message(payload)
+        event = normalize_feishu_message(payload, binding)
         try:
             return await self._inbound.ingest_verified(tenant_id=self._tenant_id, event=event)
         except InboundError as error:
@@ -480,7 +529,7 @@ class FeishuChannelAdapter:
         binding = await self._binding_for(copied)
         if self._lease.connection_key != self._connection_key(binding.external_bot_id):
             raise FeishuAdapterError("FEISHU_LONG_CONNECTION_APP_MISMATCH")
-        event = normalize_feishu_message(copied)
+        event = normalize_feishu_message(copied, binding)
         try:
             return await self._inbound.ingest_verified(tenant_id=self._tenant_id, event=event)
         except InboundError as error:
@@ -502,7 +551,9 @@ class FeishuChannelAdapter:
         return f"feishu:{self._tenant_id}:{app_id}"
 
 
-def normalize_feishu_message(payload: Mapping[str, object]) -> dict[str, str]:
+def normalize_feishu_message(
+    payload: Mapping[str, object], binding: ChannelBinding
+) -> dict[str, str]:
     """Normalize Feishu direct, group and topic text into the common inbound shape."""
 
     header = payload.get("header")
@@ -551,6 +602,17 @@ def normalize_feishu_message(payload: Mapping[str, object]) -> dict[str, str]:
         "external_user_id": external_user_id,
         "session_key": session_key,
     }
+
+
+def feishu_reply_message_id(payload: Mapping[str, object]) -> str:
+    """Return the provider message ID used as the durable reply target."""
+
+    event = payload.get("event")
+    message = event.get("message") if isinstance(event, Mapping) else None
+    message_id = message.get("message_id") if isinstance(message, Mapping) else None
+    if not isinstance(message_id, str) or not message_id:
+        raise FeishuAdapterError("FEISHU_EVENT_INVALID")
+    return message_id
 
 
 def _header(headers: Mapping[str, str], name: str) -> str:

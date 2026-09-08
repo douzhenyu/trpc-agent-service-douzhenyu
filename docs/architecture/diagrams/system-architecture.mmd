@@ -85,7 +85,7 @@ flowchart TB
   API_CLIENT -->|"同步协议 / 流式连接"| AGENT_GATEWAY
   IM_USER --> WECOM
   IM_USER --> FEISHU
-  WECOM -->|"HTTPS 回调"| WECOM_ADAPTER
+  WECOM -->|"WSS 长连接 / HTTPS 回调"| WECOM_ADAPTER
   FEISHU -->|"Webhook / 长连接"| FEISHU_ADAPTER
 
   ADMIN_API -->|"管理"| CHANNEL_BINDING

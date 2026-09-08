@@ -249,6 +249,79 @@ class AgentDeploymentList(BaseModel):
     next_cursor: str | None = None
 
 
+class KnowledgeBaseCreate(BaseModel):
+    slug: str = Field(pattern=r"^[a-z0-9][a-z0-9-]{1,62}$")
+    name: str = Field(min_length=1, max_length=200)
+
+
+class KnowledgeBaseResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    slug: str
+    name: str
+    version: int = Field(ge=1)
+    created_at: datetime
+
+
+class KnowledgeSource(BaseModel):
+    source_ref: str = Field(min_length=1, max_length=512)
+    content: str = Field(min_length=1, max_length=1_000_000)
+    acl_subjects: list[str] = Field(min_length=1, max_length=100)
+    data_classification: DataClassification
+
+
+class KnowledgeChunking(BaseModel):
+    max_chars: int = Field(ge=1, le=100_000)
+    overlap_chars: int = Field(ge=0, le=99_999)
+
+
+class KnowledgeRevisionCreate(BaseModel):
+    sources: list[KnowledgeSource] = Field(min_length=1, max_length=1_000)
+    chunking: KnowledgeChunking
+    embedding_model: str = Field(min_length=1, max_length=128)
+    index_config: dict[str, Any] = Field(min_length=1)
+
+
+class KnowledgeRevisionResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    base_id: UUID
+    version: int = Field(ge=1)
+    source_snapshot: list[dict[str, Any]]
+    chunking: KnowledgeChunking
+    embedding_model: str
+    index_config: dict[str, Any]
+    content_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    status: Literal["BUILDING", "READY", "FAILED"]
+    created_at: datetime
+    validated_at: datetime | None
+    error_code: str | None
+
+
+class KnowledgeDeploymentCreate(BaseModel):
+    environment: DeploymentEnvironment
+    revision_id: UUID
+    rollout_percentage: int = Field(ge=1, le=100)
+
+
+class KnowledgeDeploymentRollback(BaseModel):
+    environment: DeploymentEnvironment
+    revision_id: UUID
+
+
+class KnowledgeDeploymentResponse(BaseModel):
+    id: UUID
+    tenant_id: UUID
+    base_id: UUID
+    environment: DeploymentEnvironment
+    revision_id: UUID
+    previous_revision_id: UUID | None
+    rollout_percentage: int = Field(ge=1, le=100)
+    source_kind: Literal["DEPLOY", "ROLLBACK"]
+    created_by: str
+    created_at: datetime
+
+
 DraftIssueCode = Literal[
     "DRAFT_INSTRUCTIONS_REQUIRED",
     "DRAFT_MODEL_ALIAS_INVALID",

@@ -72,9 +72,6 @@ wait_for_application() {
     -l app.kubernetes.io/component=database-migration >&2 || true
   kube logs -n platform-smoke \
     -l app.kubernetes.io/component=database-migration --all-containers=true >&2 || true
-  kube logs -n platform-smoke \
-    -l "app.kubernetes.io/component=${application#smoke-}" --all-containers=true \
-    --tail=60 >&2 || true
   return 1
 }
 
