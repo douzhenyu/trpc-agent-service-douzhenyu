@@ -29,6 +29,7 @@ from trpc_service.admin_api.auth import Principal
 from trpc_service.admin_api.database import Connection, Database
 from trpc_service.artifacts import ArtifactLifecycleWorker
 from trpc_service.content_lifecycle import ContentDeletionWorker, DeletionExecutor, RetentionSweep
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import (
     JOB_WORKER_SOURCE,
     MEMORY_INVALIDATED_EVENT,
@@ -715,6 +716,7 @@ def create_app(
     ) -> dict[str, bool]:
         return await correct_memory(tenant_id, memory_id, payload, operation_token)
 
+    register_degradations_endpoint(application)
     install_telemetry(application, "job-worker")
     return application
 

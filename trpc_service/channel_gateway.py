@@ -85,6 +85,7 @@ from trpc_service.channels.wecom import (
     normalize_to_inbound,
     parse_event,
 )
+from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.governance import DataClassification, scan_messages
 from trpc_service.llm_gateway import VaultSecretProvider
 from trpc_service.memory_access import SubjectMemoryReader, memory_policy_for_session_scope
@@ -506,6 +507,7 @@ def create_app(
         )
         return PlainTextResponse("")
 
+    register_degradations_endpoint(application)
     install_telemetry(application, "channel-gateway")
     return application
 
