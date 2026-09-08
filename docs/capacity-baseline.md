@@ -56,7 +56,8 @@ Prometheus，否则 HPA 只依赖 Resource 指标。
 1. 部署目标环境并确认 `GET /internal/v1/capacity` 反映生产策略
    （1000/3000/60s/10000）。
 2. 依次运行 `soak`、`sustained`、`burst`，保留 JSON 输出与 Grafana 截图；仅
-   200/202 计入 `accepted_rate`，429 快速拒绝不能使容量验收通过。
+   在 profile 截止窗口内完成的 200/202 计入 `accepted_rate`，429 快速拒绝或窗口后
+   返回的 2xx 都不能使容量验收通过。
 3. 验证扩缩容：突发期间观察 HPA 副本数上升、结束后 300s 内回落。
 4. 验证背压：以 >3000/s 压测，确认 429 `RATE_EXCEEDED` 生效且
    `platform_admission_decisions_total` 同步增长，无雪崩（错误率受控）。

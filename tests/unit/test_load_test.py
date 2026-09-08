@@ -38,4 +38,22 @@ def test_run_schedules_requests_concurrently_and_counts_only_acceptance(
 
     assert peak_active > 1
     assert report["attempted"] == 200
-    assert report["accepted"] == 200
+    assert 180 <= report["accepted"] < 200
+    assert report["late_accepted"] > 0
+
+
+def test_run_does_not_count_accepted_responses_that_miss_the_profile_window(
+    monkeypatch,
+) -> None:
+    async def slow_send(_client, _url, _payload):
+        await asyncio.sleep(1.05)
+        return 1.05, 202
+
+    monkeypatch.setitem(load_test.PROFILES, "slow", {"rate": 1, "seconds": 1})
+    monkeypatch.setattr(load_test, "_send_one", slow_send)
+
+    report = asyncio.run(load_test.run("slow", "http://gateway", "tenant", "application"))
+
+    assert report["accepted"] == 0
+    assert report["late_accepted"] == 1
+    assert load_test.evaluate(report) == ["accepted 0.0/s below 90% of 1/s"]

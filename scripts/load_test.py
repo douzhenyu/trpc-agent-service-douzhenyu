@@ -57,17 +57,23 @@ async def run(profile: str, url: str, tenant: str, application: str) -> dict[str
 
     async with httpx.AsyncClient(timeout=httpx.Timeout(10.0)) as client:
         started = time.perf_counter()
+        deadline = started + duration
         attempted = 0
+        late_responses = 0
         concurrency = asyncio.Semaphore(MAX_CLIENT_CONCURRENCY)
         requests: set[asyncio.Task[None]] = set()
 
         async def record_request(payload: dict[str, Any]) -> None:
+            nonlocal late_responses
             try:
                 elapsed, status = await _send_one(client, url, payload)
+                completed_at = time.perf_counter()
                 key = f"{status // 100}xx/{status}"
                 status_counts[key] = status_counts.get(key, 0) + 1
-                if status in ACCEPTED_STATUSES:
+                if status in ACCEPTED_STATUSES and completed_at <= deadline:
                     accepted_latencies.append(elapsed)
+                elif status in ACCEPTED_STATUSES:
+                    late_responses += 1
             finally:
                 concurrency.release()
 
@@ -86,6 +92,8 @@ async def run(profile: str, url: str, tenant: str, application: str) -> dict[str
             ahead = offset - (time.perf_counter() - started)
             if ahead > 0:
                 await asyncio.sleep(ahead)
+            if time.perf_counter() >= deadline:
+                break
             await concurrency.acquire()
             request = asyncio.create_task(record_request(payload))
             requests.add(request)
@@ -95,13 +103,14 @@ async def run(profile: str, url: str, tenant: str, application: str) -> dict[str
         if requests:
             await asyncio.gather(*requests)
 
-    accepted = sum(count for key, count in status_counts.items() if key in {"2xx/200", "2xx/202"})
+    accepted = len(accepted_latencies)
 
     return {
         "profile": profile,
         "requested_rate": rate,
         "attempted": attempted,
         "accepted": accepted,
+        "late_accepted": late_responses,
         "attempted_rate": round(attempted / duration, 1),
         "accepted_rate": round(accepted / duration, 1),
         "p50_seconds": (
