@@ -45,6 +45,16 @@ groups:
           severity: warning
         annotations:
           summary: 控制面 30m 错误预算燃烧率超过 6 倍
+  - name: trpc-platform-capacity
+    rules:
+      - alert: AdmissionOverload
+        expr: >
+          sum(rate(platform_admission_decisions_total{decision="DENIED"}[10m])) > 0
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: 网关在持续负载下拒绝请求，容量已饱和
   - name: trpc-platform-pipeline
     rules:
       - alert: ExecutionPipelineFailures

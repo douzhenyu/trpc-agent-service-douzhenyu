@@ -346,6 +346,7 @@ class AgentExecutionProcessor:
             try:
                 await self._handle(data, envelope)
             except ModelGatewayError:
+                await self._mark_failed(UUID(data.tenant_id), UUID(data.execution_id))
                 EXECUTION_OUTCOMES.labels(service="agent-worker", outcome="FAILED").inc()
                 raise
             EXECUTION_OUTCOMES.labels(service="agent-worker", outcome="SUCCEEDED").inc()
@@ -356,7 +357,7 @@ class AgentExecutionProcessor:
         storage = await self._storage_profiles.resolve(tenant_id)
         if storage is not None and storage.worker_pool != self._worker_pool:
             raise ModelGatewayError("STORAGE_WORKER_POOL_MISMATCH")
-        if await self._execution_status(tenant_id, envelope.message_id) == "SUCCEEDED":
+        if await self._execution_status(tenant_id, envelope.message_id) in {"SUCCEEDED", "FAILED"}:
             return
         grant: LeaseGrant = await self._leases.acquire(tenant_id, session_id, self._owner_id)
         route = await self._releases.resolve(data.tenant_id, data.release_id)
@@ -436,6 +437,15 @@ class AgentExecutionProcessor:
                 message_id,
             )
             return status
+
+    async def _mark_failed(self, tenant_id: UUID, execution_id: UUID) -> None:
+        async with self._database.tenant_transaction(tenant_id) as connection:
+            await connection.execute(
+                """UPDATE tenant.agent_execution SET status='FAILED',updated_at=now()
+                WHERE tenant_id=$1 AND id=$2 AND status='PENDING'""",
+                tenant_id,
+                execution_id,
+            )
 
 
 class AgentWorkerSettings(BaseSettings):
