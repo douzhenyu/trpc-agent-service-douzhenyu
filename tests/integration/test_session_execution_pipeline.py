@@ -29,7 +29,7 @@ from trpc_service.execution_bus import (
     InMemoryExecutionBus,
     OutboxDispatcher,
 )
-from trpc_service.llm_gateway import GatewayRequest, GatewayResult
+from trpc_service.llm_gateway import GatewayRequest, GatewayResult, ModelGatewayError
 from trpc_service.sessions import (
     SessionEvent,
     SessionLeaseError,
@@ -62,6 +62,11 @@ class ScriptedGateway:
             fallback_used=False,
             completion={"role": "assistant", "content": "gateway-reply"},
         )
+
+
+class FailingGateway:
+    async def complete(self, _request: GatewayRequest) -> GatewayResult:
+        raise ModelGatewayError("MODEL_UNAVAILABLE")
 
 
 async def _prepare_database() -> None:
@@ -803,6 +808,7 @@ def test_capacity_limit_tracks_pending_executions_until_worker_completion() -> N
             capacity = client.get("/internal/v1/capacity")
             assert capacity.status_code == 200
             assert capacity.json()["pending_executions"] == 1
+            assert capacity.json()["pending_outbox_records"] == 1
             assert capacity.json()["shed_level"] == "RED"
 
             rejected = client.post(
@@ -811,5 +817,86 @@ def test_capacity_limit_tracks_pending_executions_until_worker_completion() -> N
             )
             assert rejected.status_code == 429
             assert rejected.json()["detail"] == "INFLIGHT_SATURATED"
+
+    asyncio.run(scenario())
+
+
+def test_rate_limit_is_shared_by_gateway_replicas() -> None:
+    """A second gateway replica cannot multiply the configured global rate."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        tenant_id, application_id, _release_id = await _seed_release_stack()
+        settings = AgentGatewaySettings(
+            database_url=APP_URL,
+            dispatch_interval_seconds=0.0,
+            admission_sustained_per_second=1,
+            admission_burst_per_second=1,
+            admission_burst_seconds=1,
+            admission_max_in_flight=100,
+        )
+        first_app = create_app(settings, bus=InMemoryExecutionBus(partition_count=4))
+        second_app = create_app(settings, bus=InMemoryExecutionBus(partition_count=4))
+        payload = {
+            "tenant_id": tenant_id,
+            "application_id": application_id,
+            "environment": "PRODUCTION",
+            "session_id": "session-global-rate",
+            "messages": [{"role": "user", "content": "load"}],
+        }
+        with TestClient(first_app) as first, TestClient(second_app) as second:
+            accepted = first.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "global-rate-1"},
+            )
+            assert accepted.status_code == 202
+            rejected = second.post(
+                "/internal/v1/agent-executions",
+                json={**payload, "message_id": "global-rate-2"},
+            )
+            assert rejected.status_code == 429
+            assert rejected.json()["detail"] == "RATE_EXCEEDED"
+
+    asyncio.run(scenario())
+
+
+def test_unrecoverable_model_failure_releases_durable_execution_capacity() -> None:
+    """Terminal worker failures do not leave a PENDING execution forever."""
+
+    asyncio.run(_prepare_database())
+
+    async def scenario() -> None:
+        database = await _open_database()
+        try:
+            tenant_id, application_id, _release_id = await _seed_release_stack()
+            bus = InMemoryExecutionBus(partition_count=4)
+            submitter = AgentExecutionSubmitter(database, DatabaseDeploymentRouteResolver(database))
+            accepted = await submitter.submit(
+                _submission(tenant_id, application_id, "session-terminal-failure")
+            )
+            assert await OutboxDispatcher(database, bus).dispatch_pending() == 1
+            worker = AgentWorker(FailingGateway(), DatabaseReleaseRouteResolver(database))
+            processor = AgentExecutionProcessor(
+                worker,
+                database,
+                DatabaseReleaseRouteResolver(database),
+                SessionLeaseManager(database),
+                "worker-terminal-failure",
+            )
+            assert await bus.deliver_once(processor.handle) is False
+
+            connection = await asyncpg.connect(ADMIN_URL)
+            try:
+                status = await connection.fetchval(
+                    "SELECT status FROM tenant.agent_execution WHERE tenant_id=$1 AND id=$2",
+                    UUID(tenant_id),
+                    accepted.execution_id,
+                )
+                assert status == "FAILED"
+            finally:
+                await connection.close()
+        finally:
+            await database.close()
 
     asyncio.run(scenario())

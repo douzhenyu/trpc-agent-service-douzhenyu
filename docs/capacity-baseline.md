@@ -15,14 +15,14 @@
 
 ## 2. 背压与拒绝策略
 
-- 网关对每次提交执行令牌桶准入（`trpc_service.backpressure.AdmissionController`）：
-  桶容量 = 突发速率 × 60s，按持续速率回填。超出后以 **429** 返回稳定错误
-  `RATE_EXCEEDED`；`platform.try_admit_execution` 以事务 advisory lock 统计所有
-  Gateway 副本中尚未终态的执行，达到 `admission_max_in_flight`（默认 10000）
-  时返回 `INFLIGHT_SATURATED`。成功写入 Outbox 后不会释放该容量，只有 Worker
-  将执行推进到终态才会腾出槽位。
-- `GET /internal/v1/capacity` 暴露当前策略、跨副本 `pending_executions`、兼容的
-  `in_flight` 计数与 shed level。
+- 网关对每次提交执行令牌桶准入（`platform.try_admit_execution`）：桶状态在
+  PostgreSQL 中由事务 advisory lock 保护，因而持续/突发额度在所有 Gateway 副本间
+  共享；桶容量 = 突发速率 × 60s，按持续速率回填。超出后以 **429** 返回稳定错误
+  `RATE_EXCEEDED`。同一函数还统计所有 Gateway 副本中尚未终态的执行，达到
+  `admission_max_in_flight`（默认 10000）时返回 `INFLIGHT_SATURATED`。成功写入
+  Outbox 后不会释放该容量；Worker 将成功或不可恢复的模型失败推进为终态才会腾出槽位。
+- `GET /internal/v1/capacity` 暴露当前策略、跨副本 `pending_executions`、待发布的
+  `pending_outbox_records`、兼容的 `in_flight` 计数与 shed level。
   （GREEN/YELLOW/RED）。
 - 所有准入决策通过 `platform_admission_decisions_total{service,decision,reason}`
   暴露到 Prometheus，并配有 `AdmissionOverload` 告警（见 observability 规则）。

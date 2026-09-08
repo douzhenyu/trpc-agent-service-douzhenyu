@@ -11,7 +11,7 @@ depends_on = None
 
 
 def upgrade() -> None:
-    for statement in Path(__file__).with_suffix(".sql").read_text().split(";"):
+    for statement in Path(__file__).with_suffix(".sql").read_text().split("\n-- statement\n"):
         if statement.strip():
             op.execute(statement)
 

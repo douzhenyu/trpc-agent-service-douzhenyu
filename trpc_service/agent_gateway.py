@@ -30,6 +30,7 @@ from trpc_service.agent_worker import (
     DatabaseReleaseRouteResolver,
 )
 from trpc_service.backpressure import (
+    ADMISSION_DECISIONS,
     AdmissionController,
     AdmissionDenied,
     CapacityPolicy,
@@ -140,11 +141,11 @@ class AgentExecutionSubmitter:
         self,
         database: Database,
         deployments: DatabaseDeploymentRouteResolver,
-        max_in_flight: int = 10_000,
+        capacity_policy: CapacityPolicy | None = None,
     ):
         self._database = database
         self._deployments = deployments
-        self._max_in_flight = max_in_flight
+        self._capacity_policy = capacity_policy or CapacityPolicy()
 
     async def _deduplicated_submission(
         self,
@@ -196,10 +197,16 @@ class AgentExecutionSubmitter:
             )
             if duplicate is not None:
                 return duplicate
-            admitted = await connection.fetchval(
-                "SELECT platform.try_admit_execution($1)", self._max_in_flight
+            admission = str(
+                await connection.fetchval(
+                    "SELECT platform.try_admit_execution($1, $2, $3, $4)",
+                    self._capacity_policy.max_in_flight,
+                    self._capacity_policy.sustained_per_second,
+                    self._capacity_policy.burst_per_second,
+                    self._capacity_policy.burst_seconds,
+                )
             )
-            if not admitted:
+            if admission != "ALLOWED":
                 # The capacity lock can have waited for a concurrent duplicate
                 # submission to commit. Re-check idempotency before shedding it.
                 duplicate = await self._deduplicated_submission(
@@ -207,7 +214,7 @@ class AgentExecutionSubmitter:
                 )
                 if duplicate is not None:
                     return duplicate
-                raise AgentGatewayError("INFLIGHT_SATURATED")
+                raise AgentGatewayError(admission)
             await create_session_if_missing(
                 connection, submission.tenant_id, submission.application_id, submission.session_id
             )
@@ -280,11 +287,18 @@ def create_app(
         database = Database(configured.database_url)
         await database.open()
         application.state.database = database
+        policy = CapacityPolicy(
+            sustained_per_second=configured.admission_sustained_per_second,
+            burst_per_second=configured.admission_burst_per_second,
+            burst_seconds=configured.admission_burst_seconds,
+            max_in_flight=configured.admission_max_in_flight,
+        )
         application.state.submitter = AgentExecutionSubmitter(
             database,
             DatabaseDeploymentRouteResolver(database),
-            configured.admission_max_in_flight,
+            policy,
         )
+        application.state.admission = AdmissionController(policy)
         policy_resolver = (
             PolicyBundleRulesResolver(
                 PolicyBundleService(database, signing_key=configured.policy_signing_key)
@@ -365,7 +379,12 @@ def create_app(
         try:
             accepted = await submitter.submit(submission)
         except AgentGatewayError as error:
-            status_code = 429 if error.code == "INFLIGHT_SATURATED" else 409
+            if error.code in {"INFLIGHT_SATURATED", "RATE_EXCEEDED"}:
+                controller = cast(AdmissionController, application.state.admission)
+                ADMISSION_DECISIONS.labels(
+                    service=controller.service, decision="DENIED", reason=error.code
+                ).inc()
+            status_code = 429 if error.code in {"INFLIGHT_SATURATED", "RATE_EXCEEDED"} else 409
             raise HTTPException(status_code=status_code, detail=error.code) from error
         response.status_code = 200 if accepted.deduplicated else 202
         return accepted
@@ -379,23 +398,23 @@ def create_app(
             pending_executions = int(
                 await connection.fetchval("SELECT platform.pending_execution_count()")
             )
+            pending_outbox_records = int(
+                await connection.fetchval(
+                    """SELECT count(*) FROM platform.outbox_record
+                    WHERE status='PENDING' AND event_type=$1""",
+                    EXECUTION_REQUESTED_EVENT,
+                )
+            )
         return {
             "sustained_per_second": policy.sustained_per_second,
             "burst_per_second": policy.burst_per_second,
             "max_in_flight": policy.max_in_flight,
             "in_flight": pending_executions,
             "pending_executions": pending_executions,
-            "shed_level": shed_level(pending_executions, 0, policy),
+            "pending_outbox_records": pending_outbox_records,
+            "shed_level": shed_level(pending_executions, pending_outbox_records, policy),
         }
 
-    application.state.admission = AdmissionController(
-        CapacityPolicy(
-            sustained_per_second=configured.admission_sustained_per_second,
-            burst_per_second=configured.admission_burst_per_second,
-            burst_seconds=configured.admission_burst_seconds,
-            max_in_flight=configured.admission_max_in_flight,
-        )
-    )
     register_degradations_endpoint(application)
     install_telemetry(application, "agent-gateway")
     return application
