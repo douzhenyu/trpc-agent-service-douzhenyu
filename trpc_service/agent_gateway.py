@@ -14,7 +14,7 @@ import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from typing import cast
 from uuid import UUID
 
@@ -38,11 +38,13 @@ from trpc_service.backpressure import (
 )
 from trpc_service.degradation import register_degradations_endpoint
 from trpc_service.execution_bus import (
+    EXECUTION_COMPLETED_EVENT,
     EXECUTION_REQUESTED_EVENT,
     GATEWAY_SOURCE,
     ExecutionBusPublisher,
     ExecutionRequestedData,
     InMemoryExecutionBus,
+    KafkaExecutionBus,
     OutboxDispatcher,
     insert_outbox_record,
     session_partition_key,
@@ -69,6 +71,9 @@ class AgentGatewaySettings(BaseSettings):
     database_url: str = ""
     dispatch_interval_seconds: float = 1.0
     partition_count: int = 8
+    kafka_bootstrap_servers: str = ""
+    execution_topic: str = EXECUTION_REQUESTED_EVENT
+    execution_result_topic: str = EXECUTION_COMPLETED_EVENT
     llm_gateway_access_key: str = ""
     public_base_url: str = ""
     policy_signing_key: str = ""
@@ -102,6 +107,7 @@ class AgentExecutionSubmission(BaseModel):
     memory_policy_version: str = Field(default="policy:none", min_length=1, max_length=128)
     messages: list[dict[str, str]] = Field(min_length=1, max_length=200)
     message_id: str | None = Field(default=None, min_length=1, max_length=256)
+    channel_context: dict[str, str] | None = None
     trace_parent: str | None = Field(default=None, min_length=1, max_length=128)
 
 
@@ -126,6 +132,7 @@ def _payload_hash(submission: AgentExecutionSubmission) -> str:
             "subject_id": submission.subject_id,
             "memory_policy_version": submission.memory_policy_version,
             "messages": submission.messages,
+            "channel_context": submission.channel_context,
         },
         ensure_ascii=False,
         separators=(",", ":"),
@@ -250,6 +257,7 @@ class AgentExecutionSubmitter:
                 environment=submission.environment,
                 session_id=submission.session_id,
                 messages=submission.messages,
+                channel_context=submission.channel_context,
                 trace_parent=submission.trace_parent,
             )
             await insert_outbox_record(
@@ -317,7 +325,21 @@ def create_app(
             deployments=DatabaseDeploymentRouteResolver(database),
             public_base_url=configured.public_base_url,
         )
-        active_bus = bus or InMemoryExecutionBus(partition_count=configured.partition_count)
+        managed_bus: KafkaExecutionBus | None = None
+        if bus is not None:
+            active_bus = bus
+        elif configured.kafka_bootstrap_servers:
+            managed_bus = KafkaExecutionBus(
+                configured.kafka_bootstrap_servers,
+                configured.execution_topic,
+                event_topics={
+                    EXECUTION_COMPLETED_EVENT: configured.execution_result_topic,
+                },
+            )
+            await managed_bus.start()
+            active_bus = managed_bus
+        else:
+            active_bus = InMemoryExecutionBus(partition_count=configured.partition_count)
         dispatcher = OutboxDispatcher(database, active_bus)
         dispatch_task: asyncio.Task[None] | None = None
         if configured.dispatch_interval_seconds > 0:
@@ -333,6 +355,10 @@ def create_app(
         finally:
             if dispatch_task is not None:
                 dispatch_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await dispatch_task
+            if managed_bus is not None:
+                await managed_bus.stop()
             await runner_runtime.close()
             await database.close()
 
@@ -418,3 +444,6 @@ def create_app(
     register_degradations_endpoint(application)
     install_telemetry(application, "agent-gateway")
     return application
+
+
+app = create_app()

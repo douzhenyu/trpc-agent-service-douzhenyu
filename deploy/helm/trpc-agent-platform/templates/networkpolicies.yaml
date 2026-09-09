@@ -217,6 +217,20 @@ spec:
         - port: 15008
           protocol: TCP
 {{- end }}
+{{- if or (eq $name "agent-gateway") (eq $name "agent-worker") (eq $name "channel-gateway") }}
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ $.Values.executionBus.namespace }}
+          podSelector:
+            matchLabels:
+{{ toYaml $.Values.executionBus.podLabels | indent 14 }}
+      ports:
+        - port: {{ $.Values.executionBus.port }}
+          protocol: TCP
+        - port: 15008
+          protocol: TCP
+{{- end }}
     - to:
         - namespaceSelector:
             matchLabels:

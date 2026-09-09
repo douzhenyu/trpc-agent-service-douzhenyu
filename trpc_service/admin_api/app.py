@@ -68,6 +68,7 @@ from trpc_service.admin_api.schemas import (
 from trpc_service.admin_api.settings import AdminSettings
 from trpc_service.admin_api.storage_migrations import create_storage_migration_router
 from trpc_service.admin_api.storage_profiles import create_storage_profile_router
+from trpc_service.admin_api.tenant_members import create_tenant_member_router
 from trpc_service.admin_api.tool_approvals import create_tool_approval_router
 from trpc_service.admin_api.tools import create_tool_router
 from trpc_service.degradation import register_degradations_endpoint
@@ -130,6 +131,7 @@ def create_app(
     application.include_router(create_audit_query_router(db))
     application.include_router(create_channel_binding_router(db))
     application.include_router(create_im_subject_router(db))
+    application.include_router(create_tenant_member_router(db))
     application.include_router(create_ops_router(db))
 
     @application.exception_handler(HTTPException)

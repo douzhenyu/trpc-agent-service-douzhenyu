@@ -194,10 +194,16 @@ class ReplyDeliveryService:
         execution_id: str,
         external_conversation_id: str,
         content: str,
+        delivery_id: str | None = None,
     ) -> ReplyDelivery:
+        stable_id = delivery_id or str(uuid4())
+        if delivery_id is not None:
+            existing = await self._store.get_delivery(tenant_id, stable_id)
+            if existing is not None:
+                return existing
         delivery = ReplyDelivery(
             tenant_id=tenant_id,
-            delivery_id=str(uuid4()),
+            delivery_id=stable_id,
             binding_id=binding_id,
             execution_id=execution_id,
             external_conversation_id=external_conversation_id,

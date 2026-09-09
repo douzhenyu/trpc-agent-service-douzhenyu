@@ -20,7 +20,11 @@ from trpc_service.agent_worker import (
     DatabaseReleaseRouteResolver,
 )
 from trpc_service.database_migrations import apply_migrations
-from trpc_service.execution_bus import InMemoryExecutionBus, OutboxDispatcher
+from trpc_service.execution_bus import (
+    SESSION_EVENTS_COMMITTED_EVENT,
+    InMemoryExecutionBus,
+    OutboxDispatcher,
+)
 from trpc_service.job_worker import (
     JobWorkerSettings,
     SessionProjectionConsumer,
@@ -176,8 +180,12 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
             finally:
                 await connection.close()
 
-            assert await dispatcher.dispatch_pending() == 1
-            older_projection = bus.published[-1]
+            assert await dispatcher.dispatch_pending() == 2
+            older_projection = next(
+                envelope
+                for envelope in reversed(bus.published)
+                if envelope.event_type == SESSION_EVENTS_COMMITTED_EVENT
+            )
             projections = SummaryMemoryJobWorker(database)
             consumer = SessionProjectionConsumer(database, projections)
             assert await consumer.run_once() is True
@@ -197,7 +205,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 if envelope.data.get("execution_id") == str(second.execution_id)
             )
             await processor.handle(execution_envelope)
-            assert await dispatcher.dispatch_pending() == 1
+            assert await dispatcher.dispatch_pending() == 2
             assert await consumer.run_once() is True
 
             third = await submitter.submit(
@@ -210,7 +218,7 @@ def test_job_worker_projects_committed_events_without_blocking_replies() -> None
                 if envelope.data.get("execution_id") == str(third.execution_id)
             )
             await processor.handle(execution_envelope)
-            assert await dispatcher.dispatch_pending() == 1
+            assert await dispatcher.dispatch_pending() == 2
             assert await consumer.run_once() is True
             await projections.handle(older_projection)
 

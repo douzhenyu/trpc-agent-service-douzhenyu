@@ -25,7 +25,7 @@
 | R-03 | 分布式执行负责人 | 租约、fence 与 CAS | `tests/integration/test_session_execution_pipeline.py` |
 | R-04 | Tool 治理负责人 | 副作用分级与对账 | `tests/integration/test_tool_approval_recovery.py` |
 | R-05 | 数据保护负责人 | Filter、DLP 与出口控制 | `tests/unit/test_governance.py` |
-| R-06 | SRE 负责人 | Outbox、背压与恢复 | `tests/integration/test_chaos_recovery.py` |
+| R-06 | SRE 负责人 | Outbox、Kafka 位点、背压与恢复 | `tests/unit/test_execution_bus.py`；`tests/integration/test_session_execution_pipeline.py`；`tests/integration/test_chaos_recovery.py` |
 | R-07 | DBA 负责人 | 迁移、RLS 与 PITR | `tests/unit/test_database_migrations.py` |
 | R-08 | 执行平台负责人 | 失效租约拒绝提交 | `tests/integration/test_session_execution_pipeline.py` |
 | R-09 | 数据平台负责人 | 在线迁移与校验 | `tests/integration/test_storage_migrations.py` |

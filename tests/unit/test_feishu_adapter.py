@@ -175,6 +175,14 @@ def test_signed_webhook_normalizes_a_direct_message_and_submits_once() -> None:
     assert len(submitter.submissions) == 1
     submission = submitter.submissions[0]
     assert submission.messages == [{"role": "user", "content": "hello Feishu"}]
+    assert submission.channel_context == {
+        "binding_id": "binding-feishu-1",
+        "channel_type": "FEISHU",
+        "external_bot_id": "cli_feishu_bot",
+        "external_user_id": "ou_user_1",
+        "message_key": "evt_1",
+        "session_key": "direct:ou_user_1",
+    }
 
 
 def test_replayed_webhook_reuses_the_original_direct_session() -> None:

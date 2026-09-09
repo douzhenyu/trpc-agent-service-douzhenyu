@@ -138,6 +138,17 @@ def current_traceparent() -> str | None:
     return _current_traceparent.get()
 
 
+def _span_traceparent(span: object) -> str | None:
+    """Serialize a valid OpenTelemetry span context as W3C traceparent."""
+    get_context = getattr(span, "get_span_context", None)
+    if get_context is None:
+        return None
+    context = get_context()
+    if not getattr(context, "is_valid", False):
+        return None
+    return f"00-{context.trace_id:032x}-{context.span_id:016x}-{int(context.trace_flags):02x}"
+
+
 def _tracer() -> Any:
     global _configured
     import os
@@ -196,7 +207,16 @@ def linked_span(
     with tracer.start_as_current_span(
         name, context=parent_context, links=links, attributes=filter_attributes(attributes or {})
     ) as span:
-        yield span
+        active = (
+            _span_traceparent(span)
+            or child_traceparent(trace_parent)
+            or _sampled_root_traceparent()
+        )
+        token = _current_traceparent.set(active)
+        try:
+            yield span
+        finally:
+            _current_traceparent.reset(token)
 
 
 # --- Prometheus metrics ---------------------------------------------------

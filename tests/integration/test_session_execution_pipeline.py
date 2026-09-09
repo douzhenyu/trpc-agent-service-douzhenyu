@@ -443,6 +443,21 @@ def test_duplicate_message_yields_one_execution_and_one_authoritative_event_set(
                 assert committed["causation_id"] == "fixed-message-1"
                 assert committed["correlation_id"] == str(first.execution_id)
                 assert committed["data_classification"] == "CONFIDENTIAL"
+                completed = await connection.fetchrow(
+                    """SELECT causation_id,correlation_id,data_classification,payload
+                    FROM platform.outbox_record
+                    WHERE tenant_id=$1
+                      AND event_type='platform.agent-execution.completed.v1'""",
+                    UUID(tenant_id),
+                )
+                assert completed is not None
+                assert completed["causation_id"] == "fixed-message-1"
+                assert completed["correlation_id"] == str(first.execution_id)
+                assert completed["data_classification"] == "CONFIDENTIAL"
+                assert json.loads(completed["payload"])["completion"] == {
+                    "role": "assistant",
+                    "content": "gateway-reply",
+                }
                 status = await connection.fetchval(
                     "SELECT status FROM tenant.agent_execution WHERE tenant_id=$1",
                     UUID(tenant_id),

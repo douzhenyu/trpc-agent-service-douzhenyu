@@ -1,12 +1,11 @@
-"""Channel Gateway: the WeCom data-plane entry for IM traffic.
+"""Channel Gateway: the WeCom and Feishu data-plane entry for IM traffic.
 
-WeCom smart-bot callbacks are verified and decrypted by the adapter,
-normalized into the channel inbound ledger, executed against the pinned
-Agent Release through the Runner, and answered through the reconcilable
-reply delivery state machine. Reply calls are rate-limited and coalesced:
-企业微信 limits never cause per-token API calls — single chats receive
-merged incremental updates plus one final tracked delivery, group chats
-receive a processing notice first.
+Channel callbacks are verified, normalized, and durably submitted to the
+execution bus. Production replies are consumed asynchronously from the
+Worker completion topic and reconciled through the delivery state machine;
+the direct Runner path remains only as a local/test fallback when Kafka is
+not configured. Reply calls are rate-limited and coalesced so channel limits
+never cause per-token API calls.
 """
 
 from __future__ import annotations
@@ -22,7 +21,7 @@ from hashlib import sha256
 from pathlib import Path
 from typing import Annotated, Any
 from urllib.parse import urlsplit, urlunsplit
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from fastapi import FastAPI, Header, Query, Request, Response
 from fastapi.responses import PlainTextResponse
@@ -86,11 +85,18 @@ from trpc_service.channels.wecom import (
     parse_event,
 )
 from trpc_service.degradation import register_degradations_endpoint
+from trpc_service.execution_bus import (
+    EXECUTION_COMPLETED_EVENT,
+    ExecutionBusConsumer,
+    ExecutionCompletedData,
+    ExecutionEnvelope,
+    KafkaExecutionConsumer,
+)
 from trpc_service.governance import DataClassification, scan_messages
 from trpc_service.llm_gateway import VaultSecretProvider
 from trpc_service.memory_access import SubjectMemoryReader, memory_policy_for_session_scope
 from trpc_service.runtime_health import RuntimeHealthResponse
-from trpc_service.telemetry import install_telemetry
+from trpc_service.telemetry import install_telemetry, linked_span
 from trpc_service.version import TRPC_AGENT_VERSION, __version__
 
 logger = logging.getLogger(__name__)
@@ -126,6 +132,12 @@ class ChannelGatewaySettings(BaseSettings):
     kubernetes_jwt_path: str = "/var/run/secrets/kubernetes.io/serviceaccount/token"
     feishu_long_connections: list[FeishuLongConnectionSettings] = Field(default_factory=list)
     gateway_instance_id: str = ""
+    kafka_bootstrap_servers: str = ""
+    execution_result_topic: str = EXECUTION_COMPLETED_EVENT
+    execution_result_consumer_group: str = "channel-gateway"
+    execution_retry_delay_seconds: float = Field(default=1.0, gt=0)
+    execution_result_dead_letter_topic: str = f"{EXECUTION_COMPLETED_EVENT}.dlq"
+    execution_result_max_delivery_attempts: int = Field(default=5, ge=1)
 
     def validate_runtime(self) -> None:
         if not self.database_url:
@@ -182,6 +194,7 @@ def create_app(
     artifact_service: ArtifactService | None = None,
     feishu_long_connections: Sequence[FeishuLongConnection] = (),
     database: Database | None = None,
+    execution_result_consumer: ExecutionBusConsumer | None = None,
 ) -> FastAPI:
     """Create the Channel Gateway data-plane entry for installed IM adapters."""
 
@@ -250,6 +263,25 @@ def create_app(
         )
         gateway_owner_id = _gateway_owner_id(configured)
         long_connection_tasks: list[asyncio.Task[None]] = []
+        result_consumer = execution_result_consumer
+        result_consumer_task: asyncio.Task[None] | None = None
+        if result_consumer is None and configured.kafka_bootstrap_servers:
+            result_consumer = KafkaExecutionConsumer(
+                configured.kafka_bootstrap_servers,
+                configured.execution_result_topic,
+                configured.execution_result_consumer_group,
+                dead_letter_topic=configured.execution_result_dead_letter_topic,
+                max_delivery_attempts=configured.execution_result_max_delivery_attempts,
+            )
+        application.state.async_execution = result_consumer is not None
+        if result_consumer is not None:
+            await result_consumer.start()
+            result_consumer_task = asyncio.create_task(
+                result_consumer.run_forever(
+                    lambda envelope: _handle_execution_completed(application, configured, envelope),
+                    retry_delay_seconds=configured.execution_retry_delay_seconds,
+                )
+            )
         if feishu_long_connections:
             if resolved_feishu_secrets is None:
                 raise RuntimeError("FEISHU_SECRET_RESOLUTION_UNAVAILABLE")
@@ -286,6 +318,11 @@ def create_app(
         try:
             yield
         finally:
+            if result_consumer_task is not None:
+                result_consumer_task.cancel()
+                await asyncio.gather(result_consumer_task, return_exceptions=True)
+            if result_consumer is not None:
+                await result_consumer.stop()
             for task in long_connection_tasks:
                 task.cancel()
             if long_connection_tasks:
@@ -396,6 +433,13 @@ def create_app(
         try:
             normalized = normalize_to_inbound(event)
             signed = await inbound.signed_event(tenant_id=tenant_id, **normalized)
+            signed.update(
+                {
+                    "response_url": event.response_url,
+                    "chat_type": event.chattype,
+                    "chat_id": event.chatid,
+                }
+            )
             accepted = await inbound.ingest(tenant_id=tenant_id, event=signed)
         except WeComProtocolError as error:
             return PlainTextResponse(error.code, status_code=400)
@@ -406,6 +450,8 @@ def create_app(
             # execution whose reply cannot be tracked.
             return PlainTextResponse("DATABASE_UNAVAILABLE", status_code=503)
         if accepted.deduplicated:
+            return PlainTextResponse("")
+        if application.state.async_execution:
             return PlainTextResponse("")
         runner: ReleasePinnedRunnerRuntime = application.state.runner
         registry: ChannelBindingRegistry = application.state.registry
@@ -495,6 +541,8 @@ def create_app(
         except RuntimeError:
             return PlainTextResponse("DATABASE_UNAVAILABLE", status_code=503)
         if accepted.deduplicated:
+            return PlainTextResponse("")
+        if application.state.async_execution:
             return PlainTextResponse("")
         await _execute_feishu_reply(
             application,
@@ -637,6 +685,8 @@ def _feishu_supervisor(
     async def on_accepted(accepted: Any, payload: Mapping[str, object]) -> None:
         if accepted.deduplicated:
             return
+        if application.state.async_execution:
+            return
         event = normalize_feishu_message(payload)
         binding = await registry.resolve(
             tenant_id=connection.tenant_id,
@@ -666,6 +716,115 @@ def _feishu_supervisor(
         app_id=connection.app_id,
         on_accepted=on_accepted,
     )
+
+
+def _completion_text(completion: Mapping[str, Any]) -> str:
+    direct = completion.get("content")
+    if isinstance(direct, str) and direct:
+        return direct
+    choices = completion.get("choices")
+    if isinstance(choices, list) and choices and isinstance(choices[0], Mapping):
+        message = choices[0].get("message")
+        if isinstance(message, Mapping):
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                return content
+    raise RuntimeError("EXECUTION_COMPLETION_EMPTY")
+
+
+async def _handle_execution_completed(
+    application: FastAPI,
+    configured: ChannelGatewaySettings,
+    envelope: ExecutionEnvelope,
+) -> None:
+    if envelope.event_type != EXECUTION_COMPLETED_EVENT:
+        raise ValueError("unexpected execution result event type")
+    data = ExecutionCompletedData.model_validate(envelope.data)
+    context = data.channel_context
+    if context is None:
+        return
+    binding = await application.state.registry.resolve(
+        tenant_id=data.tenant_id,
+        channel_type=context["channel_type"],
+        external_bot_id=context["external_bot_id"],
+    )
+    if binding is None or binding.binding_id != context["binding_id"]:
+        raise RuntimeError("CHANNEL_BINDING_NOT_FOUND")
+    content = _completion_text(data.completion)
+    with linked_span(
+        "channel_gateway.deliver_execution_result",
+        envelope.trace_parent,
+        {
+            "tenant.id": data.tenant_id,
+            "execution.id": data.execution_id,
+            "session.id": data.session_id,
+        },
+    ):
+        if context["channel_type"] == "WECOM":
+            await _deliver(
+                application,
+                data.tenant_id,
+                WeComEvent(
+                    msgtype="text",
+                    msgid=context["message_key"],
+                    aibotid=context["external_bot_id"],
+                    chattype=context.get("chat_type", "single"),
+                    chatid=context.get("chat_id", ""),
+                    from_userid=context["external_user_id"],
+                    response_url=context.get("response_url", ""),
+                ),
+                UUID(data.execution_id),
+                content,
+                configured,
+                delivery_id_seed=envelope.message_id,
+                tracked_only=True,
+            )
+            return
+        if context["channel_type"] != "FEISHU":
+            raise RuntimeError("CHANNEL_TYPE_UNSUPPORTED")
+        secrets: FeishuSecretResolver | None = application.state.feishu_secrets
+        if secrets is None:
+            raise RuntimeError("FEISHU_SECRET_RESOLUTION_UNAVAILABLE")
+        access_token = await _resolve_feishu_secret(
+            secrets,
+            data.tenant_id,
+            _secret_ref_with_field(binding, "tenant-access-token"),
+        )
+        deliveries = ReplyDeliveryService(
+            store=application.state.feishu_delivery_store
+            or DatabaseDeliveryStore(application.state.database),
+            transport=FeishuCardTransport(
+                client=HttpFeishuCardClient(
+                    application.state.feishu_http or _http(application),
+                    tenant_access_token=access_token,
+                    api_base_url=configured.feishu_api_base_url,
+                )
+            ),
+        )
+        event = {
+            "session_key": context["session_key"],
+            "external_user_id": context["external_user_id"],
+        }
+        safe_content = await _content_for_channel(
+            application,
+            configured,
+            tenant_id=data.tenant_id,
+            binding=binding,
+            external_user_id=context["external_user_id"],
+            execution_id=data.execution_id,
+            content=content,
+        )
+        await _deliver_feishu(
+            tenant_id=data.tenant_id,
+            binding_id=binding.binding_id,
+            execution_id=UUID(data.execution_id),
+            event=event,
+            content=safe_content,
+            deliveries=deliveries,
+            configured=configured,
+            is_group=context["session_key"].startswith(("group:", "thread:")),
+            delivery_id_seed=envelope.message_id,
+        )
 
 
 async def _configured_feishu_long_connections(
@@ -813,6 +972,8 @@ async def _deliver(
     configured: ChannelGatewaySettings,
     *,
     streamed: bool = False,
+    delivery_id_seed: str | None = None,
+    tracked_only: bool = False,
 ) -> None:
     deliveries: ReplyDeliveryService = application.state.deliveries
     registry: ChannelBindingRegistry = application.state.registry
@@ -837,7 +998,7 @@ async def _deliver(
         ),
         is_group=event.chattype == "group",
     )
-    if plan.stream_chunks and event.response_url and not streamed:
+    if plan.stream_chunks and event.response_url and not streamed and not tracked_only:
         # 单聊: merged incremental updates — never per-token API calls.
         session = WeComStreamSession(
             _http(application),
@@ -854,19 +1015,24 @@ async def _deliver(
         for stream_chunk in plan.stream_chunks:
             await session.append(stream_chunk)
         await session.flush()
-    elif plan.processing_notice and event.response_url:
+    elif plan.processing_notice and event.response_url and not tracked_only:
         # 群聊: a processing notice precedes the final tracked delivery.
         await _http(application).post(
             event.response_url,
             json={"msgtype": "text", "text": {"content": GROUP_PROCESSING_NOTICE}},
         )
-    for final_message in plan.final_messages:
+    for index, final_message in enumerate(plan.final_messages):
         delivery = await deliveries.enqueue(
             tenant_id=tenant_id,
             binding_id=binding.binding_id if binding is not None else "unknown-binding",
             execution_id=str(execution_id),
             external_conversation_id=event.response_url or f"wecom:{event.chatid}",
             content=final_message,
+            delivery_id=(
+                str(uuid5(NAMESPACE_URL, f"channel-delivery:{delivery_id_seed}:{index}"))
+                if delivery_id_seed is not None
+                else None
+            ),
         )
         await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
 
@@ -883,6 +1049,7 @@ async def _deliver_feishu(
     is_group: bool,
     existing_delivery: Any | None = None,
     already_streamed: bool = False,
+    delivery_id_seed: str | None = None,
 ) -> None:
     plan = plan_reply(
         content,
@@ -899,6 +1066,11 @@ async def _deliver_feishu(
         execution_id=execution_id,
         event=event,
         deliveries=deliveries,
+        delivery_id=(
+            str(uuid5(NAMESPACE_URL, f"channel-delivery:{delivery_id_seed}:0"))
+            if delivery_id_seed is not None
+            else None
+        ),
     )
     if plan.strategy is ReplyStrategy.MERGED_STREAM and not already_streamed:
         streamed = ""
@@ -923,6 +1095,11 @@ async def _deliver_feishu(
             execution_id=str(execution_id),
             external_conversation_id=_feishu_conversation(event),
             content=final_message,
+            delivery_id=(
+                str(uuid5(NAMESPACE_URL, f"channel-delivery:{delivery_id_seed}:{index}"))
+                if delivery_id_seed is not None
+                else None
+            ),
         )
         await deliveries.run(follow_up.delivery_id, tenant_id=tenant_id)
 
@@ -934,6 +1111,7 @@ async def _feishu_processing_delivery(
     execution_id: Any,
     event: dict[str, str],
     deliveries: ReplyDeliveryService,
+    delivery_id: str | None = None,
 ) -> Any:
     delivery = await deliveries.enqueue(
         tenant_id=tenant_id,
@@ -941,6 +1119,7 @@ async def _feishu_processing_delivery(
         execution_id=str(execution_id),
         external_conversation_id=_feishu_conversation(event),
         content="处理中",
+        delivery_id=delivery_id,
     )
     await deliveries.run(delivery.delivery_id, tenant_id=tenant_id)
     return delivery

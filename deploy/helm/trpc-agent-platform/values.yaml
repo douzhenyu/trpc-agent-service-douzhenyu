@@ -40,6 +40,18 @@ database:
       trpc-agent-platform.io/database: "true"
     port: 5432
 
+executionBus:
+  bootstrapServers: redpanda.kafka.svc.cluster.local:9092
+  topic: platform.agent-execution.requested.v1
+  resultTopic: platform.agent-execution.completed.v1
+  requestDeadLetterTopic: platform.agent-execution.requested.v1.dlq
+  resultDeadLetterTopic: platform.agent-execution.completed.v1.dlq
+  maxDeliveryAttempts: 5
+  namespace: kafka
+  podLabels:
+    app.kubernetes.io/name: redpanda
+  port: 9092
+
 adminApi:
   databaseSecretName: trpc-platform-database-app
   databaseSecretKey: url
@@ -48,7 +60,7 @@ adminApi:
 agentWorker:
   databaseSecretName: trpc-platform-database-app
   databaseSecretKey: url
-  llmGatewayUrl: http://agent-gateway:8000
+  llmGatewayUrl: http://agent-gateway-stable:8001
   workerPool: shared-workers
 
 jobWorker:
@@ -166,6 +178,9 @@ components:
         - serviceAccount: agent-worker
           methods: [POST]
           paths: [/internal/v1/llm-completions]
+        - serviceAccount: channel-gateway
+          methods: [POST]
+          paths: [/internal/v1/agent-executions]
     outboundDependencies:
       - component: openbao
         port: 8200
@@ -214,12 +229,9 @@ components:
           serviceAccount: argo-rollouts
           methods: [GET]
           paths: [/health/ready]
-        - serviceAccount: agent-gateway
-          methods: [POST]
-          paths: [/internal/v1/agent-executions]
     outboundDependencies:
       - component: agent-gateway
-        port: 8000
+        port: 8001
   job-worker:
     enabled: true
     workloadKind: Rollout

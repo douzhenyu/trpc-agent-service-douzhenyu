@@ -244,6 +244,61 @@ def test_admin_can_group_tenants_and_assign_platform_roles() -> None:
         ]
 
 
+def test_admin_can_register_a_user_as_a_tenant_member() -> None:
+    asyncio.run(_prepare_database())
+    with TestClient(create_app(_settings())) as client:
+        client.post(
+            "/api/v1/auth/emergency/session",
+            json={"username": "break-glass", "password": "correct-horse"},
+        )
+        tenant = client.post(
+            "/api/v1/tenants",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={"slug": "member-tenant", "name": "Member Tenant"},
+        ).json()
+        user = client.post(
+            "/api/v1/platform-users",
+            headers={"Idempotency-Key": str(uuid4())},
+            json={
+                "issuer": "https://identity.example.test",
+                "subject": "tenant-developer",
+                "email": "developer@example.test",
+                "display_name": "Tenant Developer",
+            },
+        ).json()
+
+        key = str(uuid4())
+        assigned = client.put(
+            f"/api/v1/tenants/{tenant['id']}/members/{user['id']}/roles/AGENT_DEVELOPER",
+            headers={"Idempotency-Key": key},
+        )
+        replayed = client.put(
+            f"/api/v1/tenants/{tenant['id']}/members/{user['id']}/roles/AGENT_DEVELOPER",
+            headers={"Idempotency-Key": key},
+        )
+
+        assert assigned.status_code == replayed.status_code == 200
+        assert assigned.json() == replayed.json()
+        assert assigned.json()["roles"] == ["AGENT_DEVELOPER"]
+        assert assigned.json()["version"] == 2
+        members = client.get(f"/api/v1/tenants/{tenant['id']}/members")
+        assert members.status_code == 200
+        assert members.json()["items"] == [assigned.json()]
+
+        missing = client.put(
+            f"/api/v1/tenants/{tenant['id']}/members/{uuid4()}/roles/TENANT_AUDITOR",
+            headers={"Idempotency-Key": str(uuid4())},
+        )
+        assert missing.status_code == 404
+        assert missing.json()["error"]["code"] == "NOT_FOUND"
+
+        audit = client.get("/api/v1/audit-events")
+        assert any(
+            event["action"] == "tenant_member.role.assign" and event["tenant_id"] == tenant["id"]
+            for event in audit.json()["items"]
+        )
+
+
 def test_role_assignment_requires_the_current_platform_user_version() -> None:
     asyncio.run(_prepare_database())
     with TestClient(create_app(_settings())) as client:

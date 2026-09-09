@@ -381,9 +381,25 @@ class ChannelInboundService:
         from uuid import UUID
 
         from trpc_service.agent_gateway import AgentExecutionSubmission
+        from trpc_service.telemetry import current_traceparent
 
         session_id = self.session_for(binding=binding, event=event)
         session_scope = event.get("session_key", f"direct:{event['external_user_id']}")
+        channel_context = {
+            key: value
+            for key in (
+                "channel_type",
+                "external_bot_id",
+                "external_user_id",
+                "message_key",
+                "session_key",
+                "response_url",
+                "chat_type",
+                "chat_id",
+            )
+            if (value := event.get(key)) is not None
+        }
+        channel_context["binding_id"] = binding.binding_id
         return AgentExecutionSubmission(
             tenant_id=UUID(binding.tenant_id),
             application_id=UUID(binding.application_id),
@@ -395,4 +411,6 @@ class ChannelInboundService:
             memory_policy_version=memory_policy_for_session_scope(session_scope),
             messages=[{"role": "user", "content": event["text"]}],
             message_id=message_id,
+            channel_context=channel_context,
+            trace_parent=current_traceparent(),
         )

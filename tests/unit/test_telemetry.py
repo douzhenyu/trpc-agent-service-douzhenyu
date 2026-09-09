@@ -99,6 +99,10 @@ def test_linked_span_records_link_to_async_parent() -> None:
         {"tenant.id": "t-1", "raw.secret": "x"},
     ) as span:
         assert span is not None
+        active = parse_traceparent(current_traceparent())
+        assert active is not None
+        assert active[0] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert current_traceparent() is None
     assert len(captured) == 1
     links = list(captured[0].links)
     assert links, "async work must link the original trace"

@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 from pathlib import Path
 from typing import Any
 
 import yaml
+from fastapi import FastAPI
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 CHART_PATH = REPOSITORY_ROOT / "deploy" / "helm" / "trpc-agent-platform"
@@ -52,6 +54,24 @@ def test_chart_renders_all_six_production_units() -> None:
         workload["metadata"]["labels"]["app.kubernetes.io/component"] for workload in workloads
     } == EXPECTED_UNITS
     assert len(workloads) == len(EXPECTED_UNITS)
+
+
+def test_every_helm_python_asgi_target_is_importable() -> None:
+    manifests = render_chart()
+    targets: set[str] = set()
+    for manifest in manifests:
+        if manifest["kind"] not in {"Deployment", "Rollout"}:
+            continue
+        for container in manifest["spec"]["template"]["spec"]["containers"]:
+            args = container.get("args", [])
+            if args and isinstance(args[0], str) and args[0].startswith("trpc_service."):
+                targets.add(args[0])
+
+    assert targets
+    for target in targets:
+        module_name, attribute = target.split(":", 1)
+        application = getattr(importlib.import_module(module_name), attribute)
+        assert isinstance(application, FastAPI), target
 
 
 def test_each_unit_has_production_health_scaling_and_scheduling_policy() -> None:
@@ -460,11 +480,26 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
     assert {item["name"] for item in container["env"]} >= {
         "DATABASE_URL",
         "LLM_GATEWAY_URL",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "EXECUTION_TOPIC",
+        "EXECUTION_CONSUMER_GROUP",
+        "EXECUTION_DEAD_LETTER_TOPIC",
+        "EXECUTION_MAX_DELIVERY_ATTEMPTS",
+        "WORKER_INSTANCE_ID",
     }
     agent_gateway = resources[("Rollout", "agent-gateway")]
     gateway_container = agent_gateway["spec"]["template"]["spec"]["containers"][0]
-    assert gateway_container["args"][0] == "trpc_service.llm_gateway:app"
+    assert gateway_container["args"][0] == "trpc_service.agent_gateway:app"
     assert {item["name"] for item in gateway_container["env"]} >= {
+        "DATABASE_URL",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "EXECUTION_TOPIC",
+        "EXECUTION_RESULT_TOPIC",
+    }
+    llm_gateway = agent_gateway["spec"]["template"]["spec"]["containers"][1]
+    assert llm_gateway["name"] == "llm-gateway"
+    assert llm_gateway["args"][0] == "trpc_service.llm_gateway:app"
+    assert {item["name"] for item in llm_gateway["env"]} >= {
         "DATABASE_URL",
         "VAULT_URL",
         "VAULT_KUBERNETES_ROLE",
@@ -478,6 +513,11 @@ def test_each_unit_has_a_dedicated_identity_and_network_boundary() -> None:
         "VAULT_KUBERNETES_ROLE",
         "FEISHU_LONG_CONNECTIONS",
         "GATEWAY_INSTANCE_ID",
+        "KAFKA_BOOTSTRAP_SERVERS",
+        "EXECUTION_RESULT_TOPIC",
+        "EXECUTION_RESULT_CONSUMER_GROUP",
+        "EXECUTION_RESULT_DEAD_LETTER_TOPIC",
+        "EXECUTION_RESULT_MAX_DELIVERY_ATTEMPTS",
     }
     feishu_entry = resources[("ServiceEntry", "channel-gateway")]
     assert feishu_entry["spec"] == {
