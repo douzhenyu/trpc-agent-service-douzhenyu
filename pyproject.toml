@@ -13,7 +13,7 @@ dependencies = [
   "pyjwt[crypto]==2.13.0",
   "pydantic-settings==2.10.1",
   "sqlalchemy[asyncio]==2.0.52",
-  "trpc-agent-py==1.1.19",
+  "trpc-agent-py==1.1.20",
   "uvicorn[standard]==0.35.0",
   # Standard Agent protocol surfaces (AG-UI / A2A) and the SDK extras they pull in.
   "ag-ui-protocol==0.1.22",

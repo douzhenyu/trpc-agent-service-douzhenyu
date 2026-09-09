@@ -3,7 +3,7 @@
 from importlib.metadata import version
 
 __version__ = "0.1.0"
-PINNED_TRPC_AGENT_VERSION = "1.1.19"
+PINNED_TRPC_AGENT_VERSION = "1.1.20"
 
 
 def require_pinned_trpc_agent_version(installed_version: str) -> str:

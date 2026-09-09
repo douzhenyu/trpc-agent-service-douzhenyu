@@ -1793,7 +1793,7 @@ wheels = [
 
 [[package]]
 name = "trpc-agent-py"
-version = "1.1.19"
+version = "1.1.20"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -1825,9 +1825,9 @@ dependencies = [
     { name = "uvicorn" },
     { name = "watchdog" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/49/8b/140241b0b5a3b757c32f5ba69b9eb10d2600b762ffbd943f62be324c1671/trpc_agent_py-1.1.19.tar.gz", hash = "sha256:4e45bd8ba78464f2f9c47532ae49442694552a89622cdde5cd625a213a88db59", size = 8979996, upload-time = "2026-08-21T06:40:32.049Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/fd/51fd88b8ba18f0cb963d4f83674721989d9d1ef40f02165a6301a9bfe0b8/trpc_agent_py-1.1.20.tar.gz", hash = "sha256:acdadfff947db211062532531b9385902d2c7c642c9ce11f464dfce0afebdc77", size = 9141096, upload-time = "2026-09-01T12:17:01.939Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d3/c0/4c49a7ab2c80890f15350df7da42417acf558d91d5bd18badae3b5ab62f7/trpc_agent_py-1.1.19-py3-none-any.whl", hash = "sha256:fc94b81305542b25b2318842ffb52671db4a92788b6bb6f886c6c98068c829d9", size = 3084872, upload-time = "2026-08-21T06:40:27.106Z" },
+    { url = "https://files.pythonhosted.org/packages/05/b3/bd54407c13c57627ce9f972a02295199297d435ea95562068515b3fc385e/trpc_agent_py-1.1.20-py3-none-any.whl", hash = "sha256:90b776a7e82a974129b3967c442e4c9357d3189e6fef6e8175c6e3ebb191c1c0", size = 3203739, upload-time = "2026-09-01T12:16:56.442Z" },
 ]
 
 [[package]]
@@ -1888,7 +1888,7 @@ requires-dist = [
     { name = "pydantic-settings", specifier = "==2.10.1" },
     { name = "pyjwt", extras = ["crypto"], specifier = "==2.13.0" },
     { name = "sqlalchemy", extras = ["asyncio"], specifier = "==2.0.52" },
-    { name = "trpc-agent-py", specifier = "==1.1.19" },
+    { name = "trpc-agent-py", specifier = "==1.1.20" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.35.0" },
 ]
 
