@@ -1,0 +1,73 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kafka
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redpanda
+  namespace: kafka
+  labels:
+    app.kubernetes.io/name: redpanda
+spec:
+  selector:
+    app.kubernetes.io/name: redpanda
+  ports:
+    - name: kafka
+      port: 9092
+      targetPort: kafka
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redpanda
+  namespace: kafka
+  labels:
+    app.kubernetes.io/name: redpanda
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: redpanda
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: redpanda
+    spec:
+      automountServiceAccountToken: false
+      containers:
+        - name: redpanda
+          image: redpandadata/redpanda:v24.2.18
+          imagePullPolicy: Never
+          args:
+            - redpanda
+            - start
+            - --overprovisioned
+            - --smp=1
+            - --memory=512M
+            - --reserve-memory=0M
+            - --node-id=0
+            - --check=false
+            - --kafka-addr=0.0.0.0:9092
+            - --advertise-kafka-addr=redpanda.kafka.svc.cluster.local:9092
+          ports:
+            - name: kafka
+              containerPort: 9092
+          readinessProbe:
+            exec:
+              command:
+                - rpk
+                - cluster
+                - health
+                - --exit-when-healthy
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 60
+          resources:
+            requests:
+              cpu: 100m
+              memory: 640Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi

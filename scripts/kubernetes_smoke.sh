@@ -5,6 +5,7 @@ repository_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cluster_name="${KIND_CLUSTER_NAME:-trpc-platform-smoke-$$}"
 cluster_context="kind-${cluster_name}"
 cluster_created=false
+redpanda_image="redpandadata/redpanda:v24.2.18"
 
 for executable in docker helm istioctl kind kubectl kubectl-argo-rollouts; do
   if ! command -v "${executable}" >/dev/null 2>&1; then
@@ -178,13 +179,15 @@ docker build --quiet -t local/trpc-agent-git:smoke \
   -f tests/deployment/fixtures/git-server.Dockerfile .
 docker build --quiet -t local/trpc-agent-postgres:smoke \
   -f tests/deployment/fixtures/postgres-smoke.Dockerfile .
+docker pull --quiet "${redpanda_image}"
 platform_digest="$(docker image inspect --format '{{.Id}}' local/trpc-agent-platform:smoke)"
 web_digest="$(docker image inspect --format '{{.Id}}' local/trpc-agent-web-console:smoke)"
 kind load docker-image --name "${cluster_name}" \
   local/trpc-agent-platform:smoke \
   local/trpc-agent-web-console:smoke \
   local/trpc-agent-git:smoke \
-  local/trpc-agent-postgres:smoke
+  local/trpc-agent-postgres:smoke \
+  "${redpanda_image}"
 for node in $(kind get nodes --name "${cluster_name}"); do
   docker exec "${node}" ctr -n k8s.io images tag \
     docker.io/local/trpc-agent-platform:smoke \
@@ -229,6 +232,13 @@ if ! kube rollout status deployment/smoke-postgres -n platform-smoke --timeout=1
   kube describe deployment/smoke-postgres -n platform-smoke >&2
   kube get pods -n platform-smoke -o wide >&2
   kube logs deployment/smoke-postgres -n platform-smoke >&2
+  exit 1
+fi
+kube apply -f tests/deployment/fixtures/redpanda-smoke.yaml
+if ! kube rollout status deployment/redpanda -n kafka --timeout=180s; then
+  kube describe deployment/redpanda -n kafka >&2
+  kube get pods -n kafka -o wide >&2
+  kube logs deployment/redpanda -n kafka >&2
   exit 1
 fi
 sed \
