@@ -309,9 +309,21 @@ def test_network_policy_only_opens_ambient_health_dns_declared_and_gateway_paths
         ],
         "ports": [{"port": 15008, "protocol": "TCP"}],
     }
-    assert len(policies["agent-worker"]["egress"]) == 3
-    assert len(policies["agent-gateway"]["egress"]) == 3
-    assert len(policies["channel-gateway"]["egress"]) == 3
+    expected_execution_bus_egress = {
+        "to": [
+            {
+                "namespaceSelector": {"matchLabels": {"kubernetes.io/metadata.name": "kafka"}},
+                "podSelector": {"matchLabels": {"app.kubernetes.io/name": "redpanda"}},
+            }
+        ],
+        "ports": [
+            {"port": 9092, "protocol": "TCP"},
+            {"port": 15008, "protocol": "TCP"},
+        ],
+    }
+    for unit in {"agent-worker", "agent-gateway", "channel-gateway"}:
+        assert policies[unit]["egress"][-2] == expected_execution_bus_egress
+        assert len(policies[unit]["egress"]) == 4
 
 
 def test_independent_releases_have_one_shared_mesh_owner_and_unit_scoped_policy() -> None:

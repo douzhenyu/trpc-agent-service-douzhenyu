@@ -27,6 +27,12 @@ spec:
       port: {{ $component.port }}
       targetPort: http-health
       protocol: TCP
+{{- if eq $name "agent-gateway" }}
+    - name: http-llm
+      port: 8001
+      targetPort: http-llm
+      protocol: TCP
+{{- end }}
 ---
 {{- end }}
 {{- else }}
@@ -54,6 +60,12 @@ spec:
       port: {{ $component.port }}
       targetPort: http-health
       protocol: TCP
+{{- if eq $name "agent-gateway" }}
+    - name: http-llm
+      port: 8001
+      targetPort: http-llm
+      protocol: TCP
+{{- end }}
 ---
 {{- end }}
 {{- end }}

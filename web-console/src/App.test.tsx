@@ -83,7 +83,7 @@ test("平台管理员可通过公开 API 创建租户与 Tenant Group", async ()
   fireEvent.click(screen.getByRole("checkbox", { name: "Acme" }));
   fireEvent.click(screen.getByRole("button", { name: "创建 Tenant Group" }));
   expect(await screen.findByText("核心客户 · 1 个租户")).toBeInTheDocument();
-  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(16));
+  await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(18));
   expect(
     fetchMock.mock.calls.every(([request]) =>
       new URL(
@@ -199,6 +199,102 @@ test("平台角色按钮调用公开 API 并刷新", async () => {
   const roleRequest = fetchMock.mock.calls[4]?.[0];
   expect(roleRequest).toBeInstanceOf(Request);
   expect((roleRequest as Request).headers.get("if-match")).toBe('"1"');
+});
+
+test("平台管理员可预登记普通 OIDC 用户", async () => {
+  const session = {
+    subject: "admin",
+    auth_method: "emergency",
+    roles: ["PLATFORM_ADMIN"],
+  };
+  const tenant = {
+    id: "00000000-0000-0000-0000-000000000001",
+    slug: "acme",
+    name: "Acme",
+    status: "ACTIVE",
+    version: 1,
+    created_at: "2026-01-01T00:00:00Z",
+    updated_at: "2026-01-01T00:00:00Z",
+  };
+  let createdPayload: Record<string, unknown> | null = null;
+  let tenantRolePath = "";
+  vi.spyOn(globalThis, "fetch").mockImplementation(async (input) => {
+    const request =
+      input instanceof Request ? input : new Request(String(input));
+    const path = new URL(request.url).pathname;
+    if (path === "/api/v1/auth/session") return json(session);
+    if (request.method === "GET" && path === "/api/v1/tenants")
+      return json({ items: [tenant], next_cursor: null });
+    if (request.method === "POST" && path === "/api/v1/platform-users") {
+      createdPayload = (await request.json()) as Record<string, unknown>;
+      return json(
+        {
+          id: "user-new",
+          issuer: "https://identity.example.com",
+          subject: "alice-id",
+          email: "alice@example.com",
+          display_name: "Alice",
+          version: 1,
+          roles: [],
+        },
+        201,
+      );
+    }
+    if (
+      request.method === "PUT" &&
+      path.endsWith("/members/user-new/roles/AGENT_DEVELOPER")
+    ) {
+      tenantRolePath = path;
+      return json({
+        tenant_id: tenant.id,
+        member_id: "member-new",
+        user_id: "user-new",
+        display_name: "Alice",
+        email: "alice@example.com",
+        roles: ["AGENT_DEVELOPER"],
+        version: 2,
+      });
+    }
+    if (path.endsWith("/channel-bindings"))
+      return json({ tenant_id: "tenant-1", bindings: [] });
+    return json({ items: [], next_cursor: null });
+  });
+
+  render(<App />);
+  await screen.findByRole("button", { name: "登记用户" });
+  fireEvent.change(screen.getByLabelText("用户显示名称"), {
+    target: { value: "Alice" },
+  });
+  fireEvent.change(screen.getByLabelText("用户邮箱"), {
+    target: { value: "alice@example.com" },
+  });
+  fireEvent.change(screen.getByLabelText("OIDC Issuer"), {
+    target: { value: "https://identity.example.com" },
+  });
+  fireEvent.change(screen.getByLabelText("OIDC Subject"), {
+    target: { value: "alice-id" },
+  });
+  fireEvent.change(screen.getByLabelText("加入租户"), {
+    target: { value: tenant.id },
+  });
+  fireEvent.change(screen.getByLabelText("初始租户角色"), {
+    target: { value: "AGENT_DEVELOPER" },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "登记用户" }));
+
+  expect(
+    await screen.findByText("用户“Alice”已登记，并已加入所选租户。"),
+  ).toBeInTheDocument();
+  expect(screen.getByText("alice@example.com")).toBeInTheDocument();
+  expect(createdPayload).toEqual({
+    issuer: "https://identity.example.com",
+    subject: "alice-id",
+    email: "alice@example.com",
+    display_name: "Alice",
+  });
+  expect(tenantRolePath).toBe(
+    `/api/v1/tenants/${tenant.id}/members/user-new/roles/AGENT_DEVELOPER`,
+  );
 });
 
 test("管理 API 不可用时显示错误", async () => {

@@ -11,7 +11,12 @@ from typing import Any
 from uuid import UUID
 
 import pytest
+from fastapi import FastAPI
 
+from trpc_service.channel_gateway import (
+    ChannelGatewaySettings,
+    _handle_execution_completed,
+)
 from trpc_service.channels.bindings import (
     ChannelBinding,
     ChannelBindingRegistry,
@@ -21,6 +26,7 @@ from trpc_service.channels.delivery import (
     ChannelTransportOutcome,
     DeliveryState,
     FakeChannelTransport,
+    MemoryDeliveryStore,
     ReplyDelivery,
     ReplyDeliveryService,
 )
@@ -28,6 +34,11 @@ from trpc_service.channels.inbound import (
     ChannelInboundService,
     InboundError,
     MemoryInboundStore,
+)
+from trpc_service.execution_bus import (
+    EXECUTION_COMPLETED_EVENT,
+    ExecutionCompletedData,
+    ExecutionEnvelope,
 )
 
 EXECUTION = "55555555-5555-5555-5555-555555555555"
@@ -203,6 +214,65 @@ def test_ingest_verifies_signature_and_resolves_one_binding() -> None:
     # An unregistered bot fails closed without any execution.
     with pytest.raises(InboundError, match="BINDING_NOT_FOUND"):
         asyncio.run(service.ingest(tenant_id=TENANT, event=_event(bot_id="bot-unknown")))
+
+
+def test_completed_execution_event_delivers_the_tracked_wecom_reply() -> None:
+    registry = ChannelBindingRegistry.in_memory()
+    binding = ChannelBinding(
+        tenant_id=TENANT,
+        binding_id="binding-wecom-1",
+        channel_type="WECOM",
+        external_bot_id="bot-wecom",
+        application_id=APP,
+        environment="PRODUCTION",
+        secret_ref="vault://tenant/11111111/channels/wecom/bot-wecom#signing",
+    )
+    asyncio.run(registry.register(binding))
+    store = MemoryDeliveryStore()
+    transport = FakeChannelTransport([ChannelTransportOutcome(delivered=True)])
+    application = FastAPI()
+    application.state.registry = registry
+    application.state.deliveries = ReplyDeliveryService(store=store, transport=transport)
+    application.state.artifact_service = None
+    completed = ExecutionCompletedData(
+        tenant_id=TENANT,
+        execution_id=EXECUTION,
+        release_id=RELEASE,
+        session_id="session-1",
+        completion={"choices": [{"message": {"content": "async reply"}}]},
+        channel_context={
+            "binding_id": binding.binding_id,
+            "channel_type": "WECOM",
+            "external_bot_id": binding.external_bot_id,
+            "external_user_id": "user-9",
+            "message_key": "msg-1",
+            "session_key": "direct:user-9",
+            "response_url": "https://wecom.test/reply/1",
+            "chat_type": "single",
+            "chat_id": "",
+        },
+    )
+    envelope = ExecutionEnvelope(
+        message_id="result-1",
+        source="trpc-agent-platform://agent-worker",
+        event_type=EXECUTION_COMPLETED_EVENT,
+        partition_key=f"{TENANT}:session-1",
+        time="2026-09-08T00:00:00+00:00",
+        tenant_id=TENANT,
+        data_schema=f"{EXECUTION_COMPLETED_EVENT}.schema.json",
+        data=completed.model_dump(),
+    )
+
+    configured = ChannelGatewaySettings(database_url="postgresql://test")
+    asyncio.run(_handle_execution_completed(application, configured, envelope))
+    asyncio.run(_handle_execution_completed(application, configured, envelope))
+
+    assert len(store.deliveries) == 1
+    delivery = next(iter(store.deliveries.values()))
+    assert delivery.content == "async reply"
+    assert delivery.external_conversation_id == "https://wecom.test/reply/1"
+    assert delivery.status is DeliveryState.DELIVERED
+    assert transport.sent_attempt_nos == [1]
 
 
 def test_ingest_bad_signature_is_rejected_before_any_state_change() -> None:
@@ -427,6 +497,38 @@ def test_delivery_uses_stable_delivery_id_with_per_attempt_ids() -> None:
     assert len(set(attempt_ids)) == 2
     assert all(attempt.delivery_id == delivery.delivery_id for attempt in store.attempts)
     assert [attempt.attempt_no for attempt in store.attempts] == [1, 2]
+
+
+def test_redelivered_result_reuses_terminal_delivery_without_resending() -> None:
+    transport = FakeChannelTransport([_outcome(ok=True)])
+    store = FakeDeliveryStore()
+    service = ReplyDeliveryService(store=store, transport=transport, backoff_seconds=0)
+    first = asyncio.run(
+        service.enqueue(
+            tenant_id=TENANT,
+            binding_id="binding-1",
+            execution_id="exec-1",
+            external_conversation_id="conv-1",
+            content="answer",
+            delivery_id="77777777-7777-4777-8777-777777777777",
+        )
+    )
+    asyncio.run(service.run(first.delivery_id, tenant_id=TENANT))
+
+    replay = asyncio.run(
+        service.enqueue(
+            tenant_id=TENANT,
+            binding_id="binding-1",
+            execution_id="exec-1",
+            external_conversation_id="conv-1",
+            content="answer",
+            delivery_id=first.delivery_id,
+        )
+    )
+    result = asyncio.run(service.run(replay.delivery_id, tenant_id=TENANT))
+
+    assert result.status is DeliveryState.DELIVERED
+    assert transport.sent_attempt_nos == [1]
 
 
 def test_rate_limited_backs_off_between_attempts() -> None:

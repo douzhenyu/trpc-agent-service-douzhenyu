@@ -111,6 +111,20 @@ spec:
               value: {{ $.Values.agentWorker.llmGatewayUrl | quote }}
             - name: WORKER_POOL
               value: {{ $.Values.agentWorker.workerPool | quote }}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ $.Values.executionBus.bootstrapServers | quote }}
+            - name: EXECUTION_TOPIC
+              value: {{ $.Values.executionBus.topic | quote }}
+            - name: EXECUTION_CONSUMER_GROUP
+              value: agent-worker
+            - name: EXECUTION_DEAD_LETTER_TOPIC
+              value: {{ $.Values.executionBus.requestDeadLetterTopic | quote }}
+            - name: EXECUTION_MAX_DELIVERY_ATTEMPTS
+              value: {{ $.Values.executionBus.maxDeliveryAttempts | quote }}
+            - name: WORKER_INSTANCE_ID
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.uid
 {{- else if eq $name "job-worker" }}
           command:
             - /app/.venv/bin/uvicorn
@@ -160,6 +174,16 @@ spec:
               valueFrom:
                 fieldRef:
                   fieldPath: metadata.uid
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ $.Values.executionBus.bootstrapServers | quote }}
+            - name: EXECUTION_RESULT_TOPIC
+              value: {{ $.Values.executionBus.resultTopic | quote }}
+            - name: EXECUTION_RESULT_CONSUMER_GROUP
+              value: channel-gateway
+            - name: EXECUTION_RESULT_DEAD_LETTER_TOPIC
+              value: {{ $.Values.executionBus.resultDeadLetterTopic | quote }}
+            - name: EXECUTION_RESULT_MAX_DELIVERY_ATTEMPTS
+              value: {{ $.Values.executionBus.maxDeliveryAttempts | quote }}
             - name: ARTIFACT_ACCESS_KEY
               valueFrom:
                 secretKeyRef:
@@ -171,7 +195,7 @@ spec:
           command:
             - /app/.venv/bin/uvicorn
           args:
-            - trpc_service.llm_gateway:app
+            - trpc_service.agent_gateway:app
             - --host
             - 0.0.0.0
             - --port
@@ -182,12 +206,12 @@ spec:
                 secretKeyRef:
                   name: {{ $.Values.agentGateway.databaseSecretName }}
                   key: {{ $.Values.agentGateway.databaseSecretKey }}
-            - name: VAULT_URL
-              value: {{ $.Values.agentGateway.vaultUrl | quote }}
-            - name: VAULT_KUBERNETES_ROLE
-              value: {{ $.Values.agentGateway.vaultKubernetesRole | quote }}
-            - name: OPA_URL
-              value: {{ $.Values.agentGateway.opaUrl | quote }}
+            - name: KAFKA_BOOTSTRAP_SERVERS
+              value: {{ $.Values.executionBus.bootstrapServers | quote }}
+            - name: EXECUTION_TOPIC
+              value: {{ $.Values.executionBus.topic | quote }}
+            - name: EXECUTION_RESULT_TOPIC
+              value: {{ $.Values.executionBus.resultTopic | quote }}
             - name: STANDBY_MODE
               value: {{ $.Values.failover.standbyMode | quote }}
 {{- else if and (ne $name "admin-api") (ne $name "web-console") }}
@@ -244,6 +268,50 @@ spec:
               mountPath: /var/cache/nginx
             - name: nginx-run
               mountPath: /var/run
+{{- end }}
+{{- if eq $name "agent-gateway" }}
+        - name: llm-gateway
+          image: {{ include "trpc-agent-platform.image" (dict "root" $ "component" $component) | quote }}
+          imagePullPolicy: {{ $.Values.global.imagePullPolicy }}
+          command:
+            - /app/.venv/bin/uvicorn
+          args:
+            - trpc_service.llm_gateway:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "8001"
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $.Values.agentGateway.databaseSecretName }}
+                  key: {{ $.Values.agentGateway.databaseSecretKey }}
+            - name: VAULT_URL
+              value: {{ $.Values.agentGateway.vaultUrl | quote }}
+            - name: VAULT_KUBERNETES_ROLE
+              value: {{ $.Values.agentGateway.vaultKubernetesRole | quote }}
+            - name: OPA_URL
+              value: {{ $.Values.agentGateway.opaUrl | quote }}
+          ports:
+            - name: http-llm
+              containerPort: 8001
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health/ready
+              port: http-llm
+          resources:
+{{ toYaml $.Values.global.resources | indent 12 }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
 {{- end }}
       volumes:
         - name: tmp

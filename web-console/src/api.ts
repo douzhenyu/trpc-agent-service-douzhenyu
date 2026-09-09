@@ -6,6 +6,12 @@ export type Session = components["schemas"]["SessionResponse"];
 export type Tenant = components["schemas"]["TenantResponse"];
 export type TenantGroup = components["schemas"]["TenantGroupResponse"];
 export type PlatformUser = components["schemas"]["PlatformUserResponse"];
+export type PlatformUserCreate = components["schemas"]["PlatformUserCreate"];
+export type TenantMember = components["schemas"]["TenantMemberResponse"];
+export type TenantMemberRole = TenantMember["roles"][number];
+export type ChannelBinding = components["schemas"]["ChannelBindingResponse"];
+export type ChannelBindingUpsert =
+  components["schemas"]["ChannelBindingUpsert"];
 export type AgentApplication =
   components["schemas"]["AgentApplicationResponse"];
 export type AgentApplicationCreate =
@@ -84,6 +90,11 @@ export async function emergencyLogin(
   );
   if (!response.ok || !data) throw new Error("应急登录失败");
   return data;
+}
+
+export async function logout(): Promise<void> {
+  const { response } = await client.DELETE("/api/v1/auth/session");
+  if (!response.ok) throw new Error("退出登录失败");
 }
 
 export async function getTenants(): Promise<Tenant[]> {
@@ -190,6 +201,21 @@ export async function getUsers(): Promise<PlatformUser[]> {
   return data.items;
 }
 
+export async function createUser(
+  payload: PlatformUserCreate,
+): Promise<PlatformUser> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/platform-users",
+    {
+      params: { header: { "Idempotency-Key": idempotencyKey() } },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法登记平台用户", error);
+  return data;
+}
+
 export async function assignRole(
   userId: string,
   role: "PLATFORM_ADMIN" | "PLATFORM_AUDITOR",
@@ -208,6 +234,74 @@ export async function assignRole(
     },
   );
   if (!response.ok) throw new Error("分配角色失败");
+}
+
+export async function assignTenantRole(
+  tenantId: string,
+  userId: string,
+  role: TenantMemberRole,
+): Promise<TenantMember> {
+  const { data, error, response } = await client.PUT(
+    "/api/v1/tenants/{tenant_id}/members/{user_id}/roles/{role}",
+    {
+      params: {
+        path: { tenant_id: tenantId, user_id: userId, role },
+        header: { "Idempotency-Key": idempotencyKey() },
+      },
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法分配租户角色", error);
+  return data;
+}
+
+export async function getChannelBindings(
+  tenantId: string,
+): Promise<ChannelBinding[]> {
+  const { data, error, response } = await client.GET(
+    "/api/v1/tenants/{tenant_id}/channel-bindings",
+    { params: { path: { tenant_id: tenantId } } },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法读取通道配置", error);
+  return data.bindings ?? [];
+}
+
+export async function createChannelBinding(
+  tenantId: string,
+  payload: ChannelBindingUpsert,
+): Promise<ChannelBinding> {
+  const { data, error, response } = await client.PUT(
+    "/api/v1/tenants/{tenant_id}/channel-bindings",
+    {
+      params: { path: { tenant_id: tenantId } },
+      body: payload,
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法保存通道配置", error);
+  return data;
+}
+
+export async function changeChannelBindingStatus(
+  binding: ChannelBinding,
+  status: "ACTIVE" | "DISABLED",
+): Promise<ChannelBinding> {
+  const { data, error, response } = await client.POST(
+    "/api/v1/tenants/{tenant_id}/channel-bindings/{binding_id}/status-changes",
+    {
+      params: {
+        path: {
+          tenant_id: binding.tenant_id,
+          binding_id: binding.binding_id,
+        },
+      },
+      body: { status },
+    },
+  );
+  if (!response.ok || !data)
+    throw apiError(response, "无法更新通道状态", error);
+  return data;
 }
 
 export async function getAgentApplications(

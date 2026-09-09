@@ -68,6 +68,17 @@ def child_traceparent(value: str | None) -> str | None:
     return f"00-{trace_id}-{span_id}-{'01' if flags != '00' else '00'}"
 
 
+def _sampled_root_traceparent() -> str:
+    """Create a valid sampled W3C root context for an untraced request."""
+    trace_id = secrets.token_hex(16)
+    while trace_id == _ZERO_TRACE_ID:
+        trace_id = secrets.token_hex(16)
+    span_id = secrets.token_hex(8)
+    while span_id == _ZERO_SPAN_ID:
+        span_id = secrets.token_hex(8)
+    return f"00-{trace_id}-{span_id}-01"
+
+
 def strip_internal_baggage(value: str | None) -> str:
     """Drop every baggage member except the explicitly public allowlist."""
     if not value:
@@ -123,8 +134,19 @@ _configured = False
 
 
 def current_traceparent() -> str | None:
-    """The inbound trace context of the request currently being served."""
+    """The active trace context of the request currently being served."""
     return _current_traceparent.get()
+
+
+def _span_traceparent(span: object) -> str | None:
+    """Serialize a valid OpenTelemetry span context as W3C traceparent."""
+    get_context = getattr(span, "get_span_context", None)
+    if get_context is None:
+        return None
+    context = get_context()
+    if not getattr(context, "is_valid", False):
+        return None
+    return f"00-{context.trace_id:032x}-{context.span_id:016x}-{int(context.trace_flags):02x}"
 
 
 def _tracer() -> Any:
@@ -185,7 +207,16 @@ def linked_span(
     with tracer.start_as_current_span(
         name, context=parent_context, links=links, attributes=filter_attributes(attributes or {})
     ) as span:
-        yield span
+        active = (
+            _span_traceparent(span)
+            or child_traceparent(trace_parent)
+            or _sampled_root_traceparent()
+        )
+        token = _current_traceparent.set(active)
+        try:
+            yield span
+        finally:
+            _current_traceparent.reset(token)
 
 
 # --- Prometheus metrics ---------------------------------------------------
@@ -233,8 +264,11 @@ def install_telemetry(app: object, service_name: str) -> None:
     class TelemetryMiddleware(BaseHTTPMiddleware):
         async def dispatch(self, request: Request, call_next: Any) -> Response:
             inbound = request.headers.get("traceparent")
-            token = _current_traceparent.set(inbound)
-            outbound = child_traceparent(inbound)
+            active = (
+                inbound if parse_traceparent(inbound) is not None else _sampled_root_traceparent()
+            )
+            token = _current_traceparent.set(active)
+            outbound = child_traceparent(active)
             started = time.perf_counter()
             try:
                 response: Response = await call_next(request)

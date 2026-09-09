@@ -22,6 +22,7 @@ from trpc_service.agent_worker import (
     ReleaseRoute,
     create_app,
 )
+from trpc_service.execution_bus import ExecutionConsumer, ExecutionEnvelope
 from trpc_service.llm_gateway import (
     DataClassification,
     GatewayRequest,
@@ -39,6 +40,7 @@ from trpc_service.storage import (
     StorageProfile,
     StorageRouter,
 )
+from trpc_service.telemetry import linked_span
 
 
 class AllowOutboundPolicy:
@@ -71,6 +73,32 @@ class FakeWorker:
         assert session_id == "stable-session"
         assert messages == [{"role": "user", "content": "hello"}]
         return GatewayResult("balanced", False, {"choices": []})
+
+
+class FakeExecutionConsumer:
+    def __init__(self) -> None:
+        self.started = False
+        self.stopped = False
+
+    async def start(self) -> None:
+        self.started = True
+
+    async def stop(self) -> None:
+        self.stopped = True
+
+    async def run_forever(
+        self,
+        handler: ExecutionConsumer,
+        *,
+        retry_delay_seconds: float = 1.0,
+    ) -> None:
+        del handler, retry_delay_seconds
+        await asyncio.Event().wait()
+
+
+class FakeExecutionProcessor:
+    async def handle(self, envelope: ExecutionEnvelope) -> None:
+        del envelope
 
 
 class FixedStorageProfileResolver:
@@ -206,6 +234,20 @@ def test_worker_deployment_execution_api_and_health_endpoints_are_publicly_avail
         assert client.get("/health/ready").status_code == 200
 
 
+def test_worker_lifecycle_starts_and_stops_injected_execution_consumer() -> None:
+    consumer = FakeExecutionConsumer()
+    with TestClient(
+        create_app(
+            worker=FakeWorker(),
+            execution_consumer=consumer,
+            execution_processor=FakeExecutionProcessor(),
+        )
+    ):
+        assert consumer.started is True
+        assert consumer.stopped is False
+    assert consumer.stopped is True
+
+
 def test_worker_rejects_unknown_release_and_unavailable_deployment_routing() -> None:
     tenant_id, application_id, release_id = str(uuid4()), str(uuid4()), str(uuid4())
     worker = AgentWorker(FakeWorker(), InMemoryReleaseRouteResolver([]))
@@ -231,10 +273,12 @@ def test_worker_runtime_settings_require_both_runtime_dependencies() -> None:
 
 def test_worker_gateway_client_sends_only_release_identity_and_messages() -> None:
     tenant_id, release_id = str(uuid4()), str(uuid4())
+    parent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
 
     async def gateway(request: httpx.Request) -> httpx.Response:
         assert request.url.path == "/internal/v1/llm-completions"
         assert "authorization" not in request.headers
+        assert request.headers["traceparent"].startswith("00-4bf92f3577b34da6a3ce929d0e0e4736-")
         payload = json.loads(request.content)
         assert set(payload) == {
             "tenant_id",
@@ -254,18 +298,19 @@ def test_worker_gateway_client_sends_only_release_identity_and_messages() -> Non
             base_url="https://agent-gateway.test", transport=httpx.MockTransport(gateway)
         )
     )
-    result = asyncio.run(
-        client.complete(
-            GatewayRequest(
-                tenant_id=tenant_id,
-                model_alias="balanced",
-                messages=[{"role": "user", "content": "hello"}],
-                data_classification=DataClassification.INTERNAL,
-                region="cn-north-1",
-                release_id=release_id,
+    with linked_span("agent_worker.execute", parent):
+        result = asyncio.run(
+            client.complete(
+                GatewayRequest(
+                    tenant_id=tenant_id,
+                    model_alias="balanced",
+                    messages=[{"role": "user", "content": "hello"}],
+                    data_classification=DataClassification.INTERNAL,
+                    region="cn-north-1",
+                    release_id=release_id,
+                )
             )
         )
-    )
 
     assert result.model_alias == "balanced"
 

@@ -7,11 +7,14 @@ import signal
 import subprocess
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 import pytest
+import yaml
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 SMOKE_SCRIPT = REPOSITORY_ROOT / "scripts" / "kubernetes_smoke.sh"
+REDPANDA_FIXTURE = REPOSITORY_ROOT / "tests" / "deployment" / "fixtures" / "redpanda-smoke.yaml"
 
 
 def _run_smoke_process(
@@ -65,6 +68,31 @@ def test_smoke_provisions_the_shared_egress_gateway_before_platform_sync() -> No
     assert script.index("kube create namespace istio-egress") < script.index(
         "tests/deployment/fixtures/argocd-smoke.yaml"
     )
+
+
+def test_smoke_provisions_the_execution_bus_before_platform_sync() -> None:
+    script = SMOKE_SCRIPT.read_text()
+    resources: dict[tuple[str, str], dict[str, Any]] = {
+        (document["kind"], document["metadata"]["name"]): document
+        for document in yaml.safe_load_all(REDPANDA_FIXTURE.read_text())
+    }
+
+    assert "kube apply -f tests/deployment/fixtures/redpanda-smoke.yaml" in script
+    assert "kube rollout status deployment/redpanda -n kafka" in script
+    assert script.index("tests/deployment/fixtures/redpanda-smoke.yaml") < script.index(
+        "tests/deployment/fixtures/argocd-smoke.yaml"
+    )
+    assert resources[("Namespace", "kafka")]["metadata"]["name"] == "kafka"
+    assert resources[("Service", "redpanda")]["spec"]["ports"] == [
+        {"name": "kafka", "port": 9092, "targetPort": "kafka"}
+    ]
+    redpanda = resources[("Deployment", "redpanda")]["spec"]["template"]
+    assert redpanda["metadata"]["labels"] == {"app.kubernetes.io/name": "redpanda"}
+    container = redpanda["spec"]["containers"][0]
+    assert container["imagePullPolicy"] == "Never"
+    assert "redpandadata/redpanda:v24.2.18" in script
+    assert container["image"] == "redpandadata/redpanda:v24.2.18"
+    assert "--advertise-kafka-addr=redpanda.kafka.svc.cluster.local:9092" in container["args"]
 
 
 @pytest.mark.smoke

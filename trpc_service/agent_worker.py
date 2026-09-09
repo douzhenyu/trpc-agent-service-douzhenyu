@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass
 from typing import Any, Protocol
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -19,7 +20,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from trpc_service.admin_api.audit import insert_audit
 from trpc_service.admin_api.database import Database
 from trpc_service.degradation import register_degradations_endpoint
-from trpc_service.execution_bus import ExecutionEnvelope, ExecutionRequestedData
+from trpc_service.execution_bus import (
+    EXECUTION_COMPLETED_EVENT,
+    EXECUTION_REQUESTED_EVENT,
+    WORKER_SOURCE,
+    ExecutionBusConsumer,
+    ExecutionCompletedData,
+    ExecutionEnvelope,
+    ExecutionRequestedData,
+    KafkaExecutionConsumer,
+    insert_outbox_record,
+    session_partition_key,
+)
+from trpc_service.ids import uuid7
 from trpc_service.knowledge import DatabaseKnowledgeDeploymentResolver
 from trpc_service.llm_gateway import (
     DataClassification,
@@ -41,6 +54,7 @@ from trpc_service.sessions import (
 from trpc_service.storage import DatabaseStorageProfileResolver
 from trpc_service.telemetry import (
     EXECUTION_OUTCOMES,
+    current_traceparent,
     install_telemetry,
     linked_span,
 )
@@ -333,6 +347,8 @@ class AgentExecutionProcessor:
         self._worker_pool = worker_pool
 
     async def handle(self, envelope: ExecutionEnvelope) -> None:
+        if envelope.event_type != EXECUTION_REQUESTED_EVENT:
+            raise ValueError("unexpected agent worker event type")
         data = ExecutionRequestedData.model_validate(envelope.data)
         with linked_span(
             "agent_worker.execute",
@@ -427,6 +443,27 @@ class AgentExecutionProcessor:
                 tenant_id,
                 UUID(data.execution_id),
             )
+            completed = ExecutionCompletedData(
+                tenant_id=data.tenant_id,
+                execution_id=data.execution_id,
+                release_id=data.release_id,
+                session_id=data.session_id,
+                completion=result.completion,
+                channel_context=data.channel_context,
+                trace_parent=current_traceparent(),
+            )
+            await insert_outbox_record(
+                connection,
+                tenant_id=data.tenant_id,
+                message_id=str(uuid7()),
+                source=WORKER_SOURCE,
+                event_type=EXECUTION_COMPLETED_EVENT,
+                partition_key=session_partition_key(data.tenant_id, data.session_id),
+                payload_json=json.dumps(completed.model_dump()),
+                causation_id=envelope.message_id,
+                correlation_id=data.execution_id,
+                data_classification=str(route.data_classification),
+            )
 
     async def _execution_status(self, tenant_id: UUID, message_id: str) -> str | None:
         async with self._database.tenant_transaction(tenant_id) as connection:
@@ -448,6 +485,10 @@ class AgentExecutionProcessor:
             )
 
 
+class ExecutionEnvelopeProcessor(Protocol):
+    async def handle(self, envelope: ExecutionEnvelope) -> None: ...
+
+
 class AgentWorkerSettings(BaseSettings):
     """Runtime-only settings; provider credentials never enter this boundary."""
 
@@ -459,6 +500,13 @@ class AgentWorkerSettings(BaseSettings):
     code_executor_kind: str = "SANDBOX"
     docker_socket_mounted: bool = False
     worker_pool: str = "shared-workers"
+    kafka_bootstrap_servers: str = ""
+    execution_topic: str = EXECUTION_REQUESTED_EVENT
+    execution_consumer_group: str = "agent-worker"
+    execution_retry_delay_seconds: float = Field(default=1.0, gt=0)
+    execution_dead_letter_topic: str = f"{EXECUTION_REQUESTED_EVENT}.dlq"
+    execution_max_delivery_attempts: int = Field(default=5, ge=1)
+    worker_instance_id: str = ""
 
     def validate_runtime(self) -> None:
         missing = [
@@ -486,6 +534,9 @@ class HttpGatewayClient:
 
     async def complete(self, request: GatewayRequest) -> GatewayResult:
         try:
+            headers: dict[str, str] = {}
+            if trace_parent := current_traceparent():
+                headers["traceparent"] = trace_parent
             response = await self._client.post(
                 "/internal/v1/llm-completions",
                 json={
@@ -495,6 +546,7 @@ class HttpGatewayClient:
                     "application_id": request.application_id,
                     "execution_id": request.execution_id,
                 },
+                headers=headers,
             )
             if response.status_code >= 400:
                 raise ModelGatewayError("MODEL_GATEWAY_UNAVAILABLE")
@@ -542,33 +594,83 @@ def create_app(
     worker: AgentWorker | None = None,
     storage_profiles: DatabaseStorageProfileResolver | None = None,
     worker_pool: str = "shared-workers",
+    execution_consumer: ExecutionBusConsumer | None = None,
+    execution_processor: ExecutionEnvelopeProcessor | None = None,
 ) -> FastAPI:
     """Create the credential-free internal Agent execution process boundary."""
 
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        consumer_task: asyncio.Task[None] | None = None
+        active_consumer = execution_consumer
+        processor = execution_processor
         if worker is not None:
             application.state.worker = worker
             application.state.storage_profiles = storage_profiles
             application.state.worker_pool = worker_pool
-            yield
+            if active_consumer is not None:
+                if processor is None:
+                    raise RuntimeError(
+                        "execution_processor is required with an injected execution_consumer"
+                    )
+                await active_consumer.start()
+                consumer_task = asyncio.create_task(active_consumer.run_forever(processor.handle))
+            try:
+                yield
+            finally:
+                if consumer_task is not None:
+                    consumer_task.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await consumer_task
+                if active_consumer is not None:
+                    await active_consumer.stop()
             return
         configured = settings or AgentWorkerSettings()
         configured.validate_runtime()
         database = Database(configured.database_url)
         gateway_client = httpx.AsyncClient(base_url=configured.llm_gateway_url)
         await database.open()
+        releases = DatabaseReleaseRouteResolver(database)
         application.state.storage_profiles = DatabaseStorageProfileResolver(database)
         application.state.worker_pool = configured.worker_pool
         application.state.worker = AgentWorker(
             HttpGatewayClient(gateway_client),
-            DatabaseReleaseRouteResolver(database),
+            releases,
             DatabaseFallbackAuditor(database),
             DatabaseDeploymentRouteResolver(database),
         )
+        if configured.kafka_bootstrap_servers:
+            active_consumer = KafkaExecutionConsumer(
+                configured.kafka_bootstrap_servers,
+                configured.execution_topic,
+                configured.execution_consumer_group,
+                dead_letter_topic=configured.execution_dead_letter_topic,
+                max_delivery_attempts=configured.execution_max_delivery_attempts,
+            )
+            active_processor = AgentExecutionProcessor(
+                application.state.worker,
+                database,
+                releases,
+                SessionLeaseManager(database),
+                configured.worker_instance_id or f"agent-worker-{uuid4()}",
+                worker_pool=configured.worker_pool,
+            )
+            await active_consumer.start()
+            consumer_task = asyncio.create_task(
+                active_consumer.run_forever(
+                    active_processor.handle,
+                    retry_delay_seconds=configured.execution_retry_delay_seconds,
+                )
+            )
         try:
             yield
         finally:
+            if consumer_task is not None:
+                consumer_task.cancel()
+                with suppress(asyncio.CancelledError):
+                    await consumer_task
+            if active_consumer is not None:
+                await active_consumer.stop()
             await gateway_client.aclose()
             await database.close()
 

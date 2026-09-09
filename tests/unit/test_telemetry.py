@@ -99,6 +99,10 @@ def test_linked_span_records_link_to_async_parent() -> None:
         {"tenant.id": "t-1", "raw.secret": "x"},
     ) as span:
         assert span is not None
+        active = parse_traceparent(current_traceparent())
+        assert active is not None
+        assert active[0] == "4bf92f3577b34da6a3ce929d0e0e4736"
+    assert current_traceparent() is None
     assert len(captured) == 1
     links = list(captured[0].links)
     assert links, "async work must link the original trace"
@@ -122,7 +126,22 @@ def test_install_telemetry_propagates_trace_and_counts() -> None:
     with TestClient(app) as client:
         missing = client.get("/echo")
         assert missing.status_code == 200
-        assert "traceparent" not in missing.headers
+        missing_active = parse_traceparent(missing.json()["inbound"])
+        missing_response = parse_traceparent(missing.headers["traceparent"])
+        assert missing_active is not None
+        assert missing_response is not None
+        assert missing_active[0] == missing_response[0]
+        assert missing_active[1] != missing_response[1]
+        assert missing_active[2] == "01"
+
+        invalid = client.get("/echo", headers={"traceparent": "not-a-traceparent"})
+        invalid_active = parse_traceparent(invalid.json()["inbound"])
+        invalid_response = parse_traceparent(invalid.headers["traceparent"])
+        assert invalid_active is not None
+        assert invalid_response is not None
+        assert invalid_active[0] == invalid_response[0]
+        assert invalid_active[1] != invalid_response[1]
+        assert invalid_active[2] == "01"
 
         request = client.get(
             "/echo",
